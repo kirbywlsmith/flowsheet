@@ -61,3 +61,59 @@ impl std::ops::Index<SpeciesId> for SpeciesRegistry {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn water() -> Species {
+        Species {
+            name: "H2O".into(),
+            phase: Phase::Liquid,
+            molar_mass: 18.015,
+        }
+    }
+
+    #[test]
+    fn insert_returns_sequential_ids() {
+        let mut reg = SpeciesRegistry::default();
+        let a = reg.insert(water());
+        let b = reg.insert(Species {
+            name: "SiO2".into(),
+            phase: Phase::Solid,
+            molar_mass: 60.08,
+        });
+        assert_eq!(a.as_usize(), 0);
+        assert_eq!(b.as_usize(), 1);
+        assert_eq!(reg.len(), 2);
+    }
+
+    #[test]
+    fn insert_dedupes_on_name_and_phase() {
+        let mut reg = SpeciesRegistry::default();
+        let a = reg.insert(water());
+        let b = reg.insert(water());
+        assert_eq!(a, b);
+        assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn same_name_different_phase_is_a_distinct_species() {
+        let mut reg = SpeciesRegistry::default();
+        let liquid = reg.insert(water());
+        let gas = reg.insert(Species {
+            phase: Phase::Gas,
+            ..water()
+        });
+        assert_ne!(liquid, gas);
+        assert_eq!(reg[gas].phase, Phase::Gas);
+    }
+
+    #[test]
+    fn get_is_none_for_unknown_and_find_round_trips() {
+        let mut reg = SpeciesRegistry::default();
+        let id = reg.insert(water());
+        assert_eq!(reg.find("H2O", Phase::Liquid), Some(id));
+        assert_eq!(reg.find("H2O", Phase::Gas), None);
+        assert_eq!(reg[id].molar_mass, 18.015);
+    }
+}
