@@ -1,5 +1,11 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SpeciesId(pub u16);
+pub struct SpeciesId(u16);
+
+impl SpeciesId {
+    pub fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Phase {
@@ -21,6 +27,7 @@ pub struct SpeciesRegistry {
 }
 
 impl SpeciesRegistry {
+    // TODO: should handle duplicate insert with differing molar masses
     pub fn insert(&mut self, s: Species) -> SpeciesId {
         match self.find(&s.name, s.phase) {
             None => {
@@ -30,8 +37,8 @@ impl SpeciesRegistry {
             Some(id) => id,
         }
     }
-    pub fn get(&self, id: SpeciesId) -> &Species {
-        &self.species[id.0 as usize]
+    pub fn get(&self, id: SpeciesId) -> Option<&Species> {
+        self.species.get(id.as_usize())
     }
     pub fn find(&self, name: &str, phase: Phase) -> Option<SpeciesId> {
         self.species
@@ -46,3 +53,11 @@ impl SpeciesRegistry {
         self.species.is_empty()
     }
 }
+
+impl std::ops::Index<SpeciesId> for SpeciesRegistry {
+    type Output = Species;
+    fn index(&self, id: SpeciesId) -> &Species {
+        &self.species[id.as_usize()]
+    }
+}
+
