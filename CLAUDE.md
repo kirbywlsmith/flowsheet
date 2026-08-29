@@ -52,6 +52,7 @@ Never mix severities in one unlabelled list.
   `Result` is reserved for real user input (JSON loading).
 - Species registry uses a **linear scan**, not a HashMap. It holds 3–20 entries; two collections would desync.
 - Enum dispatch for unit ops first, trait objects later — the comparison is the point.
+- Outlet order is positional: the Nth `add_stream` from a unit matches the Nth stream from `UnitOp::evaluate`. Wiring a splitter backwards still balances mass, so it fails silently.
 - Kahn's topological sort emits **waves** (`Vec<Vec<UnitId>>`), not a flat order, so parallelism is free later.
 - Float equality: never `==`. `approx` (dev-dependency) in tests; `Stream::max_flow_residual` for the solver.
 
