@@ -240,4 +240,52 @@ mod tests {
         let a = Stream::zeros(&r, 298.15, 101.325);
         assert!(a.flows_approx_eq(&Stream::zeros(&r, 298.15, 101.325), 1e-9));
     }
+
+    #[test]
+    fn mass_fractions_sum_to_one_and_match_the_recipe() {
+        let r = registry();
+        let s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        let f = s.mass_fractions();
+        assert_relative_eq!(f[0], 0.04);
+        assert_relative_eq!(f[1], 0.36);
+        assert_relative_eq!(f[2], 0.60);
+        assert_relative_eq!(f.iter().sum::<f64>(), 1.0);
+    }
+
+    #[test]
+    fn mass_fractions_of_an_empty_stream_are_zero_not_nan() {
+        let r = registry();
+        let f = Stream::zeros(&r, 298.15, 101.325).mass_fractions();
+        assert_eq!(f, vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn scaling_changes_the_amount_but_not_the_recipe() {
+        let r = registry();
+        let s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        let split = s.scaled(0.3);
+        assert_relative_eq!(split.total(), 300.0);
+        assert_relative_eq!(split.mass_fractions()[0], s.mass_fractions()[0]);
+        assert_relative_eq!(split.temperature(), 298.15);
+    }
+
+    #[test]
+    fn splitting_a_stream_in_two_conserves_mass() {
+        let r = registry();
+        let s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        let mut recombined = s.scaled(0.3);
+        recombined += &s.scaled(0.7);
+        assert!(s.flows_approx_eq(&recombined, 1e-12));
+    }
+
+    #[test]
+    fn add_assign_sums_species_and_totals() {
+        let r = registry();
+        let mut a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], 350.0, 200.0);
+        a += &b;
+        assert_relative_eq!(a[r.find("SiO2", Phase::Solid).unwrap()], 380.0);
+        assert_relative_eq!(a.total(), 1060.0);
+        assert_relative_eq!(a.temperature(), 298.15); // b's temperature is ignored, by design
+    }
 }
