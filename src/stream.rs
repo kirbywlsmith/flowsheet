@@ -1,6 +1,6 @@
 use crate::species::{SpeciesId, SpeciesRegistry};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Stream {
     /// Absolute mass flow per species (t/h), indexed by `SpeciesId`
     flows: Vec<f64>,
@@ -40,6 +40,44 @@ impl Stream {
             temperature,
             pressure,
         }
+    }
+    /// Largest per-species flow difference, normalised by the larger stream total.
+    /// A result of 1e-6 means "every species agrees to within 1 ppm of the stream's
+    /// total mass flow". Compares flows only - not temperature or pressure.
+    ///
+    /// Returns NaN if either stream contains NaN.
+    ///
+    /// # Panics
+    /// If the two streams have different species counts.
+    pub fn max_flow_residual(&self, other: &Stream) -> f64 {
+        assert_eq!(
+            self.flows.len(),
+            other.flows.len(),
+            "cannot compare streams with {} and {} species",
+            self.flows.len(),
+            other.flows.len()
+        );
+
+        let scale = self.total().max(other.total());
+        if scale == 0.0 {
+            return 0.0; // both streams are empty
+        }
+
+        self.flows
+            .iter()
+            .zip(&other.flows)
+            .map(|(a, b)| (a - b).abs() / scale)
+            .fold(0.0_f64, |acc, d| {
+                if acc.is_nan() || d.is_nan() {
+                    f64::NAN
+                } else {
+                    acc.max(d)
+                }
+            })
+    }
+    /// True if `max_flow_residual` is within `tolerance`. Typical `tolerance` is 1e-6.
+    pub fn flows_approx_eq(&self, other: &Stream, tolerance: f64) -> bool {
+        self.max_flow_residual(other) <= tolerance
     }
     pub fn temperature(&self) -> f64 {
         self.temperature
