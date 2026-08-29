@@ -11,6 +11,7 @@ pub struct Stream {
 }
 
 impl Stream {
+    /// Creates a stream with zero flow of every species in `registry`.
     pub fn zeros(registry: &SpeciesRegistry, temperature: f64, pressure: f64) -> Self {
         Self {
             flows: vec![0.0; registry.len()],
@@ -19,8 +20,10 @@ impl Stream {
         }
     }
 
+    /// Builds a stream from explicit per-species flows, in `SpeciesId` order.
+    ///
     /// # Panics
-    /// If `flows.len()` doesn't match `registry`
+    /// If `flows.len()` doesn't match `registry.len()`.
     pub fn from_flows(
         registry: &SpeciesRegistry,
         flows: Vec<f64>,
@@ -43,23 +46,29 @@ impl Stream {
         }
     }
 
+    /// Temperature in Kelvin.
     pub fn temperature(&self) -> f64 {
         self.temperature
     }
 
+    /// Pressure in kPa.
     pub fn pressure(&self) -> f64 {
         self.pressure
     }
 
+    /// Number of species slots, matching the registry this stream was built from.
     pub fn species_count(&self) -> usize {
         self.flows.len()
     }
 
+    /// Total mass flow across every species (t/h).
     pub fn total(&self) -> f64 {
         self.flows.iter().sum()
     }
 
-    /// A `Stream` with zero total flow returns a zero vector.
+    /// Proportion of each species by mass, summing to 1.0.
+    ///
+    /// A stream with zero total flow returns a zero vector rather than NaN.
     pub fn mass_fractions(&self) -> Vec<f64> {
         let total = self.total();
         if total == 0.0 {
@@ -69,10 +78,11 @@ impl Stream {
     }
 
     /// Largest per-species flow difference, normalised by the larger stream total.
-    /// A result of 1e-6 means "every species agrees to within 1 ppm of the stream's
-    /// total mass flow". Compares flows only - not temperature or pressure.
     ///
-    /// Returns NaN if either stream contains NaN.
+    /// A result of 1e-6 means every species agrees to within 1 ppm of the stream's
+    /// total mass flow. Compares flows only, not temperature or pressure.
+    ///
+    /// Returns `NaN` if either stream contains `NaN`.
     ///
     /// # Panics
     /// If the two streams have different species counts.
@@ -108,6 +118,9 @@ impl Stream {
         self.max_flow_residual(other) <= tolerance
     }
 
+    /// Multiplies every flow by `factor`, returning a new stream.
+    ///
+    /// Composition, temperature and pressure are unchanged.
     pub fn scaled(&self, factor: f64) -> Self {
         Self {
             flows: self.flows.iter().map(|f| f * factor).collect(),
