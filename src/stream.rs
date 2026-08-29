@@ -39,6 +39,12 @@ impl Stream {
             pressure,
         }
     }
+    pub fn temperature(&self) -> f64 {
+        self.temperature
+    }
+    pub fn pressure(&self) -> f64 {
+        self.pressure
+    }
     pub fn total(&self) -> f64 {
         self.flows.iter().sum()
     }
