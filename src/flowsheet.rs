@@ -59,7 +59,7 @@ pub struct Unit {
     outlets: Vec<StreamId>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Flowsheet {
     registry: SpeciesRegistry,
     units: Vec<Unit>,
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn add_unit_returns_sequential_ids() {
-        let mut fs = Flowsheet::default();
+        let mut fs = Flowsheet::new(demo_registry());
         let a = fs.add_unit(UnitOp::Mixer);
         let b = fs.add_unit(UnitOp::Tank);
         assert_eq!(a.as_usize(), 0);
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn add_stream_wires_the_outlet_on_start_and_the_inlet_on_end() {
         let r = demo_registry();
-        let mut fs = Flowsheet::default();
+        let mut fs = Flowsheet::new(demo_registry());
         let tank = fs.add_unit(UnitOp::Tank);
         let product = fs.add_unit(UnitOp::Product);
 
@@ -182,7 +182,7 @@ mod tests {
         // receives `fraction`, the second `1.0 - fraction`. Swapping the two
         // add_stream calls silently changes which stream is the recycle.
         let r = demo_registry();
-        let mut fs = Flowsheet::default();
+        let mut fs = Flowsheet::new(demo_registry());
         let splitter = fs.add_unit(UnitOp::Splitter { fraction: 0.3 });
         let first = fs.add_unit(UnitOp::Product);
         let second = fs.add_unit(UnitOp::Product);
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn streams_can_be_read_and_written_by_id() {
         let r = demo_registry();
-        let mut fs = Flowsheet::default();
+        let mut fs = Flowsheet::new(demo_registry());
         let tank = fs.add_unit(UnitOp::Tank);
         let product = fs.add_unit(UnitOp::Product);
         let s = fs.add_stream(tank, blank(&r), product);
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn target_recycle_circuit_wires_up_correctly() {
         let r = demo_registry();
-        let mut fs = Flowsheet::default();
+        let mut fs = Flowsheet::new(demo_registry());
 
         let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
         let u_mixer = fs.add_unit(UnitOp::Mixer);
