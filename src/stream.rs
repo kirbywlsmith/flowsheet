@@ -18,6 +18,7 @@ impl Stream {
             pressure,
         }
     }
+
     /// # Panics
     /// If `flows.len()` doesn't match `registry`
     pub fn from_flows(
@@ -41,6 +42,32 @@ impl Stream {
             pressure,
         }
     }
+
+    pub fn temperature(&self) -> f64 {
+        self.temperature
+    }
+
+    pub fn pressure(&self) -> f64 {
+        self.pressure
+    }
+
+    pub fn species_count(&self) -> usize {
+        self.flows.len()
+    }
+
+    pub fn total(&self) -> f64 {
+        self.flows.iter().sum()
+    }
+
+    /// A `Stream` with zero total flow returns a zero vector.
+    pub fn mass_fractions(&self) -> Vec<f64> {
+        let total = self.total();
+        if total == 0.0 {
+            return vec![0.0; self.flows.len()];
+        }
+        self.flows.iter().map(|f| f / total).collect()
+    }
+
     /// Largest per-species flow difference, normalised by the larger stream total.
     /// A result of 1e-6 means "every species agrees to within 1 ppm of the stream's
     /// total mass flow". Compares flows only - not temperature or pressure.
@@ -75,36 +102,18 @@ impl Stream {
                 }
             })
     }
+
     /// True if `max_flow_residual` is within `tolerance`. Typical `tolerance` is 1e-6.
     pub fn flows_approx_eq(&self, other: &Stream, tolerance: f64) -> bool {
         self.max_flow_residual(other) <= tolerance
     }
-    /// A `Stream` with zero total flow returns a zero vector.
-    pub fn mass_fractions(&self) -> Vec<f64> {
-        let total = self.total();
-        if total == 0.0 {
-            return vec![0.0; self.flows.len()];
-        }
-        self.flows.iter().map(|f| f / total).collect()
-    }
+
     pub fn scaled(&self, factor: f64) -> Stream {
         Stream {
             flows: self.flows.iter().map(|f| f * factor).collect(),
             temperature: self.temperature,
             pressure: self.pressure,
         }
-    }
-    pub fn temperature(&self) -> f64 {
-        self.temperature
-    }
-    pub fn pressure(&self) -> f64 {
-        self.pressure
-    }
-    pub fn total(&self) -> f64 {
-        self.flows.iter().sum()
-    }
-    pub fn species_count(&self) -> usize {
-        self.flows.len()
     }
 }
 
