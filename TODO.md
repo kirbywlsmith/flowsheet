@@ -3,7 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 1-10 (ownership, borrows, generics, traits) — enough to start; finish ch. 13-17 while building
-- [ ] Mixer and splitter as plain free functions over `&[Stream]` — no traits, no graph yet
 - [ ] Tests: mixer and splitter close on mass per species and in total (`assert_relative_eq`, pick a tolerance and stick
   to it)
 - [ ] Arena in `flowsheet.rs`: `Vec<UnitOp>`, `Vec<Stream>`, `UnitId`/`StreamId` new types, units store inlet/outlet
