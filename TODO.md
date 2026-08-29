@@ -3,8 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 1-10 (ownership, borrows, generics, traits) — enough to start; finish ch. 13-17 while building
-- [ ] Tests: mixer and splitter close on mass per species and in total (`assert_relative_eq`, pick a tolerance and stick
-  to it)
 - [ ] Arena in `flowsheet.rs`: `Vec<UnitOp>`, `Vec<Stream>`, `UnitId`/`StreamId` new types, units store inlet/outlet
   `StreamId`s
 - [ ] `UnitOp` as an enum first (Feed, Mixer, Tank, Splitter, Product) with a `fn evaluate(&self, ...)` match — trait
