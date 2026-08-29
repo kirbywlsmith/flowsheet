@@ -130,7 +130,7 @@ impl std::ops::IndexMut<SpeciesId> for Stream {
     }
 }
 
-// TODO: temperature and pressure are not considered yet
+/// TODO: temperature and pressure are not considered yet
 impl std::ops::AddAssign<&Stream> for Stream {
     fn add_assign(&mut self, other: &Stream) {
         assert_eq!(
