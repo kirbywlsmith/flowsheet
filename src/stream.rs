@@ -168,8 +168,8 @@ mod tests {
     fn identical_streams_have_zero_residual() {
         let r = registry();
         let a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
-        assert_relative_eq!(a.max_flow_residual(&a.clone()), 0.0);
-        assert!(a.flows_approx_eq(&a.clone(), 1e-9));
+        assert_relative_eq!(a.max_flow_residual(&a), 0.0);
+        assert!(a.flows_approx_eq(&a, 1e-9));
     }
 
     #[test]
