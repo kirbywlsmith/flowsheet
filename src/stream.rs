@@ -18,6 +18,27 @@ impl Stream {
             pressure,
         }
     }
+    /// # Panics
+    /// If `flows.len()` doesn't match `registry`
+    pub fn from_flows(
+        registry: &SpeciesRegistry,
+        flows: Vec<f64>,
+        temperature: f64,
+        pressure: f64,
+    ) -> Self {
+        assert_eq!(
+            flows.len(),
+            registry.len(),
+            "stream has {} flows but registry has {} species",
+            flows.len(),
+            registry.len()
+        );
+        Self {
+            flows,
+            temperature,
+            pressure,
+        }
+    }
     pub fn total(&self) -> f64 {
         self.flows.iter().sum()
     }
