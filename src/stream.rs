@@ -108,8 +108,8 @@ impl Stream {
         self.max_flow_residual(other) <= tolerance
     }
 
-    pub fn scaled(&self, factor: f64) -> Stream {
-        Stream {
+    pub fn scaled(&self, factor: f64) -> Self {
+        Self {
             flows: self.flows.iter().map(|f| f * factor).collect(),
             temperature: self.temperature,
             pressure: self.pressure,
