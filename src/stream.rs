@@ -26,6 +26,8 @@ impl Stream {
         temperature: f64,
         pressure: f64,
     ) -> Self {
+        // TODO: should handle negative / NaN flows
+
         assert_eq!(
             flows.len(),
             registry.len(),
