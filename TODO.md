@@ -3,10 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] Arena in `flowsheet.rs`: `Vec<UnitOp>`, `Vec<Stream>`, `UnitId`/`StreamId` new types, units store inlet/outlet
-  `StreamId`s
-- [ ] `UnitOp` as an enum first (Feed, Mixer, Tank, Splitter, Product) with a `fn evaluate(&self, ...)` match — trait
-  objects come later, deliberately
 - [ ] `build_flowsheet()` wiring the target circuit by hand, minus the recycle (S4 deleted, mixer takes only S0)
 - [ ] Kahn topological sort, hand-rolled — in-degree count, queue, detect leftover nodes
 - [ ] Sequential-modular solve over the topo order; acyclic case only
