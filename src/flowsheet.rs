@@ -1,3 +1,4 @@
+use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 use crate::units::{mix, split, split_n};
 
@@ -60,6 +61,7 @@ pub struct Unit {
 
 #[derive(Debug, Default)]
 pub struct Flowsheet {
+    registry: SpeciesRegistry,
     units: Vec<Unit>,
     streams: Vec<Stream>,
 }
@@ -82,6 +84,20 @@ pub enum FlowsheetError {
 }
 
 impl Flowsheet {
+    /// Creates a new flowsheet
+    pub fn new(registry: SpeciesRegistry) -> Self {
+        Self {
+            registry,
+            units: Vec::new(),
+            streams: Vec::new(),
+        }
+    }
+
+    /// Returns the flowsheet's species registry
+    pub fn registry(&self) -> &SpeciesRegistry {
+        &self.registry
+    }
+
     /// Adds a unit of the specified type, with no inlets or outlets.
     pub fn add_unit(&mut self, op: UnitOp) -> UnitId {
         self.units.push(Unit {
