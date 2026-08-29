@@ -164,41 +164,22 @@ impl std::ops::AddAssign<&Stream> for Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::species::{Phase, Species};
+    use crate::species::Phase;
+    use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
     use approx::assert_relative_eq;
-
-    fn registry() -> SpeciesRegistry {
-        let mut r = SpeciesRegistry::default();
-        r.insert(Species {
-            name: "CuFeS2".into(),
-            phase: Phase::Solid,
-            molar_mass: 183.5,
-        });
-        r.insert(Species {
-            name: "SiO2".into(),
-            phase: Phase::Solid,
-            molar_mass: 60.08,
-        });
-        r.insert(Species {
-            name: "H2O".into(),
-            phase: Phase::Liquid,
-            molar_mass: 18.015,
-        });
-        r
-    }
 
     #[test]
     fn zeros_matches_registry_length_and_has_no_flow() {
-        let r = registry();
-        let s = Stream::zeros(&r, 298.15, 101.325);
+        let r = demo_registry();
+        let s = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
         assert_eq!(s.species_count(), 3);
         assert_relative_eq!(s.total(), 0.0);
     }
 
     #[test]
     fn index_mut_writes_are_visible_and_change_the_total() {
-        let r = registry();
-        let mut s = Stream::zeros(&r, 298.15, 101.325);
+        let r = demo_registry();
+        let mut s = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
         let water = r.find("H2O", Phase::Liquid).unwrap();
         s[water] = 600.0;
         assert_relative_eq!(s[water], 600.0);
@@ -207,31 +188,30 @@ mod tests {
 
     #[test]
     fn from_flows_totals_the_feed_stream() {
-        let r = registry();
-        let s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
-        assert_relative_eq!(s.total(), 1000.0);
+        let r = demo_registry();
+        assert_relative_eq!(feed(&r).total(), 1000.0);
     }
 
     #[test]
     #[should_panic(expected = "registry has 3 species")]
     fn from_flows_rejects_a_length_mismatch() {
-        let r = registry();
-        Stream::from_flows(&r, vec![40.0, 360.0], 298.15, 101.325);
+        let r = demo_registry();
+        Stream::from_flows(&r, vec![40.0, 360.0], AMBIENT_K, AMBIENT_KPA);
     }
 
     #[test]
     fn identical_streams_have_zero_residual() {
-        let r = registry();
-        let a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        let r = demo_registry();
+        let a = feed(&r);
         assert_relative_eq!(a.max_flow_residual(&a), 0.0);
         assert!(a.flows_approx_eq(&a, 1e-9));
     }
 
     #[test]
     fn residual_is_the_fraction_of_total_mass() {
-        let r = registry();
-        let a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
-        let b = Stream::from_flows(&r, vec![40.1, 360.0, 600.0], 298.15, 101.325);
+        let r = demo_registry();
+        let a = feed(&r);
+        let b = Stream::from_flows(&r, vec![40.1, 360.0, 600.0], AMBIENT_K, AMBIENT_KPA);
         // 0.1 t/h out of a 1000.1 t/h total
         assert_relative_eq!(b.max_flow_residual(&a), 0.1 / 1000.1, epsilon = 1e-12);
         assert!(!a.flows_approx_eq(&b, 1e-6));
@@ -240,25 +220,24 @@ mod tests {
 
     #[test]
     fn nan_never_reports_converged() {
-        let r = registry();
-        let a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
-        let b = Stream::from_flows(&r, vec![f64::NAN, 360.0, 600.0], 298.15, 101.325);
+        let r = demo_registry();
+        let a = feed(&r);
+        let b = Stream::from_flows(&r, vec![f64::NAN, 360.0, 600.0], AMBIENT_K, AMBIENT_KPA);
         assert!(a.max_flow_residual(&b).is_nan());
         assert!(!a.flows_approx_eq(&b, 1e9));
     }
 
     #[test]
     fn two_empty_streams_are_equal() {
-        let r = registry();
-        let a = Stream::zeros(&r, 298.15, 101.325);
-        assert!(a.flows_approx_eq(&Stream::zeros(&r, 298.15, 101.325), 1e-9));
+        let r = demo_registry();
+        let a = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
+        assert!(a.flows_approx_eq(&Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA), 1e-9));
     }
 
     #[test]
     fn mass_fractions_sum_to_one_and_match_the_recipe() {
-        let r = registry();
-        let s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
-        let f = s.mass_fractions();
+        let r = demo_registry();
+        let f = feed(&r).mass_fractions();
         assert_relative_eq!(f[0], 0.04);
         assert_relative_eq!(f[1], 0.36);
         assert_relative_eq!(f[2], 0.60);
@@ -267,25 +246,25 @@ mod tests {
 
     #[test]
     fn mass_fractions_of_an_empty_stream_are_zero_not_nan() {
-        let r = registry();
-        let f = Stream::zeros(&r, 298.15, 101.325).mass_fractions();
+        let r = demo_registry();
+        let f = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA).mass_fractions();
         assert_eq!(f, vec![0.0, 0.0, 0.0]);
     }
 
     #[test]
     fn scaling_changes_the_amount_but_not_the_recipe() {
-        let r = registry();
-        let s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        let r = demo_registry();
+        let s = feed(&r);
         let split = s.scaled(0.3);
         assert_relative_eq!(split.total(), 300.0);
         assert_relative_eq!(split.mass_fractions()[0], s.mass_fractions()[0]);
-        assert_relative_eq!(split.temperature(), 298.15);
+        assert_relative_eq!(split.temperature(), AMBIENT_K);
     }
 
     #[test]
     fn splitting_a_stream_in_two_conserves_mass() {
-        let r = registry();
-        let s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        let r = demo_registry();
+        let s = feed(&r);
         let mut recombined = s.scaled(0.3);
         recombined += &s.scaled(0.7);
         assert!(s.flows_approx_eq(&recombined, 1e-12));
@@ -293,12 +272,12 @@ mod tests {
 
     #[test]
     fn add_assign_sums_species_and_totals() {
-        let r = registry();
-        let mut a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        let r = demo_registry();
+        let mut a = feed(&r);
         let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], 350.0, 200.0);
         a += &b;
         assert_relative_eq!(a[r.find("SiO2", Phase::Solid).unwrap()], 380.0);
         assert_relative_eq!(a.total(), 1060.0);
-        assert_relative_eq!(a.temperature(), 298.15); // b's temperature is ignored, by design
+        assert_relative_eq!(a.temperature(), AMBIENT_K); // b's temperature is ignored, by design
     }
 }
