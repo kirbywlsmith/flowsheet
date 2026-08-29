@@ -91,6 +91,7 @@ impl Flowsheet {
         });
         UnitId((self.units.len() - 1) as u16)
     }
+    
     /// Connects `start` to `end` with a new stream.
     ///
     /// Note that order of a unit's inlets and outlets is determined by the way this is called.
