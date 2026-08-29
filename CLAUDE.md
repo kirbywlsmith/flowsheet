@@ -59,7 +59,7 @@ Never mix severities in one unlabelled list.
 
 - Unit tests in-file (`#[cfg(test)] mod tests`) — can see private items.
 - `tests/` for end-to-end flowsheet solves. Empty until the solver exists.
-- Every completed TODO item ships with tests.
+- Every completed TODO item ships with tests. Demo and example code is illustrative and exempt.
 
 ## Commands
 
