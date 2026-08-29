@@ -79,6 +79,14 @@ impl Stream {
     pub fn flows_approx_eq(&self, other: &Stream, tolerance: f64) -> bool {
         self.max_flow_residual(other) <= tolerance
     }
+    /// A `Stream` with zero total flow returns a zero vector.
+    pub fn mass_fractions(&self) -> Vec<f64> {
+        let total = self.total();
+        if total == 0.0 {
+            return vec![0.0; self.flows.len()];
+        }
+        self.flows.iter().map(|f| f / total).collect()
+    }
     pub fn temperature(&self) -> f64 {
         self.temperature
     }
