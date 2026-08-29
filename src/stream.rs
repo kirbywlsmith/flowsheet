@@ -163,4 +163,39 @@ mod tests {
         let r = registry();
         Stream::from_flows(&r, vec![40.0, 360.0], 298.15, 101.325);
     }
+
+    #[test]
+    fn identical_streams_have_zero_residual() {
+        let r = registry();
+        let a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        assert_relative_eq!(a.max_flow_residual(&a.clone()), 0.0);
+        assert!(a.flows_approx_eq(&a.clone(), 1e-9));
+    }
+
+    #[test]
+    fn residual_is_the_fraction_of_total_mass() {
+        let r = registry();
+        let a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        let b = Stream::from_flows(&r, vec![40.1, 360.0, 600.0], 298.15, 101.325);
+        // 0.1 t/h out of a 1000.1 t/h total
+        assert_relative_eq!(b.max_flow_residual(&a), 0.1 / 1000.1, epsilon = 1e-12);
+        assert!(!a.flows_approx_eq(&b, 1e-6));
+        assert!(a.flows_approx_eq(&b, 1e-3));
+    }
+
+    #[test]
+    fn nan_never_reports_converged() {
+        let r = registry();
+        let a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 298.15, 101.325);
+        let b = Stream::from_flows(&r, vec![f64::NAN, 360.0, 600.0], 298.15, 101.325);
+        assert!(a.max_flow_residual(&b).is_nan());
+        assert!(!a.flows_approx_eq(&b, 1e9));
+    }
+
+    #[test]
+    fn two_empty_streams_are_equal() {
+        let r = registry();
+        let a = Stream::zeros(&r, 298.15, 101.325);
+        assert!(a.flows_approx_eq(&Stream::zeros(&r, 298.15, 101.325), 1e-9));
+    }
 }
