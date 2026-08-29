@@ -3,7 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] `build_flowsheet()` wiring the target circuit by hand, minus the recycle (S4 deleted, mixer takes only S0)
 - [ ] Kahn topological sort, hand-rolled — in-degree count, queue, detect leftover nodes
 - [ ] Sequential-modular solve over the topo order; acyclic case only
 - [ ] ✅ Checkpoint: acyclic flowsheet solves, `S3 == S0` to 1e-9
