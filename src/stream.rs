@@ -121,6 +121,24 @@ impl std::ops::IndexMut<SpeciesId> for Stream {
     }
 }
 
+// TODO: temperature and pressure are not considered yet
+impl std::ops::AddAssign<&Stream> for Stream {
+    fn add_assign(&mut self, other: &Stream) {
+        assert_eq!(
+            self.flows.len(),
+            other.flows.len(),
+            "cannot add assign streams with {} and {} species",
+            self.flows.len(),
+            other.flows.len()
+        );
+
+        self.flows
+            .iter_mut()
+            .zip(other.flows.iter())
+            .for_each(|(f, o)| *f += o);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
