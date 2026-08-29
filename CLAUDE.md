@@ -30,7 +30,7 @@ Speed of delivery is explicitly not a goal.
 
 - **User writes the code.** Explain, review, and sketch small snippets. Don't implement features unless asked.
 - Prefer one clear recommendation over a survey of options.
-- Small edits (marking TODO items, config files) are fine to just do.
+- Small edits (removing finished TODO items, config files) are fine to just do.
 - Remember to update this CLAUDE.md file when it makes sense to do so.
 
 ## Review tagging
@@ -68,4 +68,4 @@ cargo test
 cargo clippy --all-targets
 ```
 
-Both must be clean before ticking a TODO item.
+Both must be clean before removing a TODO item.
