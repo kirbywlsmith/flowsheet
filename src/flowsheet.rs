@@ -107,8 +107,8 @@ impl Flowsheet {
         });
         UnitId((self.units.len() - 1) as u16)
     }
-    
-    /// Connects `start` to `end` with a new stream.
+
+    /// Connects `start` to `end` with the specified stream.
     ///
     /// Note that order of a unit's inlets and outlets is determined by the way this is called.
     pub fn add_stream(&mut self, start: UnitId, stream: Stream, end: UnitId) -> StreamId {
