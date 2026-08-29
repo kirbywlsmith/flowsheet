@@ -42,11 +42,8 @@ impl Stream {
     pub fn total(&self) -> f64 {
         self.flows.iter().sum()
     }
-    pub fn len(&self) -> usize {
+    pub fn species_count(&self) -> usize {
         self.flows.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.flows.is_empty()
     }
 }
 
