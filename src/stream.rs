@@ -87,6 +87,13 @@ impl Stream {
         }
         self.flows.iter().map(|f| f / total).collect()
     }
+    pub fn scaled(&self, factor: f64) -> Stream {
+        Stream {
+            flows: self.flows.iter().map(|f| f * factor).collect(),
+            temperature: self.temperature,
+            pressure: self.pressure,
+        }
+    }
     pub fn temperature(&self) -> f64 {
         self.temperature
     }
