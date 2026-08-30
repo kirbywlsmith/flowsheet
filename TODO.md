@@ -3,7 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] Kahn topological sort, hand-rolled — in-degree count, queue, detect leftover nodes
 - [ ] Sequential-modular solve over the topo order; acyclic case only
 - [ ] ✅ Checkpoint: acyclic flowsheet solves, `S3 == S0` to 1e-9
 - [ ] Error type: hand-rolled enum + `Display` + `std::error::Error` (do it manually once before reaching for

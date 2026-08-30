@@ -155,6 +155,66 @@ impl Flowsheet {
     pub fn validate(&self) -> Result<(), Vec<FlowsheetError>> {
         todo!()
     }
+
+    /// Groups the flowsheet's units into topologically ordered evaluation waves.
+    ///
+    /// Wave `i` holds every unit whose inlets are all evaluated at wave `i - 1`.
+    /// A wave's units are independent - they can be solved in parallel.
+    ///
+    /// # Errors
+    ///
+    /// Returns the units that could not be ordered - those inside a cycle or downstream of one.
+    pub fn evaluation_waves(&self) -> Result<Vec<Vec<UnitId>>, Vec<UnitId>> {
+        // The consuming unit of each stream
+        let mut consumer: Vec<Option<UnitId>> = vec![None; self.streams.len()];
+        for (i, unit) in self.units.iter().enumerate() {
+            for &s in &unit.inlets {
+                consumer[s.as_usize()] = Some(UnitId(i as u16));
+            }
+        }
+
+        // The unevaluated inlet stream count of each unit
+        let mut in_degree: Vec<usize> = self.units.iter().map(|u| u.inlets.len()).collect();
+
+        let mut current: Vec<UnitId> = in_degree
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &d)| (d == 0).then_some(UnitId(i as u16)))
+            .collect();
+
+        let mut waves: Vec<Vec<UnitId>> = Vec::new();
+
+        while !current.is_empty() {
+            let mut next = Vec::new();
+            for &unit in &current {
+                for &s in &self.units[unit.as_usize()].outlets {
+                    let Some(downstream) = consumer[s.as_usize()] else {
+                        continue;
+                    };
+                    let degree = &mut in_degree[downstream.as_usize()];
+                    *degree -= 1;
+                    if *degree == 0 {
+                        next.push(downstream);
+                    }
+                }
+            }
+
+            waves.push(std::mem::replace(&mut current, next));
+        }
+
+        // Any leftover units with unevaluated inlet streams are a part of, or downstream of, a cycle
+        let leftover: Vec<UnitId> = in_degree
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &d)| (d > 0).then_some(UnitId(i as u16)))
+            .collect();
+
+        if leftover.is_empty() {
+            Ok(waves)
+        } else {
+            Err(leftover)
+        }
+    }
 }
 
 impl std::ops::Index<StreamId> for Flowsheet {
@@ -345,5 +405,97 @@ mod tests {
 
         assert_eq!(fs.units[u_product.as_usize()].inlets, vec![s3]);
         assert!(fs.units[u_product.as_usize()].outlets.is_empty());
+    }
+
+    // ---- topological sort ----
+
+    #[test]
+    fn empty_flowsheet_has_no_waves() {
+        let fs = Flowsheet::new(demo_registry());
+        assert_eq!(fs.evaluation_waves().unwrap(), Vec::<Vec<UnitId>>::new());
+    }
+
+    #[test]
+    fn acyclic_circuit_sorts_into_one_wave_per_depth() {
+        // The demo circuit is the target flowsheet with the recycle not yet wired:
+        // feed -> mixer -> tank -> splitter -> {bleed, product}.
+        let fs = crate::demo::build_flowsheet();
+
+        let waves = fs.evaluation_waves().expect("demo circuit is acyclic");
+
+        assert_eq!(
+            waves,
+            vec![
+                vec![UnitId(0)], // feed
+                vec![UnitId(1)], // mixer
+                vec![UnitId(2)], // tank
+                vec![UnitId(3)], // splitter
+                // Both splitter outlets clear at once — nothing orders them
+                // relative to each other.
+                vec![UnitId(4), UnitId(5)],
+            ]
+        );
+    }
+
+    #[test]
+    fn parallel_branches_share_a_wave_and_the_merge_waits_for_both() {
+        // feed -> splitter -> {tank_a, tank_b} -> mixer -> product
+        let r = demo_registry();
+        let mut fs = Flowsheet::new(demo_registry());
+
+        let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
+        let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.5 });
+        let u_a = fs.add_unit(UnitOp::Tank);
+        let u_b = fs.add_unit(UnitOp::Tank);
+        let u_mix = fs.add_unit(UnitOp::Mixer);
+        let u_product = fs.add_unit(UnitOp::Product);
+
+        fs.add_stream(u_feed, blank(&r), u_split);
+        fs.add_stream(u_split, blank(&r), u_a);
+        fs.add_stream(u_split, blank(&r), u_b);
+        fs.add_stream(u_a, blank(&r), u_mix);
+        fs.add_stream(u_b, blank(&r), u_mix);
+        fs.add_stream(u_mix, blank(&r), u_product);
+
+        let waves = fs.evaluation_waves().expect("diamond is acyclic");
+
+        assert_eq!(
+            waves,
+            vec![
+                vec![u_feed],
+                vec![u_split],
+                vec![u_a, u_b], // independent — the point of emitting waves
+                vec![u_mix],    // waits for BOTH branches, not just the first
+                vec![u_product],
+            ]
+        );
+    }
+
+    #[test]
+    fn recycle_circuit_reports_the_units_it_could_not_order() {
+        // The full target circuit. S4 closes the loop, so no topological order exists
+        // and the solver has to tear the recycle instead.
+        let r = demo_registry();
+        let mut fs = Flowsheet::new(demo_registry());
+
+        let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
+        let u_mixer = fs.add_unit(UnitOp::Mixer);
+        let u_tank = fs.add_unit(UnitOp::Tank);
+        let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.3 });
+        let u_product = fs.add_unit(UnitOp::Product);
+
+        fs.add_stream(u_feed, blank(&r), u_mixer);
+        fs.add_stream(u_mixer, blank(&r), u_tank);
+        fs.add_stream(u_tank, blank(&r), u_split);
+        fs.add_stream(u_split, blank(&r), u_mixer); // S4, the recycle
+        fs.add_stream(u_split, blank(&r), u_product);
+
+        let leftover = fs
+            .evaluation_waves()
+            .expect_err("recycle circuit is cyclic");
+
+        // The feed still sorts; everything from the mixer onwards is blocked, either
+        // by the cycle itself or by sitting downstream of it.
+        assert_eq!(leftover, vec![u_mixer, u_tank, u_split, u_product]);
     }
 }
