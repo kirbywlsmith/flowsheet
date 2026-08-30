@@ -54,16 +54,18 @@ pub enum UnitOp {
 
 impl UnitOp {
     /// Evaluates a unit operation's outlet [`Stream`]s.
-    pub fn evaluate(&self, inlets: &[Stream]) -> Vec<Stream> {
+    pub fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
         match self {
             UnitOp::Feed { stream } => vec![stream.clone()],
-            UnitOp::Mixer => vec![mix(inlets).expect("mixer needs at least one inlet")],
+            UnitOp::Mixer => {
+                vec![mix(inlets.iter().copied()).expect("mixer needs at least one inlet")]
+            }
             UnitOp::Tank => vec![inlets[0].clone()],
             UnitOp::Splitter { fraction } => {
-                let (a, b) = split(&inlets[0], *fraction);
+                let (a, b) = split(inlets[0], *fraction);
                 vec![a, b]
             }
-            UnitOp::SplitterN { ratios } => split_n(&inlets[0], ratios),
+            UnitOp::SplitterN { ratios } => split_n(inlets[0], ratios),
             UnitOp::Product => vec![],
         }
     }
@@ -72,7 +74,6 @@ impl UnitOp {
 /// A distinct section of a system that takes inlet [`Stream`]s and performs a [`UnitOp`] to produce outlet streams.
 #[derive(Debug)]
 pub struct Unit {
-    #[allow(dead_code)] // TODO: temp
     op: UnitOp,
     inlets: Vec<StreamId>,
     outlets: Vec<StreamId>,
@@ -153,7 +154,8 @@ impl Flowsheet {
     // TODO: when implementing the solver, have validate return flowsheet errors OR a ValidFlowsheet wrapper. Only expose solve() on the ValidFlowsheet
     /// Validates the current state of the flowsheet.
     pub fn validate(&self) -> Result<(), Vec<FlowsheetError>> {
-        todo!()
+        // TODO: implement this
+        Ok(())
     }
 
     /// Groups the flowsheet's units into topologically ordered evaluation waves.
@@ -215,6 +217,31 @@ impl Flowsheet {
             Err(leftover)
         }
     }
+
+    /// Evaluates one unit, writing its results into the unit's outlet streams.
+    pub(crate) fn evaluate_unit(&mut self, id: UnitId) {
+        let Flowsheet { units, streams, .. } = self;
+        let unit = &units[id.as_usize()];
+
+        let outputs = {
+            let inlets: Vec<&Stream> = unit
+                .inlets
+                .iter()
+                .map(|&s| &streams[s.as_usize()])
+                .collect();
+
+            unit.op.evaluate(&inlets)
+        };
+
+        debug_assert_eq!(
+            outputs.len(),
+            unit.outlets.len(),
+            "unit {id:?} outlet count mismatch during evaluation"
+        );
+        for (&s, out) in unit.outlets.iter().zip(outputs) {
+            streams[s.as_usize()] = out;
+        }
+    }
 }
 
 impl std::ops::Index<StreamId> for Flowsheet {
@@ -236,8 +263,8 @@ mod tests {
     use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
     use approx::assert_relative_eq;
 
-    /// A placeholder stream value — the solver overwrites these during a solve.
-    fn blank(registry: &crate::species::SpeciesRegistry) -> Stream {
+    /// A placeholder stream value — the solver overwrites these.
+    fn blank(registry: &SpeciesRegistry) -> Stream {
         Stream::zeros(registry, AMBIENT_K, AMBIENT_KPA)
     }
 
@@ -317,7 +344,7 @@ mod tests {
         let a = feed(&r);
         let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], AMBIENT_K, AMBIENT_KPA);
 
-        let outs = UnitOp::Mixer.evaluate(&[a, b]);
+        let outs = UnitOp::Mixer.evaluate(&[&a, &b]);
 
         assert_eq!(outs.len(), 1);
         assert_relative_eq!(outs[0].total(), 1060.0, max_relative = 1e-12);
@@ -328,7 +355,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = UnitOp::Tank.evaluate(std::slice::from_ref(&inlet));
+        let outs = UnitOp::Tank.evaluate(&[&inlet]);
 
         assert_eq!(outs.len(), 1);
         assert!(inlet.flows_approx_eq(&outs[0], 1e-12));
@@ -339,7 +366,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = UnitOp::Splitter { fraction: 0.3 }.evaluate(std::slice::from_ref(&inlet));
+        let outs = UnitOp::Splitter { fraction: 0.3 }.evaluate(&[&inlet]);
 
         assert_eq!(outs.len(), 2);
         assert_relative_eq!(outs[0].total(), 300.0, max_relative = 1e-12);
@@ -354,7 +381,7 @@ mod tests {
             ratios: vec![1.0, 1.0, 2.0],
         };
 
-        let outs = op.evaluate(std::slice::from_ref(&inlet));
+        let outs = op.evaluate(&[&inlet]);
 
         assert_eq!(outs.len(), 3);
         assert_relative_eq!(outs[0].total(), 250.0, max_relative = 1e-12);
@@ -364,7 +391,7 @@ mod tests {
     #[test]
     fn product_consumes_its_inlet_and_emits_nothing() {
         let r = demo_registry();
-        let outs = UnitOp::Product.evaluate(std::slice::from_ref(&feed(&r)));
+        let outs = UnitOp::Product.evaluate(&[&feed(&r)]);
         assert!(outs.is_empty());
     }
 

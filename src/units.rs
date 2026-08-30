@@ -3,10 +3,10 @@
 use crate::stream::Stream;
 
 /// Mixes a number of inlets into a single combined [`Stream`].
-pub fn mix(inlets: &[Stream]) -> Option<Stream> {
-    let (first, rest) = inlets.split_first()?;
-    let mut result = first.clone();
-    for s in rest {
+pub fn mix<'a>(inlets: impl IntoIterator<Item = &'a Stream>) -> Option<Stream> {
+    let mut inlets = inlets.into_iter();
+    let mut result = inlets.next()?.clone();
+    for s in inlets {
         result += s;
     }
     Some(result)
