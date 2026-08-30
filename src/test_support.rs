@@ -17,7 +17,7 @@ pub fn feed(registry: &SpeciesRegistry) -> Stream {
     crate::demo::feed_stream(registry)
 }
 
-/// Every `SpeciesId` in the registry, in index order.
+/// Every [`SpeciesId`] in the registry, in index order.
 pub fn all_ids(registry: &SpeciesRegistry) -> Vec<SpeciesId> {
     [
         ("CuFeS2", Phase::Solid),

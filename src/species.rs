@@ -11,7 +11,7 @@ pub enum Phase {
     Gas,
 }
 
-/// Used to index a `SpeciesRegistry`.
+/// Used to index a [`SpeciesRegistry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SpeciesId(u16);
 
@@ -31,7 +31,7 @@ pub struct Species {
     pub name: String,
     /// The phase of the species.
     ///
-    /// e.g. `Phase::Liquid`
+    /// e.g. [`Phase::Liquid`]
     pub phase: Phase,
     /// The molar mass of the species, in g/mol.
     ///
@@ -39,7 +39,7 @@ pub struct Species {
     pub molar_mass: f64,
 }
 
-/// Contains a specific set of `Species`.
+/// Contains a specific set of [`Species`].
 #[derive(Debug, Default)]
 pub struct SpeciesRegistry {
     species: Vec<Species>,
@@ -58,12 +58,12 @@ impl SpeciesRegistry {
         }
     }
 
-    /// Returns an optional reference to the specified species.
+    /// Returns an optional reference to the specified [`Species`].
     pub fn get(&self, id: SpeciesId) -> Option<&Species> {
         self.species.get(id.as_usize())
     }
 
-    /// Searches for a species by `name` and `phase`, returning its optional `SpeciesId`.
+    /// Searches for a species by `name` and `phase`, returning its optional [`SpeciesId`].
     pub fn find(&self, name: &str, phase: Phase) -> Option<SpeciesId> {
         self.species
             .iter()

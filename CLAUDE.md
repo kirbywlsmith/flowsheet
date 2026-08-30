@@ -67,6 +67,7 @@ Never mix severities in one unlabelled list.
 ```bash
 cargo test
 cargo clippy --all-targets
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 ```
 
-Both must be clean before removing a TODO item.
+All three must be clean before removing a TODO item.

@@ -5,7 +5,7 @@ use crate::species::{SpeciesId, SpeciesRegistry};
 /// A moving flow of material or energy that enters, leaves, or connects different processing units in a system.
 #[derive(Debug, Clone)]
 pub struct Stream {
-    /// Absolute mass flow per species (t/h), indexed by `SpeciesId`.
+    /// Absolute mass flow per species (t/h), indexed by [`SpeciesId`].
     flows: Vec<f64>,
     /// The temperature of the stream, in Kelvin.
     temperature: f64,
@@ -23,7 +23,7 @@ impl Stream {
         }
     }
 
-    /// Builds a stream from explicit per-species flows, in `SpeciesId` order.
+    /// Builds a stream from explicit per-species flows, in [`SpeciesId`] order.
     ///
     /// # Panics
     /// If `flows.len()` doesn't match `registry.len()`.
@@ -59,7 +59,7 @@ impl Stream {
         self.pressure
     }
 
-    /// Number of species slots, matching the registry this stream was built from.
+    /// Number of species slots, matching the [`SpeciesRegistry`] this stream was built from.
     pub fn species_count(&self) -> usize {
         self.flows.len()
     }
@@ -116,7 +116,7 @@ impl Stream {
             })
     }
 
-    /// True if `max_flow_residual` is within `tolerance`. Typical `tolerance` is 1e-6.
+    /// True if [`Stream::max_flow_residual`] is within `tolerance`. Typical `tolerance` is 1e-6.
     pub fn flows_approx_eq(&self, other: &Stream, tolerance: f64) -> bool {
         self.max_flow_residual(other) <= tolerance
     }

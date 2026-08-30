@@ -4,7 +4,7 @@ use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 use crate::units::{mix, split, split_n};
 
-/// Used to index a `Flowsheet`'s units.
+/// Used to index a [`Flowsheet`]'s units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UnitId(u16);
 
@@ -15,7 +15,7 @@ impl UnitId {
     }
 }
 
-/// Used to index a `Flowsheet`'s streams.
+/// Used to index a [`Flowsheet`]'s streams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StreamId(u16);
 
@@ -31,7 +31,7 @@ impl StreamId {
 pub enum UnitOp {
     /// One outlet.
     Feed {
-        /// The outlet stream.
+        /// The outlet [`Stream`].
         stream: Stream,
     },
     /// Combines all inlets into one outlet.
@@ -53,7 +53,7 @@ pub enum UnitOp {
 }
 
 impl UnitOp {
-    /// Evaluates a unit operation's outlet streams.
+    /// Evaluates a unit operation's outlet [`Stream`]s.
     pub fn evaluate(&self, inlets: &[Stream]) -> Vec<Stream> {
         match self {
             UnitOp::Feed { stream } => vec![stream.clone()],
@@ -69,7 +69,7 @@ impl UnitOp {
     }
 }
 
-/// A distinct section of a system that takes inlet streams and performs an operation to produce outlet streams.
+/// A distinct section of a system that takes inlet [`Stream`]s and performs a [`UnitOp`] to produce outlet streams.
 #[derive(Debug)]
 pub struct Unit {
     #[allow(dead_code)] // TODO: temp
@@ -78,7 +78,7 @@ pub struct Unit {
     outlets: Vec<StreamId>,
 }
 
-/// Represents the units, species and streams that make up a process.
+/// Represents the [`Unit`]s, [`SpeciesRegistry`] and [`Stream`]s that make up a process.
 #[derive(Debug)]
 pub struct Flowsheet {
     registry: SpeciesRegistry,
@@ -115,7 +115,7 @@ pub enum FlowsheetError {
 }
 
 impl Flowsheet {
-    /// Creates a new flowsheet
+    /// Creates a new [`Flowsheet`].
     pub fn new(registry: SpeciesRegistry) -> Self {
         Self {
             registry,
@@ -124,12 +124,12 @@ impl Flowsheet {
         }
     }
 
-    /// Returns the flowsheet's species registry
+    /// Returns the flowsheet's [`SpeciesRegistry`].
     pub fn registry(&self) -> &SpeciesRegistry {
         &self.registry
     }
 
-    /// Adds a unit of the specified type, with no inlets or outlets.
+    /// Adds a [`Unit`] of the specified [`UnitOp`], with no inlets or outlets.
     pub fn add_unit(&mut self, op: UnitOp) -> UnitId {
         self.units.push(Unit {
             op,
@@ -139,7 +139,7 @@ impl Flowsheet {
         UnitId((self.units.len() - 1) as u16)
     }
 
-    /// Connects `start` to `end` with the specified stream.
+    /// Connects `start` to `end` with the given [`Stream`].
     ///
     /// Note that order of a unit's inlets and outlets is determined by the way this is called.
     pub fn add_stream(&mut self, start: UnitId, stream: Stream, end: UnitId) -> StreamId {

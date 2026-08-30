@@ -2,7 +2,7 @@
 
 use crate::stream::Stream;
 
-/// Mixes a number of inlets into a single combined stream.
+/// Mixes a number of inlets into a single combined [`Stream`].
 pub fn mix(inlets: &[Stream]) -> Option<Stream> {
     let (first, rest) = inlets.split_first()?;
     let mut result = first.clone();
@@ -12,7 +12,7 @@ pub fn mix(inlets: &[Stream]) -> Option<Stream> {
     Some(result)
 }
 
-/// Splits an inlet into a (`fraction`, `1.0 - fraction`) scaled tuple.
+/// Splits an inlet into a (`fraction`, `1.0 - fraction`) scaled [`Stream`] tuple.
 ///
 /// # Panics
 /// If `fraction` is:

@@ -12,7 +12,7 @@ pub const AMBIENT_K: f64 = 298.15;
 /// 1 atm in kPa.
 pub const AMBIENT_KPA: f64 = 101.325;
 
-/// The three species of the demo circuit: the valuable mineral, the gangue, and water.
+/// The three [`Species`] of the demo circuit: the valuable mineral, the gangue, and water.
 pub fn registry() -> SpeciesRegistry {
     let mut r = SpeciesRegistry::default();
     r.insert(Species {
@@ -38,7 +38,7 @@ pub fn feed_stream(registry: &SpeciesRegistry) -> Stream {
     Stream::from_flows(registry, vec![40.0, 360.0, 600.0], AMBIENT_K, AMBIENT_KPA)
 }
 
-/// Builds a demo flowsheet.
+/// Builds a demo [`Flowsheet`].
 pub fn build_flowsheet() -> Flowsheet {
     let r = registry();
 
