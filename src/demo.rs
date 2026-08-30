@@ -38,6 +38,7 @@ pub fn feed_stream(registry: &SpeciesRegistry) -> Stream {
     Stream::from_flows(registry, vec![40.0, 360.0, 600.0], AMBIENT_K, AMBIENT_KPA)
 }
 
+/// Builds a demo flowsheet.
 pub fn build_flowsheet() -> Flowsheet {
     let r = registry();
 

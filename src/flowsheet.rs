@@ -4,34 +4,48 @@ use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 use crate::units::{mix, split, split_n};
 
+/// Used to index a `Flowsheet`'s units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UnitId(u16);
 
 impl UnitId {
+    /// Returns the inner value as `usize`.
     pub fn as_usize(self) -> usize {
         self.0 as usize
     }
 }
 
+/// Used to index a `Flowsheet`'s streams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StreamId(u16);
 
 impl StreamId {
+    /// Returns the inner value as `usize`.
     pub fn as_usize(self) -> usize {
         self.0 as usize
     }
 }
 
+/// The different types of supported unit operations and their parameters.
 #[derive(Debug, Clone)]
 pub enum UnitOp {
-    /// One outlet
-    Feed { stream: Stream },
+    /// One outlet.
+    Feed {
+        /// The outlet stream.
+        stream: Stream,
+    },
     /// Combines all inlets into one outlet.
     Mixer,
     /// One inlet, two outlets: `fraction` and `1.0 - fraction`.
-    Splitter { fraction: f64 },
+    Splitter {
+        /// The `fraction` to pass to [`split`]
+        fraction: f64,
+    },
     /// One inlet, one outlet per ratio.
-    SplitterN { ratios: Vec<f64> },
+    SplitterN {
+        /// The `ratios` to pass to [`split_n`]
+        ratios: Vec<f64>,
+    },
     /// One inlet, one outlet
     Tank,
     /// One inlet
@@ -39,6 +53,7 @@ pub enum UnitOp {
 }
 
 impl UnitOp {
+    /// Evaluates a unit operation's outlet streams.
     pub fn evaluate(&self, inlets: &[Stream]) -> Vec<Stream> {
         match self {
             UnitOp::Feed { stream } => vec![stream.clone()],
@@ -54,13 +69,16 @@ impl UnitOp {
     }
 }
 
+/// A distinct section of a system that takes inlet streams and performs an operation to produce outlet streams.
 #[derive(Debug)]
 pub struct Unit {
+    #[allow(dead_code)] // TODO: temp
     op: UnitOp,
     inlets: Vec<StreamId>,
     outlets: Vec<StreamId>,
 }
 
+/// Represents the units, species and streams that make up a process.
 #[derive(Debug)]
 pub struct Flowsheet {
     registry: SpeciesRegistry,
@@ -68,19 +86,30 @@ pub struct Flowsheet {
     streams: Vec<Stream>,
 }
 
+/// A type of validation error returned during [`Flowsheet::validate`].
 #[derive(Debug)]
 pub enum FlowsheetError {
+    /// A unit contains an unexpected number of inlet streams.
     WrongInletCount {
+        /// The specific unit.
         unit: UnitId,
+        /// The expected number of inlet streams.
         expected: usize,
+        /// The actual number of inlet streams.
         found: usize,
     },
+    /// A unit contains an unexpected number of outlet streams.
     WrongOutletCount {
+        /// The specific unit.
         unit: UnitId,
+        /// The expected number of outlet streams.
         expected: usize,
+        /// The actual number of outlet streams.
         found: usize,
     },
+    /// A stream is missing a source or target unit.
     DanglingStream {
+        /// The specific stream.
         stream: StreamId,
     },
 }
@@ -122,6 +151,7 @@ impl Flowsheet {
     }
 
     // TODO: when implementing the solver, have validate return flowsheet errors OR a ValidFlowsheet wrapper. Only expose solve() on the ValidFlowsheet
+    /// Validates the current state of the flowsheet.
     pub fn validate(&self) -> Result<(), Vec<FlowsheetError>> {
         todo!()
     }
