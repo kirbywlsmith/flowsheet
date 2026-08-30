@@ -1,3 +1,5 @@
+//! Unit data structures.
+
 use crate::stream::Stream;
 
 /// Mixes a number of inlets into a single combined stream.

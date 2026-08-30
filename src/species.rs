@@ -1,34 +1,54 @@
+//! Species data structures.
+
+/// A distinct form in which matter can exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Phase {
+    /// A state of matter in which atoms are closely packed.
+    Solid,
+    /// A state of matter with a definite volume but no fixed shape.
+    Liquid,
+    /// A state of matter with neither fixed volume nor fixed shape.
+    Gas,
+}
+
+/// Used to index a `SpeciesRegistry`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SpeciesId(u16);
 
 impl SpeciesId {
+    /// Returns the inner value as `usize`.
     pub fn as_usize(self) -> usize {
         self.0 as usize
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Phase {
-    Solid,
-    Liquid,
-    Gas,
-}
-
+/// A species is a distinct particle type within a system.
 #[derive(Debug, Clone)]
 pub struct Species {
+    /// The name of the species.
+    ///
+    /// e.g. H2O
     pub name: String,
+    /// The phase of the species.
+    ///
+    /// e.g. `Phase::Liquid`
     pub phase: Phase,
+    /// The molar mass of the species, in g/mol.
+    ///
+    /// e.g. `18.015`
     pub molar_mass: f64,
 }
 
+/// Contains a specific set of `Species`.
 #[derive(Debug, Default)]
 pub struct SpeciesRegistry {
     species: Vec<Species>,
 }
 
 impl SpeciesRegistry {
-    // TODO: should handle duplicate insert with differing molar masses
+    /// Inserts `s` into the registry if it doesn't already exist.
     pub fn insert(&mut self, s: Species) -> SpeciesId {
+        // TODO: should handle duplicate insert with differing molar masses
         match self.find(&s.name, s.phase) {
             None => {
                 self.species.push(s);
@@ -37,18 +57,26 @@ impl SpeciesRegistry {
             Some(id) => id,
         }
     }
+
+    /// Returns an optional reference to the specified species.
     pub fn get(&self, id: SpeciesId) -> Option<&Species> {
         self.species.get(id.as_usize())
     }
+
+    /// Searches for a species by `name` and `phase`, returning its optional `SpeciesId`.
     pub fn find(&self, name: &str, phase: Phase) -> Option<SpeciesId> {
         self.species
             .iter()
             .position(|s| s.name == name && s.phase == phase)
             .map(|i| SpeciesId(i as u16))
     }
+
+    /// Returns the number of species in the registry.
     pub fn len(&self) -> usize {
         self.species.len()
     }
+
+    /// Returns `true` if the registry contains no species.
     pub fn is_empty(&self) -> bool {
         self.species.is_empty()
     }

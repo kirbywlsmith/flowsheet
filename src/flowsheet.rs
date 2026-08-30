@@ -1,3 +1,5 @@
+//! Flowsheet data structures.
+
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 use crate::units::{mix, split, split_n};

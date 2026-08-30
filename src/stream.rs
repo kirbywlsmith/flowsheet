@@ -1,17 +1,20 @@
+//! Stream data structures.
+
 use crate::species::{SpeciesId, SpeciesRegistry};
 
+/// A moving flow of material or energy that enters, leaves, or connects different processing units in a system.
 #[derive(Debug, Clone)]
 pub struct Stream {
-    /// Absolute mass flow per species (t/h), indexed by `SpeciesId`
+    /// Absolute mass flow per species (t/h), indexed by `SpeciesId`.
     flows: Vec<f64>,
-    /// Kelvin
+    /// The temperature of the stream, in Kelvin.
     temperature: f64,
-    /// kPa
+    /// The pressure of the stream, in kPa.
     pressure: f64,
 }
 
 impl Stream {
-    /// Creates a stream with zero flow of every species in `registry`.
+    /// Creates a stream with the flows equal to zero for each species in `registry`.
     pub fn zeros(registry: &SpeciesRegistry, temperature: f64, pressure: f64) -> Self {
         Self {
             flows: vec![0.0; registry.len()],
@@ -46,12 +49,12 @@ impl Stream {
         }
     }
 
-    /// Temperature in Kelvin.
+    /// The temperature of the stream, in Kelvin.
     pub fn temperature(&self) -> f64 {
         self.temperature
     }
 
-    /// Pressure in kPa.
+    /// The pressure of the stream, in kPa.
     pub fn pressure(&self) -> f64 {
         self.pressure
     }

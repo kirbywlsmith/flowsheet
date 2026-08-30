@@ -1,4 +1,7 @@
-// #![warn(missing_docs)]
+#![warn(missing_docs)]
+
+//! Process simulation library
+
 pub mod demo;
 pub mod flowsheet;
 pub mod solver;
