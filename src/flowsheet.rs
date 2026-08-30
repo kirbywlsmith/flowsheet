@@ -107,7 +107,7 @@ pub enum FlowsheetError {
         /// The actual number of outlet streams.
         found: usize,
     },
-    /// A stream is missing a source or target unit.
+    /// A stream is missing a source and/or target unit.
     DanglingStream {
         /// The specific stream.
         stream: StreamId,
