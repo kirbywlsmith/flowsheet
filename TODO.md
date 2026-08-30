@@ -30,4 +30,4 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
 - [ ] Later: more unit ops (heat exchanger, reactor, screen) and design constraints
 - [ ] Later: dynamic simulation — inventory/holdup, fixed-step integrator
 - [ ] Later: scenario runs and Monte Carlo over feed uncertainty
-- [ ] Later: C ABI (`extern "C"` + `cbindgen`) so .NET can P/Invoke it; UI on top of that
+- [ ] Later: C ABI (`extern "C"` + `cbindgen`) so .NET can P/Invoke it; UI on top of that - WinUI 3?
