@@ -1,6 +1,6 @@
 //! Solver data structures.
 
-use crate::flowsheet::{Flowsheet, FlowsheetError, UnitId};
+use crate::flowsheet::{UnitId, ValidFlowsheet};
 
 /// Configures a [`Solver`].
 #[derive(Debug)]
@@ -24,7 +24,7 @@ impl Default for SolverConfig {
     }
 }
 
-/// Solves a [`Flowsheet`].
+/// Solves a [`ValidFlowsheet`].
 #[derive(Debug, Default)]
 pub struct Solver {
     config: SolverConfig,
@@ -33,8 +33,6 @@ pub struct Solver {
 /// A type of error encountered when solving a flowsheet.
 #[derive(Debug)]
 pub enum SolveError {
-    /// The provided flowsheet state is invalid.
-    Invalid(Vec<FlowsheetError>),
     /// The flowsheet contains a cycle.
     Cycle(Vec<UnitId>),
     /// The residual was still above tolerance after [`SolverConfig::max_iterations`] passes.
@@ -65,11 +63,9 @@ impl Solver {
     ///
     /// # Errors
     ///
-    /// Returns [`SolveError::Invalid`] or [`SolveError::Cycle`] before any evaluation, and
-    /// [`SolveError::NotConverged`] if the residual is still above tolerance after
-    /// [`SolverConfig::max_iterations`] passes.
-    pub fn solve(&self, flowsheet: &mut Flowsheet) -> Result<SolveReport, SolveError> {
-        flowsheet.validate().map_err(SolveError::Invalid)?;
+    /// Returns [`SolveError::Cycle`] before any evaluation, and [`SolveError::NotConverged`] if
+    /// the residual is still above tolerance after [`SolverConfig::max_iterations`] passes.
+    pub fn solve(&self, flowsheet: &mut ValidFlowsheet) -> Result<SolveReport, SolveError> {
         let waves = flowsheet.evaluation_waves().map_err(SolveError::Cycle)?;
 
         let mut iterations = 0;

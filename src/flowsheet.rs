@@ -52,7 +52,57 @@ pub enum UnitOp {
     Product,
 }
 
+/// How many streams a [`UnitOp`] accepts on one side. `max` of `None` means unbounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Arity {
+    min: usize,
+    max: Option<usize>,
+}
+
+impl Arity {
+    /// Exactly `n` streams.
+    const fn exactly(n: usize) -> Self {
+        Self {
+            min: n,
+            max: Some(n),
+        }
+    }
+
+    /// At least `n` streams, with no upper bound.
+    const fn at_least(n: usize) -> Self {
+        Self { min: n, max: None }
+    }
+
+    /// Whether `found` streams satisfies this arity.
+    fn permits(self, found: usize) -> bool {
+        found >= self.min && self.max.is_none_or(|max| found <= max)
+    }
+}
+
 impl UnitOp {
+    /// How many inlet [`Stream`]s this operation requires.
+    fn inlet_arity(&self) -> Arity {
+        match self {
+            UnitOp::Feed { .. } => Arity::exactly(0),
+            UnitOp::Mixer => Arity::at_least(1),
+            UnitOp::Splitter { .. } | UnitOp::SplitterN { .. } => Arity::exactly(1),
+            UnitOp::Tank => Arity::exactly(1),
+            UnitOp::Product => Arity::exactly(1),
+        }
+    }
+
+    /// How many outlet [`Stream`]s this operation produces.
+    fn outlet_arity(&self) -> Arity {
+        match self {
+            UnitOp::Feed { .. } => Arity::exactly(1),
+            UnitOp::Mixer => Arity::exactly(1),
+            UnitOp::Splitter { .. } => Arity::exactly(2),
+            UnitOp::SplitterN { ratios } => Arity::exactly(ratios.len()),
+            UnitOp::Tank => Arity::exactly(1),
+            UnitOp::Product => Arity::exactly(0),
+        }
+    }
+
     /// Evaluates a unit operation's outlet [`Stream`]s.
     pub fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
         match self {
@@ -88,14 +138,16 @@ pub struct Flowsheet {
 }
 
 /// A type of validation error returned during [`Flowsheet::validate`].
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlowsheetError {
     /// A unit contains an unexpected number of inlet streams.
     WrongInletCount {
         /// The specific unit.
         unit: UnitId,
-        /// The expected number of inlet streams.
-        expected: usize,
+        /// The fewest inlet streams the unit's [`UnitOp`] accepts.
+        min: usize,
+        /// The most inlet streams the unit's [`UnitOp`] accepts. `None` is unbounded.
+        max: Option<usize>,
         /// The actual number of inlet streams.
         found: usize,
     },
@@ -103,13 +155,17 @@ pub enum FlowsheetError {
     WrongOutletCount {
         /// The specific unit.
         unit: UnitId,
-        /// The expected number of outlet streams.
-        expected: usize,
+        /// The fewest outlet streams the unit's [`UnitOp`] produces.
+        min: usize,
+        /// The most outlet streams the unit's [`UnitOp`] produces. `None` is unbounded.
+        max: Option<usize>,
         /// The actual number of outlet streams.
         found: usize,
     },
-    /// A stream is missing a source and/or target unit.
-    DanglingStream {
+    /// A stream leaves a unit and comes straight back into it.
+    SelfLoop {
+        /// The specific unit.
+        unit: UnitId,
         /// The specific stream.
         stream: StreamId,
     },
@@ -151,11 +207,58 @@ impl Flowsheet {
         stream_id
     }
 
-    // TODO: when implementing the solver, have validate return flowsheet errors OR a ValidFlowsheet wrapper. Only expose solve() on the ValidFlowsheet
-    /// Validates the current state of the flowsheet.
-    pub fn validate(&self) -> Result<(), Vec<FlowsheetError>> {
-        // TODO: implement this
-        Ok(())
+    /// Collects all structural problems in the flowsheet. An empty [`Vec`] means it is valid.
+    pub fn check(&self) -> Vec<FlowsheetError> {
+        let mut errors = Vec::new();
+
+        for (i, unit) in self.units.iter().enumerate() {
+            let id = UnitId(i as u16);
+
+            let inlets = unit.op.inlet_arity();
+            if !inlets.permits(unit.inlets.len()) {
+                errors.push(FlowsheetError::WrongInletCount {
+                    unit: id,
+                    min: inlets.min,
+                    max: inlets.max,
+                    found: unit.inlets.len(),
+                });
+            }
+
+            let outlets = unit.op.outlet_arity();
+            if !outlets.permits(unit.outlets.len()) {
+                errors.push(FlowsheetError::WrongOutletCount {
+                    unit: id,
+                    min: outlets.min,
+                    max: outlets.max,
+                    found: unit.outlets.len(),
+                });
+            }
+
+            for &s in &unit.outlets {
+                if unit.inlets.contains(&s) {
+                    errors.push(FlowsheetError::SelfLoop {
+                        unit: id,
+                        stream: s,
+                    });
+                }
+            }
+        }
+
+        errors
+    }
+
+    /// Consumes the flowsheet and returns a [`ValidFlowsheet`] if it is valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`FlowsheetError`] found by [`Flowsheet::check`].
+    pub fn validate(self) -> Result<ValidFlowsheet, Vec<FlowsheetError>> {
+        let errors = self.check();
+        if errors.is_empty() {
+            Ok(ValidFlowsheet(self))
+        } else {
+            Err(errors)
+        }
     }
 
     /// Groups the flowsheet's units into topologically ordered evaluation waves.
@@ -254,6 +357,43 @@ impl std::ops::Index<StreamId> for Flowsheet {
 impl std::ops::IndexMut<StreamId> for Flowsheet {
     fn index_mut(&mut self, id: StreamId) -> &mut Stream {
         &mut self.streams[id.as_usize()]
+    }
+}
+
+/// A [`Flowsheet`] that has passed [`Flowsheet::validate`].
+#[derive(Debug)]
+pub struct ValidFlowsheet(Flowsheet);
+
+impl ValidFlowsheet {
+    /// Returns the wrapped [`Flowsheet`].
+    pub fn into_inner(self) -> Flowsheet {
+        self.0
+    }
+
+    /// Evaluates one unit, writing its results into the unit's outlet streams.
+    pub(crate) fn evaluate_unit(&mut self, id: UnitId) {
+        self.0.evaluate_unit(id);
+    }
+}
+
+/// Read-only access to everything on [`Flowsheet`].
+impl std::ops::Deref for ValidFlowsheet {
+    type Target = Flowsheet;
+    fn deref(&self) -> &Flowsheet {
+        &self.0
+    }
+}
+
+impl std::ops::Index<StreamId> for ValidFlowsheet {
+    type Output = Stream;
+    fn index(&self, id: StreamId) -> &Stream {
+        &self.0[id]
+    }
+}
+
+impl std::ops::IndexMut<StreamId> for ValidFlowsheet {
+    fn index_mut(&mut self, id: StreamId) -> &mut Stream {
+        &mut self.0[id]
     }
 }
 
@@ -432,6 +572,183 @@ mod tests {
 
         assert_eq!(fs.units[u_product.as_usize()].inlets, vec![s3]);
         assert!(fs.units[u_product.as_usize()].outlets.is_empty());
+    }
+
+    // ---- arity ----
+
+    #[test]
+    fn arity_permits_only_counts_inside_the_range() {
+        assert!(!Arity::exactly(2).permits(1));
+        assert!(Arity::exactly(2).permits(2));
+        assert!(!Arity::exactly(2).permits(3));
+
+        assert!(!Arity::at_least(1).permits(0));
+        assert!(Arity::at_least(1).permits(1));
+        assert!(Arity::at_least(1).permits(9));
+    }
+
+    #[test]
+    fn every_op_declares_the_arity_its_evaluate_assumes() {
+        let r = demo_registry();
+        let cases = [
+            (
+                UnitOp::Feed { stream: feed(&r) },
+                (0, Some(0)),
+                (1, Some(1)),
+            ),
+            // The mixer is the only unbounded side in the model.
+            (UnitOp::Mixer, (1, None), (1, Some(1))),
+            (UnitOp::Tank, (1, Some(1)), (1, Some(1))),
+            (
+                UnitOp::Splitter { fraction: 0.3 },
+                (1, Some(1)),
+                (2, Some(2)),
+            ),
+            (
+                UnitOp::SplitterN {
+                    ratios: vec![1.0, 1.0, 2.0],
+                },
+                (1, Some(1)),
+                (3, Some(3)),
+            ),
+            (UnitOp::Product, (1, Some(1)), (0, Some(0))),
+        ];
+
+        for (op, inlets, outlets) in cases {
+            assert_eq!(
+                (op.inlet_arity().min, op.inlet_arity().max),
+                inlets,
+                "inlet arity of {op:?}"
+            );
+            assert_eq!(
+                (op.outlet_arity().min, op.outlet_arity().max),
+                outlets,
+                "outlet arity of {op:?}"
+            );
+        }
+    }
+
+    // ---- validation ----
+
+    #[test]
+    fn a_correctly_wired_flowsheet_has_no_errors() {
+        assert_eq!(crate::demo::build_flowsheet().check(), Vec::new());
+    }
+
+    #[test]
+    fn an_unwired_unit_is_reported_on_both_sides() {
+        // A lone tank has neither the inlet nor the outlet it needs — one error each,
+        // because `check` never stops at the first problem.
+        let mut fs = Flowsheet::new(demo_registry());
+        let tank = fs.add_unit(UnitOp::Tank);
+
+        assert_eq!(
+            fs.check(),
+            vec![
+                FlowsheetError::WrongInletCount {
+                    unit: tank,
+                    min: 1,
+                    max: Some(1),
+                    found: 0,
+                },
+                FlowsheetError::WrongOutletCount {
+                    unit: tank,
+                    min: 1,
+                    max: Some(1),
+                    found: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_mixer_accepts_any_number_of_inlets_but_not_zero() {
+        let r = demo_registry();
+        let mut fs = Flowsheet::new(demo_registry());
+        let mixer = fs.add_unit(UnitOp::Mixer);
+        let product = fs.add_unit(UnitOp::Product);
+        fs.add_stream(mixer, blank(&r), product);
+
+        // No inlets yet — the variadic side still has a floor of one.
+        assert!(matches!(
+            fs.check().as_slice(),
+            [FlowsheetError::WrongInletCount { unit, .. }] if *unit == mixer
+        ));
+
+        for _ in 0..3 {
+            let source = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
+            fs.add_stream(source, blank(&r), mixer);
+        }
+
+        assert_eq!(fs.check(), Vec::new());
+    }
+
+    #[test]
+    fn a_splitter_is_invalid_until_its_second_outlet_is_wired() {
+        // The point the incremental design turns on: a half-built unit is *temporarily*
+        // wrong, which is exactly why arity cannot be checked inside `add_stream`.
+        let r = demo_registry();
+        let mut fs = Flowsheet::new(demo_registry());
+        let source = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
+        let splitter = fs.add_unit(UnitOp::Splitter { fraction: 0.3 });
+        let first = fs.add_unit(UnitOp::Product);
+
+        fs.add_stream(source, blank(&r), splitter);
+        fs.add_stream(splitter, blank(&r), first);
+
+        assert_eq!(
+            fs.check(),
+            vec![FlowsheetError::WrongOutletCount {
+                unit: splitter,
+                min: 2,
+                max: Some(2),
+                found: 1,
+            }]
+        );
+
+        let second = fs.add_unit(UnitOp::Product);
+        fs.add_stream(splitter, blank(&r), second);
+        assert_eq!(fs.check(), Vec::new());
+    }
+
+    #[test]
+    fn a_stream_from_a_unit_back_into_itself_is_a_self_loop() {
+        let r = demo_registry();
+        let mut fs = Flowsheet::new(demo_registry());
+        let tank = fs.add_unit(UnitOp::Tank);
+
+        let s = fs.add_stream(tank, blank(&r), tank);
+
+        assert_eq!(
+            fs.check(),
+            vec![FlowsheetError::SelfLoop {
+                unit: tank,
+                stream: s,
+            }]
+        );
+    }
+
+    #[test]
+    fn validate_hands_back_a_solvable_flowsheet() {
+        let valid = crate::demo::build_flowsheet()
+            .validate()
+            .expect("the demo circuit is correctly wired");
+
+        // Deref gives read-only access to the wrapped flowsheet.
+        assert_eq!(valid.units.len(), 6);
+        assert!(valid.evaluation_waves().is_ok());
+    }
+
+    #[test]
+    fn validate_reports_every_error_at_once() {
+        // Two units, each broken on both sides: four errors from one call.
+        let mut fs = Flowsheet::new(demo_registry());
+        fs.add_unit(UnitOp::Tank);
+        fs.add_unit(UnitOp::Splitter { fraction: 0.3 });
+
+        let errors = fs.validate().expect_err("neither unit is wired");
+
+        assert_eq!(errors.len(), 4);
     }
 
     // ---- topological sort ----

@@ -11,13 +11,13 @@
 
 use approx::assert_relative_eq;
 use process_simulation::demo::{AMBIENT_K, AMBIENT_KPA, feed_stream, registry};
-use process_simulation::flowsheet::{Flowsheet, StreamId, UnitOp};
+use process_simulation::flowsheet::{Flowsheet, FlowsheetError, StreamId, UnitOp, ValidFlowsheet};
 use process_simulation::solver::{SolveError, Solver};
 use process_simulation::stream::Stream;
 
 /// A built flowsheet plus the stream ids needed to inspect the solved result.
 struct Circuit {
-    flowsheet: Flowsheet,
+    flowsheet: ValidFlowsheet,
     feed: StreamId,
     mixer_out: StreamId,
     tank_out: StreamId,
@@ -53,7 +53,7 @@ fn build(fraction: f64) -> Circuit {
     let product = fs.add_stream(u_split, blank, u_product);
 
     Circuit {
-        flowsheet: fs,
+        flowsheet: fs.validate().expect("the circuit above is correctly wired"),
         feed,
         mixer_out,
         tank_out,
@@ -165,6 +165,9 @@ fn a_recycle_is_reported_as_a_cycle() {
     fs.add_stream(u_split, blank.clone(), u_mixer); // recycle
     fs.add_stream(u_split, blank, u_product);
 
+    let mut fs = fs
+        .validate()
+        .expect("a recycle is a wiring cycle, not an arity error");
     let result = Solver::default().solve(&mut fs);
 
     match result {
@@ -176,4 +179,34 @@ fn a_recycle_is_reported_as_a_cycle() {
         }
         other => panic!("expected a cycle error, got {other:?}"),
     }
+}
+
+#[test]
+fn a_miswired_flowsheet_never_reaches_the_solver() {
+    // The splitter's second outlet is missing, so `evaluate` would produce two streams
+    // for one wired outlet and the extra would be dropped on the floor.
+    let r = registry();
+    let feed = feed_stream(&r);
+    let blank = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
+
+    let mut fs = Flowsheet::new(r);
+
+    let u_feed = fs.add_unit(UnitOp::Feed { stream: feed });
+    let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.3 });
+    let u_product = fs.add_unit(UnitOp::Product);
+
+    fs.add_stream(u_feed, blank.clone(), u_split);
+    fs.add_stream(u_split, blank, u_product);
+
+    let errors = fs.validate().expect_err("the splitter is one outlet short");
+
+    assert_eq!(
+        errors,
+        vec![FlowsheetError::WrongOutletCount {
+            unit: u_split,
+            min: 2,
+            max: Some(2),
+            found: 1,
+        }]
+    );
 }

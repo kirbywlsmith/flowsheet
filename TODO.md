@@ -3,8 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] Flesh out `Flowsheet::validate` — it currently returns `Ok(())` unconditionally, so
-  `SolveError::Invalid` is unreachable and a mis-wired unit reaches `evaluate_unit`
 - [ ] Error type: hand-rolled enum + `Display` + `std::error::Error` (do it manually once before reaching for
   `thiserror`)
 - [ ] Kill every `unwrap`/`panic` in library code; solver returns `Result`
