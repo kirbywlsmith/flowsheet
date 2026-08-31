@@ -1,6 +1,7 @@
 //! Solver data structures.
 
 use crate::flowsheet::{UnitId, ValidFlowsheet};
+use std::fmt;
 
 /// Configures a [`Solver`].
 #[derive(Debug)]
@@ -43,6 +44,27 @@ pub enum SolveError {
         residual: f64,
     },
 }
+
+impl fmt::Display for SolveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SolveError::Cycle(units) => write!(
+                f,
+                "flowsheet contains a cycle through {} units",
+                units.len()
+            ),
+            SolveError::NotConverged {
+                iterations,
+                residual,
+            } => write!(
+                f,
+                "no convergence after {iterations} passes (residual {residual:e})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SolveError {}
 
 /// The result of a converged [`Solver::solve`].
 #[derive(Debug)]
@@ -101,5 +123,37 @@ impl Solver {
             iterations,
             residual,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flowsheet::{Flowsheet, UnitOp};
+    use crate::test_support::demo_registry;
+
+    /// `UnitId`'s field is private outside `flowsheet`, so ids have to come from a real
+    /// flowsheet. The wiring is irrelevant here — only the count reaches the message.
+    fn two_unit_ids() -> Vec<UnitId> {
+        let mut fs = Flowsheet::new(demo_registry());
+        vec![fs.add_unit(UnitOp::Mixer), fs.add_unit(UnitOp::Product)]
+    }
+
+    #[test]
+    fn cycle_message_counts_the_units_it_could_not_order() {
+        let e = SolveError::Cycle(two_unit_ids());
+        assert_eq!(e.to_string(), "flowsheet contains a cycle through 2 units");
+    }
+
+    #[test]
+    fn not_converged_message_prints_the_residual_in_scientific_notation() {
+        let e = SolveError::NotConverged {
+            iterations: 100,
+            residual: 0.0015,
+        };
+        assert_eq!(
+            e.to_string(),
+            "no convergence after 100 passes (residual 1.5e-3)"
+        );
     }
 }

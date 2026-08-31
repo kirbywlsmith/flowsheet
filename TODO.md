@@ -3,8 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] Error type: hand-rolled enum + `Display` + `std::error::Error` (do it manually once before reaching for
-  `thiserror`)
 - [ ] Kill every `unwrap`/`panic` in library code; solver returns `Result`
 - [ ] Add S4 back; cycle detection via DFS colouring or Tarjan SCC — written by hand
 - [ ] Tear stream selection: pick one stream per SCC (start with "first stream into the SCC", note why heuristics

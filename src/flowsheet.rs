@@ -3,6 +3,7 @@
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 use crate::units::{mix, split, split_n};
+use std::fmt;
 
 /// Used to index a [`Flowsheet`]'s units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -15,6 +16,12 @@ impl UnitId {
     }
 }
 
+impl fmt::Display for UnitId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Used to index a [`Flowsheet`]'s streams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StreamId(u16);
@@ -23,6 +30,12 @@ impl StreamId {
     /// Returns the inner value as `usize`.
     pub fn as_usize(self) -> usize {
         self.0 as usize
+    }
+}
+
+impl fmt::Display for StreamId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -170,6 +183,44 @@ pub enum FlowsheetError {
         stream: StreamId,
     },
 }
+
+fn write_arity(
+    f: &mut fmt::Formatter<'_>,
+    unit: UnitId,
+    port: &str,
+    min: usize,
+    max: Option<usize>,
+    found: usize,
+) -> fmt::Result {
+    match max {
+        Some(max) => write!(f, "unit {unit} has {found} {port}, expected {min} to {max}"),
+        None => write!(f, "unit {unit} has {found} {port}, expected at least {min}"),
+    }
+}
+
+impl fmt::Display for FlowsheetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FlowsheetError::WrongInletCount {
+                unit,
+                max,
+                min,
+                found,
+            } => write_arity(f, *unit, "inlets", *min, *max, *found),
+            FlowsheetError::WrongOutletCount {
+                unit,
+                max,
+                min,
+                found,
+            } => write_arity(f, *unit, "outlets", *min, *max, *found),
+            FlowsheetError::SelfLoop { unit, stream } => {
+                write!(f, "stream {stream} leaves unit {unit} and returns to it")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FlowsheetError {}
 
 impl Flowsheet {
     /// Creates a new [`Flowsheet`].
@@ -841,5 +892,36 @@ mod tests {
         // The feed still sorts; everything from the mixer onwards is blocked, either
         // by the cycle itself or by sitting downstream of it.
         assert_eq!(leftover, vec![u_mixer, u_tank, u_split, u_product]);
+    }
+
+    #[test]
+    fn self_loop_names_the_stream() {
+        let e = FlowsheetError::SelfLoop {
+            unit: UnitId(2),
+            stream: StreamId(5),
+        };
+        assert_eq!(e.to_string(), "stream 5 leaves unit 2 and returns to it");
+    }
+
+    #[test]
+    fn arity_message_names_both_bounds_when_the_maximum_is_finite() {
+        let e = FlowsheetError::WrongOutletCount {
+            unit: UnitId(1),
+            min: 2,
+            max: Some(2),
+            found: 3,
+        };
+        assert_eq!(e.to_string(), "unit 1 has 3 outlets, expected 2 to 2");
+    }
+
+    #[test]
+    fn arity_message_reports_an_unbounded_maximum_as_a_floor() {
+        let e = FlowsheetError::WrongInletCount {
+            unit: UnitId(0),
+            min: 1,
+            max: None,
+            found: 0,
+        };
+        assert_eq!(e.to_string(), "unit 0 has 0 inlets, expected at least 1");
     }
 }
