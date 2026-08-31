@@ -2,9 +2,9 @@
 
 ## Project
 
-Open-source process simulation engine in Rust. Solves steady-state material balances over a
-flowsheet — a directed graph of units (mixers, splitters, tanks) connected by streams. Aim
-to eventually expand to also support dynamic behaviour in future.
+Open-source process simulation engine in Rust. Solves steady-state material balances over a flowsheet — a directed graph
+of units (mixers, splitters, tanks) connected by streams. Aim to eventually expand to also support dynamic behaviour in
+future.
 
 ## Goals
 
@@ -12,10 +12,9 @@ The primary goals are:
 
 - Learn Rust
 - Learn low-level systems concepts
- 
-The user has no prior exposure to Rust, so explain idioms and borrow-checker reasoning.
-The user has some minimal experience with C and C++.
-The user is most experienced with C# / .NET, so C# comparisons would be appreciated.
+
+The user has no prior exposure to Rust, so explain idioms and borrow-checker reasoning. The user has some minimal
+experience with C and C++. The user is most experienced with C# / .NET, so C# comparisons would be appreciated.
 
 Some secondary goals include:
 
@@ -47,13 +46,17 @@ Never mix severities in one unlabelled list.
 
 - Flows are **absolute mass per species (t/h)**, never fractions — one source of truth, mixing is a vector add.
 - Temperature in **Kelvin** (energy balance needs absolute), pressure in **kPa**.
-- `SpeciesId` / `UnitId` / `StreamId` are newtypes with **private fields**, so an invalid id can't be constructed.
+- `SpeciesId` / `UnitId` / `StreamId` are new types with **private fields**, so an invalid id can't be constructed.
 - Indexing (`registry[id]`, `stream[id]`) **panics** — a bad id is a bug in our code, not user input.
   `Result` is reserved for real user input (JSON loading).
 - Species registry uses a **linear scan**, not a HashMap. It holds 3–20 entries; two collections would desync.
 - Enum dispatch for unit ops first, trait objects later — the comparison is the point.
-- Outlet order is positional: the Nth `add_stream` from a unit matches the Nth stream from `UnitOp::evaluate`. Wiring a splitter backwards still balances mass, so it fails silently.
-- Flowsheets are built loosely then validated: `Flowsheet::validate` consumes `self` and hands back a `ValidFlowsheet`, which is the only thing `Solver::solve` accepts. Illegal-states-unrepresentable does not work here — a recycle forces a unit to be referenced before its upstream exists, and arity is only decidable once construction stops. `ValidFlowsheet` has `Deref` but deliberately no `DerefMut`, so the topology cannot change behind the validation.
+- Outlet order is positional: the Nth `add_stream` from a unit matches the Nth stream from `UnitOp::evaluate`. Wiring a
+  splitter backwards still balances mass, so it fails silently.
+- Flowsheets are built loosely then validated: `Flowsheet::validate` consumes `self` and hands back a `ValidFlowsheet`,
+  which is the only thing `Solver::solve` accepts. Illegal-states-unrepresentable does not work here — a recycle forces
+  a unit to be referenced before its upstream exists, and arity is only decidable once construction stops.
+  `ValidFlowsheet` has `Deref` but deliberately no `DerefMut`, so the topology cannot change behind the validation.
 - Kahn's topological sort emits **waves** (`Vec<Vec<UnitId>>`), not a flat order, so parallelism is free later.
 - Float equality: never `==`. `approx` (dev-dependency) in tests; `Stream::max_flow_residual` for the solver.
 
