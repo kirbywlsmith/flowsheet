@@ -129,8 +129,9 @@ impl Solver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flowsheet::{Flowsheet, UnitOp};
+    use crate::flowsheet::Flowsheet;
     use crate::test_support::demo_registry;
+    use crate::unit::UnitOp;
 
     /// `UnitId`'s field is private outside `flowsheet`, so ids have to come from a real
     /// flowsheet. The wiring is irrelevant here — only the count reaches the message.

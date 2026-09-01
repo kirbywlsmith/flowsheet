@@ -11,9 +11,10 @@
 
 use approx::assert_relative_eq;
 use process_simulation::demo::{AMBIENT_K, AMBIENT_KPA, feed_stream, registry};
-use process_simulation::flowsheet::{Flowsheet, FlowsheetError, StreamId, UnitOp, ValidFlowsheet};
+use process_simulation::flowsheet::{Flowsheet, FlowsheetError, StreamId, ValidFlowsheet};
 use process_simulation::solver::{SolveError, Solver};
 use process_simulation::stream::Stream;
+use process_simulation::unit::UnitOp;
 
 /// A built flowsheet plus the stream ids needed to inspect the solved result.
 struct Circuit {

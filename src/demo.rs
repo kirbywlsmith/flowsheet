@@ -3,9 +3,10 @@
 //! Kept in the library (rather than `examples/`) so `main.rs`, integration tests,
 //! and benchmarks can all build the same flowsheet.
 
-use crate::flowsheet::{Flowsheet, UnitOp};
+use crate::flowsheet::Flowsheet;
 use crate::species::{Phase, Species, SpeciesRegistry};
 use crate::stream::Stream;
+use crate::unit::UnitOp;
 
 /// 25 °C in Kelvin.
 pub const AMBIENT_K: f64 = 298.15;

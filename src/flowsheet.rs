@@ -4,7 +4,7 @@ mod topology;
 
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
-use crate::units::{mix, split, split_n};
+use crate::unit::{Unit, UnitOp};
 use std::fmt;
 
 /// Used to index a [`Flowsheet`]'s units.
@@ -39,109 +39,6 @@ impl fmt::Display for StreamId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
-}
-
-/// The different types of supported unit operations and their parameters.
-#[derive(Debug, Clone)]
-pub enum UnitOp {
-    /// One outlet.
-    Feed {
-        /// The outlet [`Stream`].
-        stream: Stream,
-    },
-    /// Combines all inlets into one outlet.
-    Mixer,
-    /// One inlet, two outlets: `fraction` and `1.0 - fraction`.
-    Splitter {
-        /// The `fraction` to pass to [`split`]
-        fraction: f64,
-    },
-    /// One inlet, one outlet per ratio.
-    SplitterN {
-        /// The `ratios` to pass to [`split_n`]
-        ratios: Vec<f64>,
-    },
-    /// One inlet, one outlet
-    Tank,
-    /// One inlet
-    Product,
-}
-
-/// How many streams a [`UnitOp`] accepts on one side. `max` of `None` means unbounded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Arity {
-    min: usize,
-    max: Option<usize>,
-}
-
-impl Arity {
-    /// Exactly `n` streams.
-    const fn exactly(n: usize) -> Self {
-        Self {
-            min: n,
-            max: Some(n),
-        }
-    }
-
-    /// At least `n` streams, with no upper bound.
-    const fn at_least(n: usize) -> Self {
-        Self { min: n, max: None }
-    }
-
-    /// Whether `found` streams satisfies this arity.
-    fn permits(self, found: usize) -> bool {
-        found >= self.min && self.max.is_none_or(|max| found <= max)
-    }
-}
-
-impl UnitOp {
-    /// How many inlet [`Stream`]s this operation requires.
-    fn inlet_arity(&self) -> Arity {
-        match self {
-            UnitOp::Feed { .. } => Arity::exactly(0),
-            UnitOp::Mixer => Arity::at_least(1),
-            UnitOp::Splitter { .. } | UnitOp::SplitterN { .. } => Arity::exactly(1),
-            UnitOp::Tank => Arity::exactly(1),
-            UnitOp::Product => Arity::exactly(1),
-        }
-    }
-
-    /// How many outlet [`Stream`]s this operation produces.
-    fn outlet_arity(&self) -> Arity {
-        match self {
-            UnitOp::Feed { .. } => Arity::exactly(1),
-            UnitOp::Mixer => Arity::exactly(1),
-            UnitOp::Splitter { .. } => Arity::exactly(2),
-            UnitOp::SplitterN { ratios } => Arity::exactly(ratios.len()),
-            UnitOp::Tank => Arity::exactly(1),
-            UnitOp::Product => Arity::exactly(0),
-        }
-    }
-
-    /// Evaluates a unit operation's outlet [`Stream`]s.
-    pub(crate) fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
-        match self {
-            UnitOp::Feed { stream } => vec![stream.clone()],
-            UnitOp::Mixer => {
-                vec![mix(inlets.iter().copied()).expect("mixer needs at least one inlet")]
-            }
-            UnitOp::Tank => vec![inlets[0].clone()],
-            UnitOp::Splitter { fraction } => {
-                let (a, b) = split(inlets[0], *fraction);
-                vec![a, b]
-            }
-            UnitOp::SplitterN { ratios } => split_n(inlets[0], ratios),
-            UnitOp::Product => vec![],
-        }
-    }
-}
-
-/// A distinct section of a system that takes inlet [`Stream`]s and performs a [`UnitOp`] to produce outlet streams.
-#[derive(Debug)]
-pub struct Unit {
-    op: UnitOp,
-    inlets: Vec<StreamId>,
-    outlets: Vec<StreamId>,
 }
 
 /// Represents the [`Unit`]s, [`SpeciesRegistry`] and [`Stream`]s that make up a process.
@@ -478,76 +375,6 @@ mod tests {
         assert_relative_eq!(fs[s].total(), 1000.0);
     }
 
-    // ---- evaluate ----
-
-    #[test]
-    fn feed_emits_its_stream_and_ignores_inlets() {
-        let r = demo_registry();
-        let op = UnitOp::Feed { stream: feed(&r) };
-
-        let outs = op.evaluate(&[]);
-
-        assert_eq!(outs.len(), 1);
-        assert_relative_eq!(outs[0].total(), 1000.0);
-    }
-
-    #[test]
-    fn mixer_sums_all_inlets_into_one_outlet() {
-        let r = demo_registry();
-        let a = feed(&r);
-        let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], AMBIENT_K, AMBIENT_KPA);
-
-        let outs = UnitOp::Mixer.evaluate(&[&a, &b]);
-
-        assert_eq!(outs.len(), 1);
-        assert_relative_eq!(outs[0].total(), 1060.0, max_relative = 1e-12);
-    }
-
-    #[test]
-    fn tank_passes_its_inlet_straight_through() {
-        let r = demo_registry();
-        let inlet = feed(&r);
-
-        let outs = UnitOp::Tank.evaluate(&[&inlet]);
-
-        assert_eq!(outs.len(), 1);
-        assert!(inlet.flows_approx_eq(&outs[0], 1e-12));
-    }
-
-    #[test]
-    fn splitter_returns_the_fraction_side_first() {
-        let r = demo_registry();
-        let inlet = feed(&r);
-
-        let outs = UnitOp::Splitter { fraction: 0.3 }.evaluate(&[&inlet]);
-
-        assert_eq!(outs.len(), 2);
-        assert_relative_eq!(outs[0].total(), 300.0, max_relative = 1e-12);
-        assert_relative_eq!(outs[1].total(), 700.0, max_relative = 1e-12);
-    }
-
-    #[test]
-    fn splitter_n_returns_one_outlet_per_ratio() {
-        let r = demo_registry();
-        let inlet = feed(&r);
-        let op = UnitOp::SplitterN {
-            ratios: vec![1.0, 1.0, 2.0],
-        };
-
-        let outs = op.evaluate(&[&inlet]);
-
-        assert_eq!(outs.len(), 3);
-        assert_relative_eq!(outs[0].total(), 250.0, max_relative = 1e-12);
-        assert_relative_eq!(outs[2].total(), 500.0, max_relative = 1e-12);
-    }
-
-    #[test]
-    fn product_consumes_its_inlet_and_emits_nothing() {
-        let r = demo_registry();
-        let outs = UnitOp::Product.evaluate(&[&feed(&r)]);
-        assert!(outs.is_empty());
-    }
-
     // ---- the target circuit ----
 
     #[test]
@@ -585,60 +412,6 @@ mod tests {
 
         assert_eq!(fs.units[u_product.as_usize()].inlets, vec![s3]);
         assert!(fs.units[u_product.as_usize()].outlets.is_empty());
-    }
-
-    // ---- arity ----
-
-    #[test]
-    fn arity_permits_only_counts_inside_the_range() {
-        assert!(!Arity::exactly(2).permits(1));
-        assert!(Arity::exactly(2).permits(2));
-        assert!(!Arity::exactly(2).permits(3));
-
-        assert!(!Arity::at_least(1).permits(0));
-        assert!(Arity::at_least(1).permits(1));
-        assert!(Arity::at_least(1).permits(9));
-    }
-
-    #[test]
-    fn every_op_declares_the_arity_its_evaluate_assumes() {
-        let r = demo_registry();
-        let cases = [
-            (
-                UnitOp::Feed { stream: feed(&r) },
-                (0, Some(0)),
-                (1, Some(1)),
-            ),
-            // The mixer is the only unbounded side in the model.
-            (UnitOp::Mixer, (1, None), (1, Some(1))),
-            (UnitOp::Tank, (1, Some(1)), (1, Some(1))),
-            (
-                UnitOp::Splitter { fraction: 0.3 },
-                (1, Some(1)),
-                (2, Some(2)),
-            ),
-            (
-                UnitOp::SplitterN {
-                    ratios: vec![1.0, 1.0, 2.0],
-                },
-                (1, Some(1)),
-                (3, Some(3)),
-            ),
-            (UnitOp::Product, (1, Some(1)), (0, Some(0))),
-        ];
-
-        for (op, inlets, outlets) in cases {
-            assert_eq!(
-                (op.inlet_arity().min, op.inlet_arity().max),
-                inlets,
-                "inlet arity of {op:?}"
-            );
-            assert_eq!(
-                (op.outlet_arity().min, op.outlet_arity().max),
-                outlets,
-                "outlet arity of {op:?}"
-            );
-        }
     }
 
     // ---- validation ----

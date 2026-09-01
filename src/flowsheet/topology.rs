@@ -172,10 +172,10 @@ impl<'a> Tarjan<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flowsheet::UnitOp;
     use crate::species::SpeciesRegistry;
     use crate::stream::Stream;
     use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
+    use crate::unit::UnitOp;
 
     /// A placeholder stream value - the solver overwrites these.
     fn blank(registry: &SpeciesRegistry) -> Stream {
