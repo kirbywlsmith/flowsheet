@@ -117,7 +117,7 @@ impl UnitOp {
     }
 
     /// Evaluates a unit operation's outlet [`Stream`]s.
-    pub fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
+    pub(crate) fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
         match self {
             UnitOp::Feed { stream } => vec![stream.clone()],
             UnitOp::Mixer => {

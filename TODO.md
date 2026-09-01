@@ -3,7 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] Kill every `unwrap`/`panic` in library code; solver returns `Result`
 - [ ] Add S4 back; cycle detection via DFS colouring or Tarjan SCC — written by hand
     - Add flowsheet::topology
     - Move unit related code to units mod
