@@ -314,8 +314,6 @@ impl Flowsheet {
         }
     }
 
-
-
     /// Evaluates one unit, writing its results into the unit's outlet streams.
     pub(crate) fn evaluate_unit(&mut self, id: UnitId) {
         let Flowsheet { units, streams, .. } = self;
@@ -401,6 +399,26 @@ mod tests {
     /// A placeholder stream value — the solver overwrites these.
     fn blank(registry: &SpeciesRegistry) -> Stream {
         Stream::zeros(registry, AMBIENT_K, AMBIENT_KPA)
+    }
+
+    fn acyclic_flowsheet() -> Flowsheet {
+        let r = demo_registry();
+        let mut fs = Flowsheet::new(demo_registry());
+
+        let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
+        let u_mixer = fs.add_unit(UnitOp::Mixer);
+        let u_tank = fs.add_unit(UnitOp::Tank);
+        let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.3 });
+        let u_bleed = fs.add_unit(UnitOp::Product);
+        let u_product = fs.add_unit(UnitOp::Product);
+
+        fs.add_stream(u_feed, blank(&r), u_mixer);
+        fs.add_stream(u_mixer, blank(&r), u_tank);
+        fs.add_stream(u_tank, blank(&r), u_split);
+        fs.add_stream(u_split, blank(&r), u_bleed);
+        fs.add_stream(u_split, blank(&r), u_product);
+
+        fs
     }
 
     // ---- arena ----
@@ -725,9 +743,9 @@ mod tests {
 
     #[test]
     fn validate_hands_back_a_solvable_flowsheet() {
-        let valid = crate::demo::build_flowsheet()
+        let valid = acyclic_flowsheet()
             .validate()
-            .expect("the demo circuit is correctly wired");
+            .expect("the chain is correctly wired");
 
         // Deref gives read-only access to the wrapped flowsheet.
         assert_eq!(valid.units.len(), 6);
@@ -756,11 +774,9 @@ mod tests {
 
     #[test]
     fn acyclic_circuit_sorts_into_one_wave_per_depth() {
-        // The demo circuit is the target flowsheet with the recycle not yet wired:
-        // feed -> mixer -> tank -> splitter -> {bleed, product}.
-        let fs = crate::demo::build_flowsheet();
+        let fs = acyclic_flowsheet();
 
-        let waves = fs.evaluation_waves().expect("demo circuit is acyclic");
+        let waves = fs.evaluation_waves().expect("the chain is acyclic");
 
         assert_eq!(
             waves,
