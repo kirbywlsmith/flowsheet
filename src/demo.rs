@@ -58,9 +58,7 @@ pub fn build_flowsheet() -> Flowsheet {
     let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.3 });
     fs.add_stream(u_tank, blank.clone(), u_split);
 
-    // TODO: this should become the recycle later
-    let u_bleed = fs.add_unit(UnitOp::Product);
-    fs.add_stream(u_split, blank.clone(), u_bleed);
+    fs.add_stream(u_split, blank.clone(), u_mixer);
 
     let u_product = fs.add_unit(UnitOp::Product);
     fs.add_stream(u_split, blank, u_product);

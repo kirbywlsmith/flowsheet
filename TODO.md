@@ -3,7 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] Add S4 back; cycle detection via DFS colouring or Tarjan SCC — written by hand
     - Move unit related code to units mod
 - [ ] Tear stream selection: pick one stream per SCC (start with "first stream into the SCC", note why heuristics
   matter)
