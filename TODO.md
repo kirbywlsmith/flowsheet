@@ -6,7 +6,6 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
 - [ ] Tear stream selection: pick one stream per SCC (start with "first stream into the SCC", note why heuristics
   matter)
 - [ ] Direct substitution loop: guess tear = zeros, iterate to convergence
-- [ ] `SolverConfig` (tolerance, max iterations) + `SolveReport` (iterations, final residual, converged flag)
 - [ ] Test: error shrinks by exactly f each pass; ~14 iterations at f=0.3, ~130 at f=0.9
 - [ ] Wegstein acceleration with clamped q; test it beats direct substitution at f=0.9
 - [ ] ✅ Checkpoint: recycle circuit converges, internal amplification = 1/ (1-f)
