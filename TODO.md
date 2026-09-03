@@ -18,7 +18,7 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
 - [ ] Criterion benches: solve time vs unit count, vs tear count, enum vs trait-object dispatch
 - [ ] Energy balance: per-species enthalpy `h(T)`, mixer outlet T by hand-rolled Newton solve, convergence tests
 - [ ] Rayon parallel solve of independent branches; bench against serial and record where it stops paying off
-- [ ] README: what it is, quickstart, JSON format, one worked example
+- [ ] README: what it is, quickstart, JSON format, one worked example, rename project 'flowsheet'
 - [ ] MIT/Apache-2.0 dual licence, `cargo fmt`/`clippy -D warnings` in GitHub Actions, publish to crates.io
 - [ ] Later: more unit ops (heat exchanger, reactor, screen) and design constraints
 - [ ] Later: allow streaming solve events (e.g. `UnitEvaluated { id, iteration, residual }`) to subscribers during a run
