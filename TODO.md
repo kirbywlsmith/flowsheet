@@ -3,8 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] Tear stream selection: pick one stream per SCC (start with "first stream into the SCC", note why heuristics
-  matter)
 - [ ] Direct substitution loop: guess tear = zeros, iterate to convergence
 - [ ] Test: error shrinks by exactly f each pass; ~14 iterations at f=0.3, ~130 at f=0.9
 - [ ] Wegstein acceleration with clamped q; test it beats direct substitution at f=0.9
