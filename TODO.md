@@ -9,6 +9,9 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
 - [ ] Test: error shrinks by exactly f each pass; ~14 iterations at f=0.3, ~130 at f=0.9
 - [ ] Wegstein acceleration with clamped q; test it beats direct substitution at f=0.9
 - [ ] ✅ Checkpoint: recycle circuit converges, internal amplification = 1/ (1-f)
+- [ ] Move `evaluate_unit` off `Flowsheet` so it is inherent to `ValidFlowsheet` only — its outlet-count
+  `debug_assert` is exactly what `validate` guarantees. Leave the topology fns (`components`, `tear_streams`,
+  `evaluation_waves`) on `Flowsheet`; they need no validation invariant and `Deref` already exposes them.
 - [ ] serde derive on species/streams/units/flowsheet; JSON load + save; round-trip test
 - [ ] clap CLI: `simulate <flowsheet.json>`, printed per-stream balance table
 - [ ] Split into a workspace: `crates/sim-core` (no CLI deps) and `crates/sim-cli`
