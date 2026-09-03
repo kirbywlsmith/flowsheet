@@ -1,6 +1,7 @@
 //! Solver data structures.
 
 use crate::flowsheet::{UnitId, ValidFlowsheet};
+use crate::stream::Stream;
 use std::fmt;
 
 /// Configures a [`Solver`].
@@ -88,12 +89,20 @@ impl Solver {
     /// Returns [`SolveError::Cycle`] before any evaluation, and [`SolveError::NotConverged`] if
     /// the residual is still above tolerance after [`SolverConfig::max_iterations`] passes.
     pub fn solve(&self, flowsheet: &mut ValidFlowsheet) -> Result<SolveReport, SolveError> {
-        let waves = flowsheet.evaluation_waves().map_err(SolveError::Cycle)?;
+        let tears = flowsheet.tear_streams();
+        let waves = flowsheet
+            .evaluation_waves_with_tears(&tears)
+            .map_err(SolveError::Cycle)?;
 
         let mut iterations = 0;
         let residual;
 
+        let mut tears_snapshot: Vec<Stream> = Vec::with_capacity(tears.len());
+
         loop {
+            tears_snapshot.clear();
+            tears_snapshot.extend(tears.iter().map(|&s| flowsheet[s].clone()));
+
             for wave in &waves {
                 // TODO: make this parallel
                 for &unit_id in wave {
@@ -103,8 +112,17 @@ impl Solver {
 
             iterations += 1;
 
-            // TODO: max over tear streams; 0.0 while acyclic
-            let pass_residual = 0.0;
+            let pass_residual = tears
+                .iter()
+                .zip(&tears_snapshot)
+                .map(|(&s, old)| flowsheet[s].max_flow_residual(old))
+                .fold(0.0_f64, |acc, d| {
+                    if acc.is_nan() || d.is_nan() {
+                        f64::NAN
+                    } else {
+                        acc.max(d)
+                    }
+                });
 
             if pass_residual <= self.config.tolerance {
                 residual = pass_residual;

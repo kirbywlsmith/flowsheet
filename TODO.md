@@ -3,9 +3,10 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] Direct substitution loop: guess tear = zeros, iterate to convergence
-- [ ] Test: error shrinks by exactly f each pass; ~14 iterations at f=0.3, ~130 at f=0.9
-- [ ] Wegstein acceleration with clamped q; test it beats direct substitution at f=0.9
+- [ ] Test: error shrinks by exactly f each pass. Measured pass counts, since the residual is relative to stream
+  total: at the default 1e-9 tolerance, 18 at f=0.3 and 171 at f=0.9; at 1e-6, 12 and 106.
+- [ ] Wegstein acceleration with clamped q; test it beats direct substitution at f=0.9. Note `max_iterations`
+  defaults to 100, so plain substitution at f=0.9 fails outright — the test needs its own `SolverConfig`.
 - [ ] ✅ Checkpoint: recycle circuit converges, internal amplification = 1/ (1-f)
 - [ ] Move `evaluate_unit` off `Flowsheet` so it is inherent to `ValidFlowsheet` only — its outlet-count
   `debug_assert` is exactly what `validate` guarantees. Leave the topology fns (`components`, `tear_streams`,

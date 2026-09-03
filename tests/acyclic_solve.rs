@@ -12,7 +12,7 @@
 use approx::assert_relative_eq;
 use process_simulation::demo::{AMBIENT_K, AMBIENT_KPA, feed_stream, registry};
 use process_simulation::flowsheet::{Flowsheet, FlowsheetError, StreamId, ValidFlowsheet};
-use process_simulation::solver::{SolveError, Solver};
+use process_simulation::solver::Solver;
 use process_simulation::stream::Stream;
 use process_simulation::unit::UnitOp;
 
@@ -144,8 +144,9 @@ fn solving_twice_gives_the_same_answer() {
 }
 
 #[test]
-fn a_recycle_is_reported_as_a_cycle() {
-    // The same circuit, but with the bleed routed back into the mixer.
+fn a_recycle_converges_and_closes_the_mass_balance() {
+    // The same circuit, but with the bleed routed back into the mixer. Tearing turns this from
+    // unorderable into a fixed-point iteration.
     let r = registry();
 
     // Both are built while `r` is still owned here, before it moves into the flowsheet.
@@ -161,25 +162,25 @@ fn a_recycle_is_reported_as_a_cycle() {
     let u_product = fs.add_unit(UnitOp::Product);
 
     fs.add_stream(u_feed, blank.clone(), u_mixer);
-    fs.add_stream(u_mixer, blank.clone(), u_tank);
+    let mixer_out = fs.add_stream(u_mixer, blank.clone(), u_tank);
     fs.add_stream(u_tank, blank.clone(), u_split);
     fs.add_stream(u_split, blank.clone(), u_mixer); // recycle
-    fs.add_stream(u_split, blank, u_product);
+    let product = fs.add_stream(u_split, blank, u_product);
 
     let mut fs = fs
         .validate()
         .expect("a recycle is a wiring cycle, not an arity error");
-    let result = Solver::default().solve(&mut fs);
+    let report = Solver::default()
+        .solve(&mut fs)
+        .expect("one tear breaks the only loop");
 
-    match result {
-        Err(SolveError::Cycle(units)) => {
-            assert!(
-                units.contains(&u_mixer),
-                "the mixer is inside the loop, got {units:?}"
-            );
-        }
-        other => panic!("expected a cycle error, got {other:?}"),
-    }
+    assert!(report.residual <= 1e-9, "converged within tolerance");
+
+    // The recycle amplifies the circulating load to 1 / (1 - f) of the feed.
+    assert_relative_eq!(fs[mixer_out].total(), 1000.0 / 0.7, max_relative = 1e-8);
+
+    // Nothing accumulates at steady state, so the product carries the whole feed back out.
+    assert_relative_eq!(fs[product].total(), 1000.0, max_relative = 1e-8);
 }
 
 #[test]
