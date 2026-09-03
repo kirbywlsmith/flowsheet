@@ -1,6 +1,6 @@
 //! Flowsheet graph functions.
 
-use crate::flowsheet::{Flowsheet, UnitId};
+use crate::flowsheet::{Flowsheet, StreamId, UnitId};
 
 impl Flowsheet {
     /// The producing and consuming unit of every stream, indexed by [`StreamId`].
@@ -35,6 +35,43 @@ impl Flowsheet {
                     .iter()
                     .filter_map(|&s| consumer[s.as_usize()])
                     .collect()
+            })
+            .collect()
+    }
+
+    /// Picks one stream per cyclic component to drop from the evaluation order, for
+    /// [`Flowsheet::evaluation_waves_with_tears`].
+    ///
+    /// A torn stream is not removed - only its ordering constraint is. Its consumer ends up
+    /// evaluated first and so reads the previous pass's value, which is what the solver iterates
+    /// on.
+    pub fn tear_streams(&self) -> Vec<StreamId> {
+        let components = self.components();
+        let (producer, _) = self.stream_ends();
+
+        let mut component_of: Vec<usize> = vec![0; self.units.len()];
+        for (c, component) in components.iter().enumerate() {
+            for &unit in component {
+                component_of[unit.as_usize()] = c;
+            }
+        }
+
+        components
+            .iter()
+            .enumerate()
+            // A singleton is only cyclic through a self-loop, which `check` rejects
+            .filter(|(_, component)| component.len() > 1)
+            .filter_map(|(c, component)| {
+                component
+                    .iter()
+                    .flat_map(|&unit| self.units[unit.as_usize()].inlets.iter().copied())
+                    // Both ends must be inside the loop. A stream crossing in from outside is a
+                    // feed, and cutting one would leave the loop intact.
+                    .filter(|&s| {
+                        producer[s.as_usize()].is_some_and(|p| component_of[p.as_usize()] == c)
+                    })
+                    // Any candidate breaks the loop, so the tiebreak is arbitrary but stable.
+                    .min_by_key(|&s| s.as_usize())
             })
             .collect()
     }
