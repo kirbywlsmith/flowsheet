@@ -3,15 +3,30 @@
 use crate::flowsheet::{Flowsheet, UnitId};
 
 impl Flowsheet {
-    /// The downstream units of every unit, indexed by [`UnitId`].
-    fn successors(&self) -> Vec<Vec<UnitId>> {
-        // The consuming unit of each stream
+    /// The producing and consuming unit of every stream, indexed by [`StreamId`].
+    ///
+    /// Either end is `None` when nothing is wired to it. [`Flowsheet::check`] reports those, but
+    /// the graph functions have to run on unvalidated flowsheets too.
+    fn stream_ends(&self) -> (Vec<Option<UnitId>>, Vec<Option<UnitId>>) {
+        let mut producer: Vec<Option<UnitId>> = vec![None; self.streams.len()];
         let mut consumer: Vec<Option<UnitId>> = vec![None; self.streams.len()];
+
         for (i, unit) in self.units.iter().enumerate() {
+            let id = UnitId(i as u16);
+            for &s in &unit.outlets {
+                producer[s.as_usize()] = Some(id);
+            }
             for &s in &unit.inlets {
-                consumer[s.as_usize()] = Some(UnitId(i as u16));
+                consumer[s.as_usize()] = Some(id);
             }
         }
+
+        (producer, consumer)
+    }
+
+    /// The downstream units of every unit, indexed by [`UnitId`].
+    fn successors(&self) -> Vec<Vec<UnitId>> {
+        let (_, consumer) = self.stream_ends();
 
         self.units
             .iter()
