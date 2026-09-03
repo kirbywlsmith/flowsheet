@@ -85,10 +85,50 @@ impl Flowsheet {
     ///
     /// Returns the units that could not be ordered - those inside a cycle or downstream of one.
     pub fn evaluation_waves(&self) -> Result<Vec<Vec<UnitId>>, Vec<UnitId>> {
-        let successors = self.successors();
+        self.evaluation_waves_with_tears(&[])
+    }
+
+    /// [`Flowsheet::evaluation_waves`], ignoring the `tears` when ordering.
+    ///
+    /// This is what makes a cyclic flowsheet orderable: a torn stream stops counting as a
+    /// dependency, so its consumer no longer waits on its producer.
+    ///
+    /// # Errors
+    ///
+    /// As [`Flowsheet::evaluation_waves`]. One tear per cyclic component is not always enough -
+    /// a component of interlocking loops needs one per loop - so a short `tears` still leaves
+    /// units unordered and reports them here.
+    pub fn evaluation_waves_with_tears(
+        &self,
+        tears: &[StreamId],
+    ) -> Result<Vec<Vec<UnitId>>, Vec<UnitId>> {
+        let mut torn = vec![false; self.streams.len()];
+        for &s in tears {
+            torn[s.as_usize()] = true;
+        }
+
+        let (_, consumer) = self.stream_ends();
+
+        // A torn stream has to leave both halves of the count: if its consumer never waits on it,
+        // its producer must not decrement it either, or the degree underflows.
+        let successors: Vec<Vec<UnitId>> = self
+            .units
+            .iter()
+            .map(|unit| {
+                unit.outlets
+                    .iter()
+                    .filter(|&&s| !torn[s.as_usize()])
+                    .filter_map(|&s| consumer[s.as_usize()])
+                    .collect()
+            })
+            .collect();
 
         // The unevaluated inlet stream count of each unit
-        let mut in_degree: Vec<usize> = self.units.iter().map(|u| u.inlets.len()).collect();
+        let mut in_degree: Vec<usize> = self
+            .units
+            .iter()
+            .map(|u| u.inlets.iter().filter(|&&s| !torn[s.as_usize()]).count())
+            .collect();
 
         let mut current: Vec<UnitId> = in_degree
             .iter()
@@ -348,5 +388,106 @@ mod tests {
             2,
             "one component per loop, never merged"
         );
+    }
+
+    #[test]
+    fn tearing_the_recycle_circuit_makes_it_orderable() {
+        // Untorn this is the `recycle_circuit_reports_the_units_it_could_not_order` case.
+        // S1 (mixer -> tank) is the tear, so the tank runs first on a stale value and the mixer
+        // drops to the last wave.
+        let fs = crate::demo::build_flowsheet();
+
+        let waves = fs
+            .evaluation_waves_with_tears(&fs.tear_streams())
+            .expect("one tear breaks the only loop");
+
+        assert_eq!(
+            waves,
+            vec![
+                vec![UnitId(0), UnitId(2)], // feed, tank
+                vec![UnitId(3)],            // splitter
+                vec![UnitId(1), UnitId(4)], // mixer, product
+            ]
+        );
+    }
+
+    #[test]
+    fn tearing_a_stream_outside_the_loop_leaves_the_loop() {
+        // S0 is the feed into the mixer. Cutting it drops the mixer's wait on the feed but not on
+        // the splitter, so the loop survives - and the product is dragged down with it, being
+        // downstream of a splitter that never runs.
+        let fs = crate::demo::build_flowsheet();
+
+        assert_eq!(
+            fs.evaluation_waves_with_tears(&[StreamId(0)]),
+            Err(vec![UnitId(1), UnitId(2), UnitId(3), UnitId(4)])
+        );
+    }
+
+    #[test]
+    fn tearing_nothing_matches_the_untorn_ordering() {
+        let fs = crate::demo::build_flowsheet();
+
+        assert_eq!(fs.evaluation_waves_with_tears(&[]), fs.evaluation_waves());
+    }
+
+    #[test]
+    fn an_acyclic_flowsheet_has_nothing_to_tear() {
+        let r = demo_registry();
+        let mut fs = Flowsheet::new(demo_registry());
+
+        let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
+        let u_tank = fs.add_unit(UnitOp::Tank);
+        let u_product = fs.add_unit(UnitOp::Product);
+
+        fs.add_stream(u_feed, blank(&r), u_tank);
+        fs.add_stream(u_tank, blank(&r), u_product);
+
+        assert_eq!(fs.tear_streams(), Vec::new());
+    }
+
+    #[test]
+    fn the_recycle_circuit_tears_the_stream_inside_the_loop_not_the_feed() {
+        // The mixer has two inlets: S0 from the feed and S3 back from the splitter. S0 crosses
+        // into the loop from outside, so cutting it would leave the loop intact, and it is never a
+        // candidate - even though it is the lowest-numbered inlet on the loop.
+        //
+        // All three of S1, S2 and S3 sit inside the loop and any one of them breaks it, so the
+        // lowest-id tiebreak lands on S1 rather than on the recycle an engineer would nominate.
+        let fs = crate::demo::build_flowsheet();
+
+        assert_eq!(fs.tear_streams(), vec![StreamId(1)]);
+    }
+
+    #[test]
+    fn two_independent_loops_are_torn_once_each() {
+        // Same fixture as `two_independent_loops_stay_separate_components`. Each loop holds three
+        // internal streams; the lowest of each is S2 and S7. The streams from the splitter into
+        // each loop (S1, S6) cross in from outside and are never candidates.
+        let r = demo_registry();
+        let mut fs = Flowsheet::new(demo_registry());
+
+        let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
+        let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.5 });
+        fs.add_stream(u_feed, blank(&r), u_split);
+
+        for _ in 0..2 {
+            let u_mix = fs.add_unit(UnitOp::Mixer);
+            let u_tank = fs.add_unit(UnitOp::Tank);
+            let u_bleed = fs.add_unit(UnitOp::Splitter { fraction: 0.4 });
+            let u_product = fs.add_unit(UnitOp::Product);
+
+            fs.add_stream(u_split, blank(&r), u_mix);
+            fs.add_stream(u_mix, blank(&r), u_tank);
+            fs.add_stream(u_tank, blank(&r), u_bleed);
+            fs.add_stream(u_bleed, blank(&r), u_mix); // the recycle
+            fs.add_stream(u_bleed, blank(&r), u_product);
+        }
+
+        // Component order is Tarjan's, so sort before comparing.
+        let mut tears = fs.tear_streams();
+        tears.sort_unstable_by_key(|s| s.as_usize());
+
+        assert_eq!(tears, vec![StreamId(2), StreamId(7)]);
     }
 }
