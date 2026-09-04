@@ -41,6 +41,11 @@ pub fn feed_stream(registry: &SpeciesRegistry) -> Stream {
 
 /// Builds a demo [`Flowsheet`].
 pub fn build_flowsheet() -> Flowsheet {
+    recycle_flowsheet(0.3)
+}
+
+/// Builds a recycle circuit with a configurable splitter `fraction`.
+pub fn recycle_flowsheet(fraction: f64) -> Flowsheet {
     let r = registry();
 
     // Built while `r` is still owned here, before it moves into the flowsheet.
@@ -56,7 +61,7 @@ pub fn build_flowsheet() -> Flowsheet {
     let u_tank = fs.add_unit(UnitOp::Tank);
     fs.add_stream(u_mixer, blank.clone(), u_tank);
 
-    let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.3 });
+    let u_split = fs.add_unit(UnitOp::Splitter { fraction });
     fs.add_stream(u_tank, blank.clone(), u_split);
 
     fs.add_stream(u_split, blank.clone(), u_mixer);
