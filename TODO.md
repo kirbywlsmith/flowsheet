@@ -3,7 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] ✅ Checkpoint: recycle circuit converges, internal amplification = 1/ (1-f)
 - [ ] Move `evaluate_unit` off `Flowsheet` so it is inherent to `ValidFlowsheet` only — its outlet-count
   `debug_assert` is exactly what `validate` guarantees. Leave the topology fns (`components`, `tear_streams`,
   `evaluation_waves`) on `Flowsheet`; they need no validation invariant and `Deref` already exposes them.

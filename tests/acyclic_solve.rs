@@ -8,6 +8,9 @@
 //!   Feed ──S0──▶ Mixer ──S1──▶ Tank ──S2──▶ Splitter ──S3──▶ Bleed    (f)
 //!                                                   └───S4──▶ Product (1 - f)
 //! ```
+//!
+//! The looped version lives in `recycle_balance.rs`, built from
+//! [`process_simulation::demo::recycle_circuit`].
 
 use approx::assert_relative_eq;
 use process_simulation::demo::{AMBIENT_K, AMBIENT_KPA, feed_stream, registry};
@@ -141,46 +144,6 @@ fn solving_twice_gives_the_same_answer() {
         circuit.flowsheet[circuit.product].flows_approx_eq(&once, 1e-12),
         "a solved flowsheet is a fixed point of the solver"
     );
-}
-
-#[test]
-fn a_recycle_converges_and_closes_the_mass_balance() {
-    // The same circuit, but with the bleed routed back into the mixer. Tearing turns this from
-    // unorderable into a fixed-point iteration.
-    let r = registry();
-
-    // Both are built while `r` is still owned here, before it moves into the flowsheet.
-    let feed = feed_stream(&r);
-    let blank = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
-
-    let mut fs = Flowsheet::new(r);
-
-    let u_feed = fs.add_unit(UnitOp::Feed { stream: feed });
-    let u_mixer = fs.add_unit(UnitOp::Mixer);
-    let u_tank = fs.add_unit(UnitOp::Tank);
-    let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.3 });
-    let u_product = fs.add_unit(UnitOp::Product);
-
-    fs.add_stream(u_feed, blank.clone(), u_mixer);
-    let mixer_out = fs.add_stream(u_mixer, blank.clone(), u_tank);
-    fs.add_stream(u_tank, blank.clone(), u_split);
-    fs.add_stream(u_split, blank.clone(), u_mixer); // recycle
-    let product = fs.add_stream(u_split, blank, u_product);
-
-    let mut fs = fs
-        .validate()
-        .expect("a recycle is a wiring cycle, not an arity error");
-    let report = Solver::default()
-        .solve(&mut fs)
-        .expect("one tear breaks the only loop");
-
-    assert!(report.residual <= 1e-9, "converged within tolerance");
-
-    // The recycle amplifies the circulating load to 1 / (1 - f) of the feed.
-    assert_relative_eq!(fs[mixer_out].total(), 1000.0 / 0.7, max_relative = 1e-8);
-
-    // Nothing accumulates at steady state, so the product carries the whole feed back out.
-    assert_relative_eq!(fs[product].total(), 1000.0, max_relative = 1e-8);
 }
 
 #[test]
