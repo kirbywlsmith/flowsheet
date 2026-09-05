@@ -64,6 +64,16 @@ impl Stream {
         self.flows.len()
     }
 
+    /// Per-species mass flows (t/h), in [`SpeciesId`] order.
+    pub fn flows(&self) -> &[f64] {
+        &self.flows
+    }
+
+    /// Mutable view of the per-species mass flows, in [`SpeciesId`] order.
+    pub fn flows_mut(&mut self) -> &mut [f64] {
+        &mut self.flows
+    }
+
     /// Total mass flow across every species (t/h).
     pub fn total(&self) -> f64 {
         self.flows.iter().sum()
