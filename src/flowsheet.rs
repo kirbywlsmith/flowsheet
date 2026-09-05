@@ -210,31 +210,6 @@ impl Flowsheet {
             Err(errors)
         }
     }
-
-    /// Evaluates one unit, writing its results into the unit's outlet streams.
-    pub(crate) fn evaluate_unit(&mut self, id: UnitId) {
-        let Flowsheet { units, streams, .. } = self;
-        let unit = &units[id.as_usize()];
-
-        let outputs = {
-            let inlets: Vec<&Stream> = unit
-                .inlets
-                .iter()
-                .map(|&s| &streams[s.as_usize()])
-                .collect();
-
-            unit.op.evaluate(&inlets)
-        };
-
-        debug_assert_eq!(
-            outputs.len(),
-            unit.outlets.len(),
-            "unit {id:?} outlet count mismatch during evaluation"
-        );
-        for (&s, out) in unit.outlets.iter().zip(outputs) {
-            streams[s.as_usize()] = out;
-        }
-    }
 }
 
 impl std::ops::Index<StreamId> for Flowsheet {
@@ -262,7 +237,27 @@ impl ValidFlowsheet {
 
     /// Evaluates one unit, writing its results into the unit's outlet streams.
     pub(crate) fn evaluate_unit(&mut self, id: UnitId) {
-        self.0.evaluate_unit(id);
+        let Flowsheet { units, streams, .. } = &mut self.0;
+        let unit = &units[id.as_usize()];
+
+        let outputs = {
+            let inlets: Vec<&Stream> = unit
+                .inlets
+                .iter()
+                .map(|&s| &streams[s.as_usize()])
+                .collect();
+
+            unit.op.evaluate(&inlets)
+        };
+
+        debug_assert_eq!(
+            outputs.len(),
+            unit.outlets.len(),
+            "unit {id:?} outlet count mismatch during evaluation"
+        );
+        for (&s, out) in unit.outlets.iter().zip(outputs) {
+            streams[s.as_usize()] = out;
+        }
     }
 }
 
@@ -535,6 +530,57 @@ mod tests {
         let errors = fs.validate().expect_err("neither unit is wired");
 
         assert_eq!(errors.len(), 4);
+    }
+
+    // ---- unit evaluation ----
+
+    #[test]
+    fn evaluating_a_feed_writes_its_fixed_stream_into_the_outlet() {
+        let r = demo_registry();
+        let mut fs = acyclic_flowsheet()
+            .validate()
+            .expect("the chain is correctly wired");
+
+        let outlet = fs.units[0].outlets[0];
+        assert_relative_eq!(fs[outlet].total(), 0.0); // still the blank placeholder
+
+        fs.evaluate_unit(UnitId(0));
+
+        assert!(fs[outlet].flows_approx_eq(&feed(&r), 1e-12));
+    }
+
+    #[test]
+    fn evaluating_a_splitter_fills_both_outlets_in_wiring_order() {
+        let r = demo_registry();
+        let mut fs = acyclic_flowsheet()
+            .validate()
+            .expect("the chain is correctly wired");
+
+        // Drive the feed down to the splitter's inlet by hand, one unit at a time.
+        for i in 0..4 {
+            fs.evaluate_unit(UnitId(i));
+        }
+
+        let split = &fs.units[3];
+        let (bleed, product) = (split.outlets[0], split.outlets[1]);
+
+        // Outlet order is positional: the first stream added carries `fraction`.
+        assert!(fs[bleed].flows_approx_eq(&feed(&r).scaled(0.3), 1e-12));
+        assert!(fs[product].flows_approx_eq(&feed(&r).scaled(0.7), 1e-12));
+    }
+
+    #[test]
+    fn evaluating_a_unit_leaves_every_other_stream_alone() {
+        let mut fs = acyclic_flowsheet()
+            .validate()
+            .expect("the chain is correctly wired");
+
+        fs.evaluate_unit(UnitId(0));
+
+        // Only U0's outlet has been written; the rest are still blank.
+        for i in 1..5u16 {
+            assert_relative_eq!(fs[StreamId(i)].total(), 0.0);
+        }
     }
 
     // ---- topological sort ----

@@ -439,6 +439,14 @@ mod tests {
                 outlets,
                 "outlet arity of {op:?}"
             );
+
+            let stream = feed(&r);
+            let supplied: Vec<&Stream> = vec![&stream; op.inlet_arity().min];
+            assert_eq!(
+                op.evaluate(&supplied).len(),
+                op.outlet_arity().min,
+                "{op:?} returned an outlet count its arity does not declare"
+            );
         }
     }
 }

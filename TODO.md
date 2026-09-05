@@ -3,17 +3,16 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] Move `evaluate_unit` off `Flowsheet` so it is inherent to `ValidFlowsheet` only — its outlet-count
-  `debug_assert` is exactly what `validate` guarantees. Leave the topology fns (`components`, `tear_streams`,
-  `evaluation_waves`) on `Flowsheet`; they need no validation invariant and `Deref` already exposes them.
 - [ ] Rename `SolveError::Cycle` — a cycle is no longer an error, so "flowsheet contains a cycle through N units"
   misreports what happened. It now fires only when `tear_streams` returned too few tears to order the graph, which
   today means interlocking loops inside one SCC. Something like `Untearable`, plus the `Display` message, the
   `solve` doc line, and the `cycle_message_counts_the_units_it_could_not_order` test. Do it before serde and the
   CLI freeze the public surface.
 - [ ] serde derive on species/streams/units/flowsheet; JSON load + save; round-trip test
-- [ ] clap CLI: `simulate <flowsheet.json>`, printed per-stream balance table
-- [ ] Split into a workspace: `crates/sim-core` (no CLI deps) and `crates/sim-cli`
+- [ ] clap CLI: `flowsheet <flowsheet.json>`
+    - can pass args to determine output format (print to console, save to a file, specify which values to
+      include/ignore)
+- [ ] Split into a workspace: `crates/flowsheet-core` (no CLI deps) and `crates/flowsheet-cli`
 - [ ] Convert `UnitOp` enum to `Box<dyn UnitOp>` trait objects; write up the tradeoff (dispatch cost, open extension) in
   the README
 - [ ] Flotation cell unit: 1 in / 2 out, per-species recovery; replace the tank and re-derive the expected numbers
