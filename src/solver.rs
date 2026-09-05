@@ -55,8 +55,9 @@ pub struct Solver {
 /// A type of error encountered when solving a flowsheet.
 #[derive(Debug)]
 pub enum SolveError {
-    /// The flowsheet contains a cycle.
-    Cycle(Vec<UnitId>),
+    /// The tear set was too small to order the flowsheet, so the units listed - those still
+    /// inside a loop, or downstream of one - were never reached.
+    Untearable(Vec<UnitId>),
     /// The residual was still above tolerance after [`SolverConfig::max_iterations`] passes.
     NotConverged {
         /// How many passes were made before giving up.
@@ -69,9 +70,9 @@ pub enum SolveError {
 impl fmt::Display for SolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SolveError::Cycle(units) => write!(
+            SolveError::Untearable(units) => write!(
                 f,
-                "flowsheet contains a cycle through {} units",
+                "tear set too small to order {} units - interlocking loops need one tear each",
                 units.len()
             ),
             SolveError::NotConverged {
@@ -106,13 +107,13 @@ impl Solver {
     ///
     /// # Errors
     ///
-    /// Returns [`SolveError::Cycle`] before any evaluation, and [`SolveError::NotConverged`] if
+    /// Returns [`SolveError::Untearable`] before any evaluation, and [`SolveError::NotConverged`] if
     /// the residual is still above tolerance after [`SolverConfig::max_iterations`] passes.
     pub fn solve(&self, flowsheet: &mut ValidFlowsheet) -> Result<SolveReport, SolveError> {
         let tears = flowsheet.tear_streams();
         let waves = flowsheet
             .evaluation_waves_with_tears(&tears)
-            .map_err(SolveError::Cycle)?;
+            .map_err(SolveError::Untearable)?;
 
         let mut iterations = 0;
         let residual;
@@ -248,9 +249,12 @@ mod tests {
     }
 
     #[test]
-    fn cycle_message_counts_the_units_it_could_not_order() {
-        let e = SolveError::Cycle(two_unit_ids());
-        assert_eq!(e.to_string(), "flowsheet contains a cycle through 2 units");
+    fn untearable_message_counts_the_units_it_could_not_order() {
+        let e = SolveError::Untearable(two_unit_ids());
+        assert_eq!(
+            e.to_string(),
+            "tear set too small to order 2 units - interlocking loops need one tear each"
+        );
     }
 
     #[test]
