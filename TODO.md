@@ -3,8 +3,6 @@
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
 - [ ] Rust book ch. 5-17
-- [ ] Wegstein acceleration with clamped q; test it beats direct substitution at f=0.9. Note `max_iterations`
-  defaults to 100, so plain substitution at f=0.9 fails outright — the test needs its own `SolverConfig`.
 - [ ] ✅ Checkpoint: recycle circuit converges, internal amplification = 1/ (1-f)
 - [ ] Move `evaluate_unit` off `Flowsheet` so it is inherent to `ValidFlowsheet` only — its outlet-count
   `debug_assert` is exactly what `validate` guarantees. Leave the topology fns (`components`, `tear_streams`,

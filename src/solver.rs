@@ -4,6 +4,23 @@ use crate::flowsheet::{UnitId, ValidFlowsheet};
 use crate::stream::Stream;
 use std::fmt;
 
+/// The convergence method used by the [`Solver`].
+#[derive(Debug, Clone, Copy)]
+pub enum ConvergenceMethod {
+    /// Feeds the result of each pass straight back in as the next guess.
+    DirectSubstitution,
+    /// Extrapolates each tear component along the secant through the last two passes.
+    ///
+    /// The next guess is `q * old + (1 - q) * new`, with `q` re-estimated every pass
+    /// and clamped to the bounds below.
+    Wegstein {
+        /// Lower clamp on `q`. Negative values accelerate; -5.0 is a common floor.
+        q_min: f64,
+        /// Upper clamp on `q`. 0.0 forbids damping, 0.9 allows it.
+        q_max: f64,
+    },
+}
+
 /// Configures a [`Solver`].
 #[derive(Debug)]
 pub struct SolverConfig {
@@ -15,6 +32,8 @@ pub struct SolverConfig {
     ///
     /// Exhausting this results in a [`SolveError::NotConverged`].
     pub max_iterations: usize,
+    /// The method used to calculate the stream values for each solve iteration.
+    pub method: ConvergenceMethod,
 }
 
 impl Default for SolverConfig {
@@ -22,6 +41,7 @@ impl Default for SolverConfig {
         Self {
             tolerance: 1e-9,
             max_iterations: 100,
+            method: ConvergenceMethod::DirectSubstitution,
         }
     }
 }
@@ -98,6 +118,7 @@ impl Solver {
         let residual;
 
         let mut tears_snapshot: Vec<Stream> = Vec::with_capacity(tears.len());
+        let mut history: Option<PreviousPass> = None;
 
         loop {
             tears_snapshot.clear();
@@ -135,6 +156,28 @@ impl Solver {
                     residual: pass_residual,
                 });
             }
+
+            if let ConvergenceMethod::Wegstein { q_min, q_max } = self.config.method {
+                let results: Vec<Stream> = tears.iter().map(|&s| flowsheet[s].clone()).collect();
+
+                if let Some(prev) = &history {
+                    for (i, &s) in tears.iter().enumerate() {
+                        flowsheet[s] = wegstein_step(
+                            &prev.guesses[i],
+                            &prev.results[i],
+                            &tears_snapshot[i],
+                            &results[i],
+                            q_min,
+                            q_max,
+                        );
+                    }
+                }
+
+                history = Some(PreviousPass {
+                    guesses: tears_snapshot.clone(),
+                    results,
+                });
+            }
         }
 
         Ok(SolveReport {
@@ -144,12 +187,58 @@ impl Solver {
     }
 }
 
+/// What Wegstein remembers between passes: the guess that went into the previous pass
+/// and the result it produced, one entry per tear stream.
+struct PreviousPass {
+    guesses: Vec<Stream>,
+    results: Vec<Stream>,
+}
+
+/// The Wegstein weight for one species, from the secant through two passes.
+fn wegstein_q(dx: f64, dy: f64, q_min: f64, q_max: f64) -> f64 {
+    if dx == 0.0 {
+        return 0.0; // exact-zero guard on a division, not a float comparison
+    }
+    let slope = dy / dx;
+    let denominator = slope - 1.0;
+    if denominator == 0.0 {
+        return 0.0; // slope of 1: the secant is parallel to y = x and never crosses it
+    }
+    (slope / denominator).clamp(q_min, q_max)
+}
+
+/// The next guess for one tear stream, extrapolated species by species.
+///
+/// `previous_*` are the pass before last; `guess` and `result` are the pass just finished.
+/// Temperature and pressure come straight from `result` — only flows are torn on.
+///
+/// # Panics
+/// If `q_min > q_max`, or either is `NaN`.
+fn wegstein_step(
+    previous_guess: &Stream,
+    previous_result: &Stream,
+    guess: &Stream,
+    result: &Stream,
+    q_min: f64,
+    q_max: f64,
+) -> Stream {
+    let mut next = result.clone();
+    for (k, flow) in next.flows_mut().iter_mut().enumerate() {
+        let dx = guess.flows()[k] - previous_guess.flows()[k];
+        let dy = result.flows()[k] - previous_result.flows()[k];
+        let q = wegstein_q(dx, dy, q_min, q_max);
+        *flow = q * guess.flows()[k] + (1.0 - q) * result.flows()[k];
+    }
+    next
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::flowsheet::Flowsheet;
-    use crate::test_support::demo_registry;
+    use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
     use crate::unit::UnitOp;
+    use approx::assert_relative_eq;
 
     /// `UnitId`'s field is private outside `flowsheet`, so ids have to come from a real
     /// flowsheet. The wiring is irrelevant here — only the count reaches the message.
@@ -162,6 +251,45 @@ mod tests {
     fn cycle_message_counts_the_units_it_could_not_order() {
         let e = SolveError::Cycle(two_unit_ids());
         assert_eq!(e.to_string(), "flowsheet contains a cycle through 2 units");
+    }
+
+    #[test]
+    fn q_is_zero_when_the_guess_did_not_move() {
+        // Nothing to draw a secant through, so fall back to direct substitution.
+        assert_relative_eq!(wegstein_q(0.0, 5.0, -5.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn q_is_zero_when_the_secant_is_parallel_to_the_fixed_point_line() {
+        assert_relative_eq!(wegstein_q(2.0, 2.0, -5.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn q_matches_the_recycle_fraction_it_came_from() {
+        // A loop that returns `f` of what it is given has slope `f`, so q = f / (f - 1).
+        assert_relative_eq!(
+            wegstein_q(1.0, 0.3, -20.0, 0.0),
+            -0.3 / 0.7,
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(wegstein_q(1.0, 0.9, -20.0, 0.0), -9.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn q_is_clamped_at_both_ends() {
+        assert_relative_eq!(wegstein_q(1.0, 0.9, -5.0, 0.0), -5.0); // wants -9
+        assert_relative_eq!(wegstein_q(1.0, 2.0, -5.0, 0.0), 0.0); // wants +2, damping forbidden
+        assert_relative_eq!(wegstein_q(1.0, 2.0, -5.0, 0.9), 0.9); // damping allowed, still capped
+    }
+
+    #[test]
+    fn a_zero_weight_reproduces_direct_substitution() {
+        let r = demo_registry();
+        let old = feed(&r);
+        let new = Stream::from_flows(&r, vec![50.0, 300.0, 700.0], AMBIENT_K, AMBIENT_KPA);
+        // Identical passes give dx = dy = 0, hence q = 0, hence next guess == new.
+        let next = wegstein_step(&old, &new, &old, &new, -5.0, 0.0);
+        assert!(next.flows_approx_eq(&new, 1e-12));
     }
 
     #[test]
