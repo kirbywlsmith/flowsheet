@@ -101,6 +101,7 @@ impl UnitOp {
 /// A distinct section of a system that takes inlet [`Stream`]s and performs a [`UnitOp`] to produce outlet streams.
 #[derive(Debug)]
 pub struct Unit {
+    pub(crate) name: String,
     pub(crate) op: UnitOp,
     pub(crate) inlets: Vec<StreamId>,
     pub(crate) outlets: Vec<StreamId>,

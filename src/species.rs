@@ -1,7 +1,9 @@
 //! Species data structures.
 
+use serde::{Deserialize, Serialize};
+
 /// A distinct form in which matter can exist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Phase {
     /// A state of matter in which atoms are closely packed.
     Solid,
@@ -22,8 +24,15 @@ impl SpeciesId {
     }
 }
 
+impl std::fmt::Display for SpeciesId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// A species is a distinct particle type within a system.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Species {
     /// The name of the species.
     ///
@@ -79,6 +88,11 @@ impl SpeciesRegistry {
     /// Returns `true` if the registry contains no species.
     pub fn is_empty(&self) -> bool {
         self.species.is_empty()
+    }
+
+    /// Every [`Species`], in [`SpeciesId`] order.
+    pub fn all(&self) -> &[Species] {
+        &self.species
     }
 }
 

@@ -281,10 +281,10 @@ mod tests {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
 
-        let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
-        let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.5 });
-        let u_mix = fs.add_unit(UnitOp::Mixer);
-        let u_product = fs.add_unit(UnitOp::Product);
+        let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed(&r) });
+        let u_split = fs.add_unit("split", UnitOp::Splitter { fraction: 0.5 });
+        let u_mix = fs.add_unit("mix", UnitOp::Mixer);
+        let u_product = fs.add_unit("product", UnitOp::Product);
 
         fs.add_stream(u_feed, blank(&r), u_split);
         fs.add_stream(u_split, blank(&r), u_mix);
@@ -315,9 +315,9 @@ mod tests {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
 
-        let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
-        let u_tank = fs.add_unit(UnitOp::Tank);
-        let u_product = fs.add_unit(UnitOp::Product);
+        let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed(&r) });
+        let u_tank = fs.add_unit("tank", UnitOp::Tank);
+        let u_product = fs.add_unit("product", UnitOp::Product);
 
         fs.add_stream(u_feed, blank(&r), u_tank);
         fs.add_stream(u_tank, blank(&r), u_product);
@@ -358,16 +358,16 @@ mod tests {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
 
-        let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
-        let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.5 });
+        let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed(&r) });
+        let u_split = fs.add_unit("split", UnitOp::Splitter { fraction: 0.5 });
         fs.add_stream(u_feed, blank(&r), u_split);
 
         let mut loops = Vec::new();
-        for _ in 0..2 {
-            let u_mix = fs.add_unit(UnitOp::Mixer);
-            let u_tank = fs.add_unit(UnitOp::Tank);
-            let u_bleed = fs.add_unit(UnitOp::Splitter { fraction: 0.4 });
-            let u_product = fs.add_unit(UnitOp::Product);
+        for i in 0..2 {
+            let u_mix = fs.add_unit(format!("mix{i}"), UnitOp::Mixer);
+            let u_tank = fs.add_unit(format!("tank{i}"), UnitOp::Tank);
+            let u_bleed = fs.add_unit(format!("bleed{i}"), UnitOp::Splitter { fraction: 0.4 });
+            let u_product = fs.add_unit(format!("product{i}"), UnitOp::Product);
 
             fs.add_stream(u_split, blank(&r), u_mix);
             fs.add_stream(u_mix, blank(&r), u_tank);
@@ -436,9 +436,9 @@ mod tests {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
 
-        let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
-        let u_tank = fs.add_unit(UnitOp::Tank);
-        let u_product = fs.add_unit(UnitOp::Product);
+        let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed(&r) });
+        let u_tank = fs.add_unit("tank", UnitOp::Tank);
+        let u_product = fs.add_unit("product", UnitOp::Product);
 
         fs.add_stream(u_feed, blank(&r), u_tank);
         fs.add_stream(u_tank, blank(&r), u_product);
@@ -467,15 +467,15 @@ mod tests {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
 
-        let u_feed = fs.add_unit(UnitOp::Feed { stream: feed(&r) });
-        let u_split = fs.add_unit(UnitOp::Splitter { fraction: 0.5 });
+        let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed(&r) });
+        let u_split = fs.add_unit("split", UnitOp::Splitter { fraction: 0.5 });
         fs.add_stream(u_feed, blank(&r), u_split);
 
-        for _ in 0..2 {
-            let u_mix = fs.add_unit(UnitOp::Mixer);
-            let u_tank = fs.add_unit(UnitOp::Tank);
-            let u_bleed = fs.add_unit(UnitOp::Splitter { fraction: 0.4 });
-            let u_product = fs.add_unit(UnitOp::Product);
+        for i in 0..2 {
+            let u_mix = fs.add_unit(format!("mix{i}"), UnitOp::Mixer);
+            let u_tank = fs.add_unit(format!("tank{i}"), UnitOp::Tank);
+            let u_bleed = fs.add_unit(format!("bleed{i}"), UnitOp::Splitter { fraction: 0.4 });
+            let u_product = fs.add_unit(format!("product{i}"), UnitOp::Product);
 
             fs.add_stream(u_split, blank(&r), u_mix);
             fs.add_stream(u_mix, blank(&r), u_tank);

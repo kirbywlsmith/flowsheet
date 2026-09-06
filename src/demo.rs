@@ -86,20 +86,20 @@ pub fn recycle_circuit(fraction: f64) -> RecycleCircuit {
 
     let mut fs = Flowsheet::new(r);
 
-    let u_feed = fs.add_unit(UnitOp::Feed { stream: feed_flows });
-    let u_mixer = fs.add_unit(UnitOp::Mixer);
+    let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed_flows });
+    let u_mixer = fs.add_unit("mixer", UnitOp::Mixer);
     let feed = fs.add_stream(u_feed, blank.clone(), u_mixer);
 
-    let u_tank = fs.add_unit(UnitOp::Tank);
+    let u_tank = fs.add_unit("tank", UnitOp::Tank);
     let mixer_out = fs.add_stream(u_mixer, blank.clone(), u_tank);
 
-    let u_split = fs.add_unit(UnitOp::Splitter { fraction });
+    let u_split = fs.add_unit("split", UnitOp::Splitter { fraction });
     let tank_out = fs.add_stream(u_tank, blank.clone(), u_split);
 
     // Outlet order is positional: the first stream out of the splitter gets `fraction`.
     let recycle = fs.add_stream(u_split, blank.clone(), u_mixer);
 
-    let u_product = fs.add_unit(UnitOp::Product);
+    let u_product = fs.add_unit("product", UnitOp::Product);
     let product = fs.add_stream(u_split, blank, u_product);
 
     RecycleCircuit {

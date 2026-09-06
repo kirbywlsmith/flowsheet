@@ -245,7 +245,10 @@ mod tests {
     /// flowsheet. The wiring is irrelevant here — only the count reaches the message.
     fn two_unit_ids() -> Vec<UnitId> {
         let mut fs = Flowsheet::new(demo_registry());
-        vec![fs.add_unit(UnitOp::Mixer), fs.add_unit(UnitOp::Product)]
+        vec![
+            fs.add_unit("mixer", UnitOp::Mixer),
+            fs.add_unit("product", UnitOp::Product),
+        ]
     }
 
     #[test]

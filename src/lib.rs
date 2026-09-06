@@ -4,6 +4,7 @@
 
 pub mod demo;
 pub mod flowsheet;
+pub mod serial;
 pub mod solver;
 pub mod species;
 pub mod stream;

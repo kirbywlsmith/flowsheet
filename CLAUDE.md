@@ -59,6 +59,29 @@ Never mix severities in one unlabelled list.
   `ValidFlowsheet` has `Deref` but deliberately no `DerefMut`, so the topology cannot change behind the validation.
 - Kahn's topological sort emits **waves** (`Vec<Vec<UnitId>>`), not a flat order, so parallelism is free later.
 - Float equality: never `==`. `approx` (dev-dependency) in tests; `Stream::max_flow_residual` for the solver.
+- JSON is a **separate wire format** in `src/serial.rs`, not serde attributes on the domain types. `serial::Flowsheet`
+  etc. reuse the domain names and are told apart by module path, the Rust convention over a `Doc`/`Dto` suffix. The
+  rule for what gets `#[derive(Deserialize)]` directly: types whose privacy encodes an invariant (`SpeciesId`,
+  `Stream`, `Flowsheet`) get a mirror type; all-public-field data with no constructor (`Species`, `Phase`) does not.
+- Loading **replays the builder** (`insert` / `add_unit` / `add_stream`) rather than constructing a `Flowsheet`
+  directly, so every invariant those methods maintain still holds. `TryFrom` returns a plain `Flowsheet`; the caller
+  still calls `validate`. `LoadError` fails fast — unlike `check`, which collects — because load errors are typos.
+- Every domain constructor that **panics** on bad input has a matching `LoadError` at the JSON boundary
+  (split fractions, split ratios, negative flows, non-positive temperature).
+- Document flows are a **species-name map**, so files don't depend on species order. Consequence: names must be unique
+  across phases, so `H2O` liquid + `H2O` gas is currently rejected on **both** boundaries: `LoadError::DuplicateSpecies`
+  on the way in, and `FlowsheetError::DuplicateSpeciesName` in `check` on the way out - otherwise saving would silently
+  drop one of the two flows. Revisit with a composite key (`"H2O(g)"`) when the energy balance lands.
+- Units carry a **user-supplied `name`**. Uniqueness is checked in `Flowsheet::check`, not `add_unit`, so the builder
+  stays infallible and `ValidFlowsheet` is what guarantees a saveable document.
+- `serde_json` needs the **`float_roundtrip` feature**. Its default parser is off by up to 1 ULP, which silently
+  perturbs flows on every save/load cycle and breaks byte-identical round-trip tests.
+- Every document type carries **`deny_unknown_fields`** — the format is hand-edited, so a typo must be an error, not
+  a silently dropped key. Two serde traps make that harder than one attribute: `deny_unknown_fields` is illegal with
+  `#[serde(flatten)]`, and it is silently *ignored* on an internally tagged enum. So `serial::Unit` nests `op` instead
+  of flattening it, and `serial::UnitOp`'s variants are newtypes over per-op spec structs (`SplitterSpec`, and `NoSpec`
+  for the parameterless ops) that each deny unknown fields themselves. A newtype variant is deserialised as a plain
+  struct with the `type` key already stripped, so its own attribute fires. The JSON shape is unchanged by all of this.
 
 ## Testing
 
