@@ -2,8 +2,7 @@
 
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `crates/flowsheet-cli/src/main.rs`.
 
-- [ ] Convert `UnitOp` enum to `Box<dyn UnitOp>` trait objects; write up the tradeoff (dispatch cost, open extension) in
-  the README
+- [ ] Convert `UnitOp` enum to `Box<dyn UnitOp>` trait objects
 - [ ] Flotation cell unit: 1 in / 2 out, per-species recovery; replace the tank and re-derive the expected numbers
 - [ ] Criterion benches: solve time vs unit count, vs tear count, enum vs trait-object dispatch
 - [ ] Energy balance: per-species enthalpy `h(T)`, mixer outlet T by hand-rolled Newton solve, convergence tests.
