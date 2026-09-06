@@ -142,7 +142,7 @@ mod tests {
     use crate::solver::Solver;
     use crate::stream::Stream;
     use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
-    use crate::unit::UnitOp;
+    use crate::unit::{Feed, Mixer, Product, Splitter};
 
     /// A report is only ever an input to formatting, so the layout tests supply their own
     /// rather than depending on the last bits of a real solve.
@@ -169,10 +169,10 @@ mod tests {
         let feed_flows = feed(&r);
         let mut fs = Flowsheet::new(r);
 
-        let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed_flows });
-        let u_split = fs.add_unit("split", UnitOp::Splitter { fraction: 0.3 });
-        let u_mixer = fs.add_unit("mixer", UnitOp::Mixer);
-        let u_product = fs.add_unit("product", UnitOp::Product);
+        let u_feed = fs.add_unit("feed", Feed { stream: feed_flows });
+        let u_split = fs.add_unit("split", Splitter { fraction: 0.3 });
+        let u_mixer = fs.add_unit("mixer", Mixer);
+        let u_product = fs.add_unit("product", Product);
 
         fs.add_stream(u_feed, blank.clone(), u_split);
         fs.add_stream(u_split, blank.clone(), u_mixer);

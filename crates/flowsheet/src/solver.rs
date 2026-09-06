@@ -238,17 +238,14 @@ mod tests {
     use super::*;
     use crate::flowsheet::Flowsheet;
     use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
-    use crate::unit::UnitOp;
+    use crate::unit::{Mixer, Product};
     use approx::assert_relative_eq;
 
     /// `UnitId`'s field is private outside `flowsheet`, so ids have to come from a real
     /// flowsheet. The wiring is irrelevant here — only the count reaches the message.
     fn two_unit_ids() -> Vec<UnitId> {
         let mut fs = Flowsheet::new(demo_registry());
-        vec![
-            fs.add_unit("mixer", UnitOp::Mixer),
-            fs.add_unit("product", UnitOp::Product),
-        ]
+        vec![fs.add_unit("mixer", Mixer), fs.add_unit("product", Product)]
     }
 
     #[test]

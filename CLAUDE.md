@@ -50,7 +50,31 @@ Never mix severities in one unlabelled list.
 - Indexing (`registry[id]`, `stream[id]`) **panics** — a bad id is a bug in our code, not user input.
   `Result` is reserved for real user input (JSON loading).
 - Species registry uses a **linear scan**, not a HashMap. It holds 3–20 entries; two collections would desync.
-- Enum dispatch for unit ops first, trait objects later — the comparison is the point.
+- Unit ops were an **enum first, `Box<dyn UnitOp>` now** — the comparison was the point. The enum version is in
+  git history at `1612492` if a bench wants the baseline back.
+- `UnitOp` is a **public trait**, and it had to be: `Flowsheet::add_unit` is public and cannot name a private type in
+  its signature, so `inlet_arity` / `outlet_arity` / `evaluate` and `Arity` all stopped being `pub(crate)`. That is the
+  real price of the change, and also the payoff — the set of ops is now open to downstream crates.
+- `add_unit` takes **`impl Into<Box<dyn UnitOp>>`**, not `Box<dyn UnitOp>`, so call sites stay `add_unit("mixer",
+  Mixer)` and the box is an implementation detail. `impl<T: UnitOp + 'static> From<T> for Box<dyn UnitOp>` supplies one
+  direction; the reflexive `impl From<T> for T` lets an already-boxed op (what `serial` builds when loading) through
+  unchanged. Same shape as std's `impl<E: Error> From<E> for Box<dyn Error>`.
+- Saving is a **`serial::ToDocument` supertrait on `UnitOp`**, not a `match` in `serial.rs`. Loading can stay a match —
+  a document names its op with a string, and something must own the name-to-constructor table — but saving cannot,
+  because `Box<dyn UnitOp>` has erased the concrete type. The alternative, downcasting through `Any`, would put a closed
+  list of types back in `serial.rs` and give up exactly the open set the trait object was adopted for. The `impl` blocks
+  still live in `serial.rs`, so the wire format remains one module; only the trait's declaration leaks into `unit.rs`.
+  The open set stops at the wire format, though: `serial::UnitOp` is a closed enum, so a downstream op can be *solved*
+  but not *round-tripped* — it has no variant of its own to return. Widening that means a name-keyed constructor
+  registry, and nothing needs one yet.
+- `UnitOp` requires **`Send + Sync`**. The enum had them automatically; a bare `Box<dyn UnitOp>` has neither, and
+  without them `Flowsheet` and `ValidFlowsheet` stop being `Sync` — which would quietly cost the parallelism the
+  wave-emitting topological sort exists to enable. The price is that an op may not hold an `Rc` or a `Cell`.
+- `Arity`'s **fields stay `pub(crate)`** even though the type had to go public. `exactly` / `at_least` / `permits`
+  are the whole public surface, so a downstream op cannot hand back an unsatisfiable `Arity { min: 2, max: Some(1) }`.
+- `Box<dyn UnitOp>` is **not `Clone`**, and nothing needed it to be, so the old `#[derive(Clone)]` on the enum was
+  dropped rather than replaced with a `clone_box` method or the `dyn-clone` crate. The concrete op structs still derive
+  it. `Debug` is a supertrait because `Flowsheet` derives `Debug` and a derive cannot reach through the box otherwise.
 - Outlet order is positional: the Nth `add_stream` from a unit matches the Nth stream from `UnitOp::evaluate`. Wiring a
   splitter backwards still balances mass, so it fails silently.
 - Flowsheets are built loosely then validated: `Flowsheet::validate` consumes `self` and hands back a `ValidFlowsheet`,

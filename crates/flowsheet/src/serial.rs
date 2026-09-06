@@ -322,18 +322,25 @@ impl State {
 }
 
 impl UnitOp {
-    /// Converts into the domain [`unit::UnitOp`], rejecting the values its constructors panic on.
+    /// Converts into a domain [`unit::UnitOp`], rejecting the values its constructors panic on.
+    ///
+    /// This is the half of the round trip a trait object cannot do for itself: a document names
+    /// its operation with a string, and something has to own the name-to-constructor table. The
+    /// other half is [`ToDocument`], which each operation implements.
+    ///
+    /// Each arm builds a different concrete type; they unify because the return type is
+    /// `Box<dyn unit::UnitOp>`, so every arm unsize-coerces to it.
     fn to_domain(
         &self,
         registry: &SpeciesRegistry,
         species_ids: &BTreeMap<String, SpeciesId>,
         at: &Location,
-    ) -> Result<unit::UnitOp, LoadError> {
+    ) -> Result<Box<dyn unit::UnitOp>, LoadError> {
         Ok(match self {
-            UnitOp::Feed(spec) => unit::UnitOp::Feed {
+            UnitOp::Feed(spec) => Box::new(unit::Feed {
                 stream: spec.state.to_stream(registry, species_ids, at)?,
-            },
-            UnitOp::Mixer(_) => unit::UnitOp::Mixer,
+            }),
+            UnitOp::Mixer(_) => Box::new(unit::Mixer),
             UnitOp::Splitter(SplitterSpec { fraction }) => {
                 require(
                     (0.0..=1.0).contains(fraction),
@@ -342,9 +349,9 @@ impl UnitOp {
                     *fraction,
                     "between 0.0 and 1.0",
                 )?;
-                unit::UnitOp::Splitter {
+                Box::new(unit::Splitter {
                     fraction: *fraction,
-                }
+                })
             }
             UnitOp::SplitterN(SplitterNSpec { ratios }) => {
                 for r in ratios {
@@ -359,12 +366,12 @@ impl UnitOp {
                 // An empty `ratios` sums to zero, so this catches that case too.
                 let sum: f64 = ratios.iter().sum();
                 require(sum > 0.0, at, "ratios", sum, "a sum greater than 0.0")?;
-                unit::UnitOp::SplitterN {
+                Box::new(unit::SplitterN {
                     ratios: ratios.clone(),
-                }
+                })
             }
-            UnitOp::Tank(_) => unit::UnitOp::Tank,
-            UnitOp::Product(_) => unit::UnitOp::Product,
+            UnitOp::Tank(_) => Box::new(unit::Tank),
+            UnitOp::Product(_) => Box::new(unit::Product),
         })
     }
 }
@@ -484,23 +491,67 @@ impl State {
     }
 }
 
-impl UnitOp {
-    /// Captures a domain unit operation, resolving a feed's stream against `registry`.
-    fn from_domain(op: &unit::UnitOp, registry: &SpeciesRegistry) -> Self {
-        match op {
-            unit::UnitOp::Feed { stream } => UnitOp::Feed(FeedSpec {
-                state: State::from_stream(stream, registry),
-            }),
-            unit::UnitOp::Mixer => UnitOp::Mixer(NoSpec {}),
-            unit::UnitOp::Splitter { fraction } => UnitOp::Splitter(SplitterSpec {
-                fraction: *fraction,
-            }),
-            unit::UnitOp::SplitterN { ratios } => UnitOp::SplitterN(SplitterNSpec {
-                ratios: ratios.clone(),
-            }),
-            unit::UnitOp::Tank => UnitOp::Tank(NoSpec {}),
-            unit::UnitOp::Product => UnitOp::Product(NoSpec {}),
-        }
+/// Captures a domain unit operation as its document form.
+///
+/// This is a supertrait of [`unit::UnitOp`] rather than a `match` inside this module, because
+/// there is nothing left to match on: `Box<dyn unit::UnitOp>` has erased the concrete type, and
+/// only the operation itself still knows what it is. The alternative - downcasting through
+/// [`std::any::Any`] - would put a closed list of concrete types back in this file and give up
+/// the open set the trait object was adopted for.
+///
+/// The `impl` blocks live here, next to the private `UnitOp::to_domain` that loads them back,
+/// so the wire format stays one module.
+///
+/// The open set stops at this boundary, and deliberately so: [`UnitOp`] is a closed enum, so a
+/// third-party operation has no variant of its own to return and can only describe itself as one
+/// of the built-in ones - which `to_domain` would then load back as that built-in operation, not
+/// as the original. So the set of operations a flowsheet can *solve* is open; the set it can
+/// *round-trip through a document* is not. Widening it means a name-keyed registry of
+/// constructors, which is the next move here if a downstream operation ever needs saving.
+pub trait ToDocument {
+    /// Captures this operation as its document form, resolving flows against `registry`.
+    fn to_document(&self, registry: &SpeciesRegistry) -> UnitOp;
+}
+
+impl ToDocument for unit::Feed {
+    fn to_document(&self, registry: &SpeciesRegistry) -> UnitOp {
+        UnitOp::Feed(FeedSpec {
+            state: State::from_stream(&self.stream, registry),
+        })
+    }
+}
+
+impl ToDocument for unit::Mixer {
+    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
+        UnitOp::Mixer(NoSpec {})
+    }
+}
+
+impl ToDocument for unit::Splitter {
+    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
+        UnitOp::Splitter(SplitterSpec {
+            fraction: self.fraction,
+        })
+    }
+}
+
+impl ToDocument for unit::SplitterN {
+    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
+        UnitOp::SplitterN(SplitterNSpec {
+            ratios: self.ratios.clone(),
+        })
+    }
+}
+
+impl ToDocument for unit::Tank {
+    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
+        UnitOp::Tank(NoSpec {})
+    }
+}
+
+impl ToDocument for unit::Product {
+    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
+        UnitOp::Product(NoSpec {})
     }
 }
 
@@ -521,7 +572,7 @@ impl From<&flowsheet::ValidFlowsheet> for Flowsheet {
             .iter()
             .map(|u| Unit {
                 name: u.name.clone(),
-                op: UnitOp::from_domain(&u.op, registry),
+                op: u.op.to_document(registry),
             })
             .collect();
 

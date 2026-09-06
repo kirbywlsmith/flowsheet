@@ -14,7 +14,10 @@
 
 use approx::assert_relative_eq;
 use flowsheet::demo::{AMBIENT_K, AMBIENT_KPA, feed_stream, registry};
-use flowsheet::{Flowsheet, FlowsheetError, Solver, Stream, StreamId, UnitOp, ValidFlowsheet};
+use flowsheet::{
+    Feed, Flowsheet, FlowsheetError, Mixer, Product, Solver, Splitter, Stream, StreamId, Tank,
+    ValidFlowsheet,
+};
 
 /// A built flowsheet plus the stream ids needed to inspect the solved result.
 struct Circuit {
@@ -38,15 +41,15 @@ fn build(fraction: f64) -> Circuit {
 
     let u_feed = fs.add_unit(
         "feed",
-        UnitOp::Feed {
+        Feed {
             stream: feed_stream,
         },
     );
-    let u_mixer = fs.add_unit("mixer", UnitOp::Mixer);
-    let u_tank = fs.add_unit("tank", UnitOp::Tank);
-    let u_split = fs.add_unit("split", UnitOp::Splitter { fraction });
-    let u_bleed = fs.add_unit("bleed", UnitOp::Product);
-    let u_product = fs.add_unit("product", UnitOp::Product);
+    let u_mixer = fs.add_unit("mixer", Mixer);
+    let u_tank = fs.add_unit("tank", Tank);
+    let u_split = fs.add_unit("split", Splitter { fraction });
+    let u_bleed = fs.add_unit("bleed", Product);
+    let u_product = fs.add_unit("product", Product);
 
     let feed = fs.add_stream(u_feed, blank.clone(), u_mixer);
     let mixer_out = fs.add_stream(u_mixer, blank.clone(), u_tank);
@@ -156,9 +159,9 @@ fn a_miswired_flowsheet_never_reaches_the_solver() {
 
     let mut fs = Flowsheet::new(r);
 
-    let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed });
-    let u_split = fs.add_unit("split", UnitOp::Splitter { fraction: 0.3 });
-    let u_product = fs.add_unit("product", UnitOp::Product);
+    let u_feed = fs.add_unit("feed", Feed { stream: feed });
+    let u_split = fs.add_unit("split", Splitter { fraction: 0.3 });
+    let u_product = fs.add_unit("product", Product);
 
     fs.add_stream(u_feed, blank.clone(), u_split);
     fs.add_stream(u_split, blank, u_product);

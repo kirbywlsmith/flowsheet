@@ -184,10 +184,15 @@ impl Flowsheet {
     /// `name` identifies the unit in error messages and in saved documents. Uniqueness is not
     /// checked here - [`Flowsheet::check`] reports a repeat, so a flowsheet is still built
     /// loosely and validated once.
-    pub fn add_unit(&mut self, name: impl Into<String>, op: UnitOp) -> UnitId {
+    ///
+    /// `op` is taken as `impl Into<Box<dyn UnitOp>>` rather than the boxed type itself, so a
+    /// caller writes `add_unit("mixer", Mixer)` and the box stays an implementation detail.
+    /// An already-boxed operation - what [`crate::serial`] produces when loading a document -
+    /// still works, through the reflexive `impl From<T> for T`.
+    pub fn add_unit(&mut self, name: impl Into<String>, op: impl Into<Box<dyn UnitOp>>) -> UnitId {
         self.units.push(Unit {
             name: name.into(),
-            op,
+            op: op.into(),
             inlets: Vec::new(),
             outlets: Vec::new(),
         });
@@ -362,6 +367,7 @@ mod tests {
     use super::*;
     use crate::species::{Phase, Species};
     use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
+    use crate::unit::{Feed, Mixer, Product, Splitter, Tank};
     use approx::assert_relative_eq;
 
     /// A placeholder stream value — the solver overwrites these.
@@ -373,12 +379,12 @@ mod tests {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
 
-        let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed(&r) });
-        let u_mixer = fs.add_unit("mixer", UnitOp::Mixer);
-        let u_tank = fs.add_unit("tank", UnitOp::Tank);
-        let u_split = fs.add_unit("split", UnitOp::Splitter { fraction: 0.3 });
-        let u_bleed = fs.add_unit("bleed", UnitOp::Product);
-        let u_product = fs.add_unit("product", UnitOp::Product);
+        let u_feed = fs.add_unit("feed", Feed { stream: feed(&r) });
+        let u_mixer = fs.add_unit("mixer", Mixer);
+        let u_tank = fs.add_unit("tank", Tank);
+        let u_split = fs.add_unit("split", Splitter { fraction: 0.3 });
+        let u_bleed = fs.add_unit("bleed", Product);
+        let u_product = fs.add_unit("product", Product);
 
         fs.add_stream(u_feed, blank(&r), u_mixer);
         fs.add_stream(u_mixer, blank(&r), u_tank);
@@ -394,8 +400,8 @@ mod tests {
     #[test]
     fn add_unit_returns_sequential_ids() {
         let mut fs = Flowsheet::new(demo_registry());
-        let a = fs.add_unit("a", UnitOp::Mixer);
-        let b = fs.add_unit("b", UnitOp::Tank);
+        let a = fs.add_unit("a", Mixer);
+        let b = fs.add_unit("b", Tank);
         assert_eq!(a.as_usize(), 0);
         assert_eq!(b.as_usize(), 1);
         assert_eq!(fs.units.len(), 2);
@@ -405,8 +411,8 @@ mod tests {
     fn add_stream_wires_the_outlet_on_start_and_the_inlet_on_end() {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
-        let tank = fs.add_unit("tank", UnitOp::Tank);
-        let product = fs.add_unit("product", UnitOp::Product);
+        let tank = fs.add_unit("tank", Tank);
+        let product = fs.add_unit("product", Product);
 
         let s = fs.add_stream(tank, blank(&r), product);
 
@@ -423,9 +429,9 @@ mod tests {
         // add_stream calls silently changes which stream is the recycle.
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
-        let splitter = fs.add_unit("splitter", UnitOp::Splitter { fraction: 0.3 });
-        let first = fs.add_unit("first", UnitOp::Product);
-        let second = fs.add_unit("second", UnitOp::Product);
+        let splitter = fs.add_unit("splitter", Splitter { fraction: 0.3 });
+        let first = fs.add_unit("first", Product);
+        let second = fs.add_unit("second", Product);
 
         let s_a = fs.add_stream(splitter, blank(&r), first);
         let s_b = fs.add_stream(splitter, blank(&r), second);
@@ -437,8 +443,8 @@ mod tests {
     fn streams_can_be_read_and_written_by_id() {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
-        let tank = fs.add_unit("tank", UnitOp::Tank);
-        let product = fs.add_unit("product", UnitOp::Product);
+        let tank = fs.add_unit("tank", Tank);
+        let product = fs.add_unit("product", Product);
         let s = fs.add_stream(tank, blank(&r), product);
 
         assert_relative_eq!(fs[s].total(), 0.0);
@@ -453,11 +459,11 @@ mod tests {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
 
-        let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed(&r) });
-        let u_mixer = fs.add_unit("mixer", UnitOp::Mixer);
-        let u_tank = fs.add_unit("tank", UnitOp::Tank);
-        let u_split = fs.add_unit("split", UnitOp::Splitter { fraction: 0.3 });
-        let u_product = fs.add_unit("product", UnitOp::Product);
+        let u_feed = fs.add_unit("feed", Feed { stream: feed(&r) });
+        let u_mixer = fs.add_unit("mixer", Mixer);
+        let u_tank = fs.add_unit("tank", Tank);
+        let u_split = fs.add_unit("split", Splitter { fraction: 0.3 });
+        let u_product = fs.add_unit("product", Product);
 
         let s0 = fs.add_stream(u_feed, blank(&r), u_mixer);
         let s1 = fs.add_stream(u_mixer, blank(&r), u_tank);
@@ -497,7 +503,7 @@ mod tests {
         // A lone tank has neither the inlet nor the outlet it needs — one error each,
         // because `check` never stops at the first problem.
         let mut fs = Flowsheet::new(demo_registry());
-        let tank = fs.add_unit("tank", UnitOp::Tank);
+        let tank = fs.add_unit("tank", Tank);
 
         assert_eq!(
             fs.check(),
@@ -522,8 +528,8 @@ mod tests {
     fn a_mixer_accepts_any_number_of_inlets_but_not_zero() {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
-        let mixer = fs.add_unit("mixer", UnitOp::Mixer);
-        let product = fs.add_unit("product", UnitOp::Product);
+        let mixer = fs.add_unit("mixer", Mixer);
+        let product = fs.add_unit("product", Product);
         fs.add_stream(mixer, blank(&r), product);
 
         // No inlets yet — the variadic side still has a floor of one.
@@ -533,7 +539,7 @@ mod tests {
         ));
 
         for i in 0..3 {
-            let source = fs.add_unit(format!("source{i}"), UnitOp::Feed { stream: feed(&r) });
+            let source = fs.add_unit(format!("source{i}"), Feed { stream: feed(&r) });
             fs.add_stream(source, blank(&r), mixer);
         }
 
@@ -546,9 +552,9 @@ mod tests {
         // wrong, which is exactly why arity cannot be checked inside `add_stream`.
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
-        let source = fs.add_unit("source", UnitOp::Feed { stream: feed(&r) });
-        let splitter = fs.add_unit("splitter", UnitOp::Splitter { fraction: 0.3 });
-        let first = fs.add_unit("first", UnitOp::Product);
+        let source = fs.add_unit("source", Feed { stream: feed(&r) });
+        let splitter = fs.add_unit("splitter", Splitter { fraction: 0.3 });
+        let first = fs.add_unit("first", Product);
 
         fs.add_stream(source, blank(&r), splitter);
         fs.add_stream(splitter, blank(&r), first);
@@ -563,7 +569,7 @@ mod tests {
             }]
         );
 
-        let second = fs.add_unit("second", UnitOp::Product);
+        let second = fs.add_unit("second", Product);
         fs.add_stream(splitter, blank(&r), second);
         assert_eq!(fs.check(), Vec::new());
     }
@@ -572,8 +578,8 @@ mod tests {
     fn two_units_sharing_a_name_are_reported_against_the_second() {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
-        let feed = fs.add_unit("source", UnitOp::Feed { stream: feed(&r) });
-        let product = fs.add_unit("source", UnitOp::Product);
+        let feed = fs.add_unit("source", Feed { stream: feed(&r) });
+        let product = fs.add_unit("source", Product);
         fs.add_stream(feed, blank(&r), product);
 
         assert_eq!(
@@ -622,8 +628,8 @@ mod tests {
     #[test]
     fn duplicate_name_names_the_unit_it_collided_with() {
         let mut fs = Flowsheet::new(demo_registry());
-        fs.add_unit("tank", UnitOp::Tank);
-        let second = fs.add_unit("tank", UnitOp::Tank);
+        fs.add_unit("tank", Tank);
+        let second = fs.add_unit("tank", Tank);
         let e = FlowsheetError::DuplicateName {
             unit: second,
             name: "tank".into(),
@@ -634,7 +640,7 @@ mod tests {
     fn a_stream_from_a_unit_back_into_itself_is_a_self_loop() {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
-        let tank = fs.add_unit("tank", UnitOp::Tank);
+        let tank = fs.add_unit("tank", Tank);
 
         let s = fs.add_stream(tank, blank(&r), tank);
 
@@ -662,8 +668,8 @@ mod tests {
     fn validate_reports_every_error_at_once() {
         // Two units, each broken on both sides: four errors from one call.
         let mut fs = Flowsheet::new(demo_registry());
-        fs.add_unit("tank", UnitOp::Tank);
-        fs.add_unit("splitter", UnitOp::Splitter { fraction: 0.3 });
+        fs.add_unit("tank", Tank);
+        fs.add_unit("splitter", Splitter { fraction: 0.3 });
 
         let errors = fs.validate().expect_err("neither unit is wired");
 
@@ -755,12 +761,12 @@ mod tests {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
 
-        let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed(&r) });
-        let u_split = fs.add_unit("split", UnitOp::Splitter { fraction: 0.5 });
-        let u_a = fs.add_unit("a", UnitOp::Tank);
-        let u_b = fs.add_unit("b", UnitOp::Tank);
-        let u_mix = fs.add_unit("mix", UnitOp::Mixer);
-        let u_product = fs.add_unit("product", UnitOp::Product);
+        let u_feed = fs.add_unit("feed", Feed { stream: feed(&r) });
+        let u_split = fs.add_unit("split", Splitter { fraction: 0.5 });
+        let u_a = fs.add_unit("a", Tank);
+        let u_b = fs.add_unit("b", Tank);
+        let u_mix = fs.add_unit("mix", Mixer);
+        let u_product = fs.add_unit("product", Product);
 
         fs.add_stream(u_feed, blank(&r), u_split);
         fs.add_stream(u_split, blank(&r), u_a);
@@ -790,11 +796,11 @@ mod tests {
         let r = demo_registry();
         let mut fs = Flowsheet::new(demo_registry());
 
-        let u_feed = fs.add_unit("feed", UnitOp::Feed { stream: feed(&r) });
-        let u_mixer = fs.add_unit("mixer", UnitOp::Mixer);
-        let u_tank = fs.add_unit("tank", UnitOp::Tank);
-        let u_split = fs.add_unit("split", UnitOp::Splitter { fraction: 0.3 });
-        let u_product = fs.add_unit("product", UnitOp::Product);
+        let u_feed = fs.add_unit("feed", Feed { stream: feed(&r) });
+        let u_mixer = fs.add_unit("mixer", Mixer);
+        let u_tank = fs.add_unit("tank", Tank);
+        let u_split = fs.add_unit("split", Splitter { fraction: 0.3 });
+        let u_product = fs.add_unit("product", Product);
 
         fs.add_stream(u_feed, blank(&r), u_mixer);
         fs.add_stream(u_mixer, blank(&r), u_tank);

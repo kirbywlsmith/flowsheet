@@ -1,44 +1,62 @@
 //! Unit operations — what a unit is, how many streams it accepts, and what it produces.
 
 use crate::flowsheet::StreamId;
+use crate::serial::ToDocument;
 use crate::stream::Stream;
+use std::fmt::Debug;
 
-/// The different types of supported unit operations and their parameters.
-#[derive(Debug, Clone)]
-pub enum UnitOp {
-    /// One outlet.
-    Feed {
-        /// The outlet [`Stream`].
-        stream: Stream,
-    },
-    /// Combines all inlets into one outlet.
-    Mixer,
-    /// One inlet, two outlets: `fraction` and `1.0 - fraction`.
-    Splitter {
-        /// The `fraction` to pass to [`split`]
-        fraction: f64,
-    },
-    /// One inlet, one outlet per ratio.
-    SplitterN {
-        /// The `ratios` to pass to [`split_n`]
-        ratios: Vec<f64>,
-    },
-    /// One inlet, one outlet
-    Tank,
-    /// One inlet
-    Product,
+/// What a unit does: how many streams it connects, and how it turns inlets into outlets.
+///
+/// Implementations are held as `Box<dyn UnitOp>`, so the set of operations is open - a
+/// downstream crate can add one without touching this module. The trade against the enum this
+/// replaced is dispatch: every call here goes through a vtable rather than a jump table.
+///
+/// [`Debug`] is a supertrait because [`crate::flowsheet::Flowsheet`] derives it, and a derive
+/// can only reach through the box if the trait object itself is `Debug`. [`ToDocument`] is a
+/// supertrait for the opposite reason: saving needs to know *which* operation this is, and a
+/// trait object has erased that, so the operation has to say so itself.
+///
+/// [`Send`] and [`Sync`] are supertraits so that boxing an operation does not cost
+/// [`crate::flowsheet::Flowsheet`] its own auto-derived `Send`/`Sync`. The enum had them for
+/// free; a bare `Box<dyn UnitOp>` has neither, and a `Flowsheet` that is not `Sync` cannot be
+/// shared across threads - which is the whole reason the topological sort emits waves. The
+/// price is that an operation may not hold an [`std::rc::Rc`] or a [`std::cell::Cell`].
+pub trait UnitOp: Debug + Send + Sync + ToDocument {
+    /// How many inlet [`Stream`]s this operation requires.
+    fn inlet_arity(&self) -> Arity;
+
+    /// How many outlet [`Stream`]s this operation produces.
+    fn outlet_arity(&self) -> Arity;
+
+    /// Evaluates this operation's outlet [`Stream`]s.
+    ///
+    /// `inlets` is guaranteed to satisfy [`UnitOp::inlet_arity`] - [`crate::flowsheet::Flowsheet::check`]
+    /// rejects anything else before a solve starts - so an implementation may index it directly.
+    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream>;
+}
+
+/// Boxes any operation, so [`crate::flowsheet::Flowsheet::add_unit`] accepts either a bare
+/// `Mixer` or an already-boxed operation - the reflexive `impl From<T> for T` covers the latter.
+///
+/// Same shape as the standard library's `impl<E: Error> From<E> for Box<dyn Error>`.
+impl<T: UnitOp + 'static> From<T> for Box<dyn UnitOp> {
+    fn from(op: T) -> Self {
+        Box::new(op)
+    }
 }
 
 /// How many streams a [`UnitOp`] accepts on one side. `max` of `None` means unbounded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Arity {
+pub struct Arity {
+    /// The fewest streams accepted.
     pub(crate) min: usize,
+    /// The most streams accepted, or `None` when unbounded.
     pub(crate) max: Option<usize>,
 }
 
 impl Arity {
     /// Exactly `n` streams.
-    pub(crate) const fn exactly(n: usize) -> Self {
+    pub const fn exactly(n: usize) -> Self {
         Self {
             min: n,
             max: Some(n),
@@ -46,55 +64,132 @@ impl Arity {
     }
 
     /// At least `n` streams, with no upper bound.
-    pub(crate) const fn at_least(n: usize) -> Self {
+    pub const fn at_least(n: usize) -> Self {
         Self { min: n, max: None }
     }
 
     /// Whether `found` streams satisfies this arity.
-    pub(crate) fn permits(self, found: usize) -> bool {
+    pub fn permits(self, found: usize) -> bool {
         found >= self.min && self.max.is_none_or(|max| found <= max)
     }
 }
 
-impl UnitOp {
-    /// How many inlet [`Stream`]s this operation requires.
-    pub(crate) fn inlet_arity(&self) -> Arity {
-        match self {
-            UnitOp::Feed { .. } => Arity::exactly(0),
-            UnitOp::Mixer => Arity::at_least(1),
-            UnitOp::Splitter { .. } | UnitOp::SplitterN { .. } => Arity::exactly(1),
-            UnitOp::Tank => Arity::exactly(1),
-            UnitOp::Product => Arity::exactly(1),
-        }
+/// No inlets, one outlet: emits a fixed [`Stream`] into the flowsheet.
+#[derive(Debug, Clone)]
+pub struct Feed {
+    /// The outlet [`Stream`].
+    pub stream: Stream,
+}
+
+/// Any number of inlets, one outlet: combines them all with [`mix`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Mixer;
+
+/// One inlet, two outlets: `fraction` and `1.0 - fraction`.
+#[derive(Debug, Clone, Copy)]
+pub struct Splitter {
+    /// The `fraction` to pass to [`split`].
+    pub fraction: f64,
+}
+
+/// One inlet, one outlet per ratio.
+#[derive(Debug, Clone)]
+pub struct SplitterN {
+    /// The `ratios` to pass to [`split_n`].
+    pub ratios: Vec<f64>,
+}
+
+/// One inlet, one outlet: passes its inlet straight through.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Tank;
+
+/// One inlet, no outlets: where material leaves the flowsheet.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Product;
+
+impl UnitOp for Feed {
+    fn inlet_arity(&self) -> Arity {
+        Arity::exactly(0)
     }
 
-    /// How many outlet [`Stream`]s this operation produces.
-    pub(crate) fn outlet_arity(&self) -> Arity {
-        match self {
-            UnitOp::Feed { .. } => Arity::exactly(1),
-            UnitOp::Mixer => Arity::exactly(1),
-            UnitOp::Splitter { .. } => Arity::exactly(2),
-            UnitOp::SplitterN { ratios } => Arity::exactly(ratios.len()),
-            UnitOp::Tank => Arity::exactly(1),
-            UnitOp::Product => Arity::exactly(0),
-        }
+    fn outlet_arity(&self) -> Arity {
+        Arity::exactly(1)
     }
 
-    /// Evaluates a unit operation's outlet [`Stream`]s.
-    pub(crate) fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
-        match self {
-            UnitOp::Feed { stream } => vec![stream.clone()],
-            UnitOp::Mixer => {
-                vec![mix(inlets.iter().copied()).expect("mixer needs at least one inlet")]
-            }
-            UnitOp::Tank => vec![inlets[0].clone()],
-            UnitOp::Splitter { fraction } => {
-                let (a, b) = split(inlets[0], *fraction);
-                vec![a, b]
-            }
-            UnitOp::SplitterN { ratios } => split_n(inlets[0], ratios),
-            UnitOp::Product => vec![],
-        }
+    fn evaluate(&self, _inlets: &[&Stream]) -> Vec<Stream> {
+        vec![self.stream.clone()]
+    }
+}
+
+impl UnitOp for Mixer {
+    fn inlet_arity(&self) -> Arity {
+        // The only unbounded side in the model.
+        Arity::at_least(1)
+    }
+
+    fn outlet_arity(&self) -> Arity {
+        Arity::exactly(1)
+    }
+
+    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
+        vec![mix(inlets.iter().copied()).expect("mixer needs at least one inlet")]
+    }
+}
+
+impl UnitOp for Splitter {
+    fn inlet_arity(&self) -> Arity {
+        Arity::exactly(1)
+    }
+
+    fn outlet_arity(&self) -> Arity {
+        Arity::exactly(2)
+    }
+
+    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
+        let (a, b) = split(inlets[0], self.fraction);
+        vec![a, b]
+    }
+}
+
+impl UnitOp for SplitterN {
+    fn inlet_arity(&self) -> Arity {
+        Arity::exactly(1)
+    }
+
+    fn outlet_arity(&self) -> Arity {
+        Arity::exactly(self.ratios.len())
+    }
+
+    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
+        split_n(inlets[0], &self.ratios)
+    }
+}
+
+impl UnitOp for Tank {
+    fn inlet_arity(&self) -> Arity {
+        Arity::exactly(1)
+    }
+
+    fn outlet_arity(&self) -> Arity {
+        Arity::exactly(1)
+    }
+
+    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
+        vec![inlets[0].clone()]
+    }
+}
+
+impl UnitOp for Product {
+    fn inlet_arity(&self) -> Arity {
+        Arity::exactly(1)
+    }
+
+    fn outlet_arity(&self) -> Arity {
+        Arity::exactly(0)
+    }
+
+    fn evaluate(&self, _inlets: &[&Stream]) -> Vec<Stream> {
+        vec![]
     }
 }
 
@@ -102,7 +197,7 @@ impl UnitOp {
 #[derive(Debug)]
 pub struct Unit {
     pub(crate) name: String,
-    pub(crate) op: UnitOp,
+    pub(crate) op: Box<dyn UnitOp>,
     pub(crate) inlets: Vec<StreamId>,
     pub(crate) outlets: Vec<StreamId>,
 }
@@ -324,7 +419,7 @@ mod tests {
     #[test]
     fn feed_emits_its_stream_and_ignores_inlets() {
         let r = demo_registry();
-        let op = UnitOp::Feed { stream: feed(&r) };
+        let op = Feed { stream: feed(&r) };
 
         let outs = op.evaluate(&[]);
 
@@ -338,7 +433,7 @@ mod tests {
         let a = feed(&r);
         let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], AMBIENT_K, AMBIENT_KPA);
 
-        let outs = UnitOp::Mixer.evaluate(&[&a, &b]);
+        let outs = Mixer.evaluate(&[&a, &b]);
 
         assert_eq!(outs.len(), 1);
         assert_relative_eq!(outs[0].total(), 1060.0, max_relative = 1e-12);
@@ -349,7 +444,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = UnitOp::Tank.evaluate(&[&inlet]);
+        let outs = Tank.evaluate(&[&inlet]);
 
         assert_eq!(outs.len(), 1);
         assert!(inlet.flows_approx_eq(&outs[0], 1e-12));
@@ -360,7 +455,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = UnitOp::Splitter { fraction: 0.3 }.evaluate(&[&inlet]);
+        let outs = Splitter { fraction: 0.3 }.evaluate(&[&inlet]);
 
         assert_eq!(outs.len(), 2);
         assert_relative_eq!(outs[0].total(), 300.0, max_relative = 1e-12);
@@ -371,7 +466,7 @@ mod tests {
     fn splitter_n_returns_one_outlet_per_ratio() {
         let r = demo_registry();
         let inlet = feed(&r);
-        let op = UnitOp::SplitterN {
+        let op = SplitterN {
             ratios: vec![1.0, 1.0, 2.0],
         };
 
@@ -385,7 +480,7 @@ mod tests {
     #[test]
     fn product_consumes_its_inlet_and_emits_nothing() {
         let r = demo_registry();
-        let outs = UnitOp::Product.evaluate(&[&feed(&r)]);
+        let outs = Product.evaluate(&[&feed(&r)]);
         assert!(outs.is_empty());
     }
 
@@ -405,28 +500,36 @@ mod tests {
     #[test]
     fn every_op_declares_the_arity_its_evaluate_assumes() {
         let r = demo_registry();
-        let cases = [
+
+        // `Box<dyn UnitOp>` is what lets one array hold six different concrete types. The enum
+        // version of this test relied on them all being the same type instead.
+        type Case = (
+            Box<dyn UnitOp>,
+            (usize, Option<usize>),
+            (usize, Option<usize>),
+        );
+        let cases: Vec<Case> = vec![
             (
-                UnitOp::Feed { stream: feed(&r) },
+                Box::new(Feed { stream: feed(&r) }),
                 (0, Some(0)),
                 (1, Some(1)),
             ),
             // The mixer is the only unbounded side in the model.
-            (UnitOp::Mixer, (1, None), (1, Some(1))),
-            (UnitOp::Tank, (1, Some(1)), (1, Some(1))),
+            (Box::new(Mixer), (1, None), (1, Some(1))),
+            (Box::new(Tank), (1, Some(1)), (1, Some(1))),
             (
-                UnitOp::Splitter { fraction: 0.3 },
+                Box::new(Splitter { fraction: 0.3 }),
                 (1, Some(1)),
                 (2, Some(2)),
             ),
             (
-                UnitOp::SplitterN {
+                Box::new(SplitterN {
                     ratios: vec![1.0, 1.0, 2.0],
-                },
+                }),
                 (1, Some(1)),
                 (3, Some(3)),
             ),
-            (UnitOp::Product, (1, Some(1)), (0, Some(0))),
+            (Box::new(Product), (1, Some(1)), (0, Some(0))),
         ];
 
         for (op, inlets, outlets) in cases {
@@ -449,5 +552,13 @@ mod tests {
                 "{op:?} returned an outlet count its arity does not declare"
             );
         }
+    }
+
+    /// The `Send + Sync` supertraits on [`UnitOp`] exist only to keep this true; nothing else
+    /// in the crate would fail if they were dropped, so the guarantee needs its own test.
+    #[test]
+    fn a_valid_flowsheet_can_still_cross_a_thread_boundary() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<crate::flowsheet::ValidFlowsheet>();
     }
 }
