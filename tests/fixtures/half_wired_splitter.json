@@ -1,0 +1,12 @@
+{
+  "species": [{ "name": "H2O", "phase": "Liquid", "molar_mass": 18.015 }],
+  "units": [
+    { "name": "feed", "op": { "type": "feed", "state": { "flows": { "H2O": 100.0 } } } },
+    { "name": "split", "op": { "type": "splitter", "fraction": 0.3 } },
+    { "name": "product", "op": { "type": "product" } }
+  ],
+  "streams": [
+    { "from": "feed", "to": "split" },
+    { "from": "split", "to": "product" }
+  ]
+}

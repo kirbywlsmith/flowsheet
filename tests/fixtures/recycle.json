@@ -1,0 +1,108 @@
+{
+  "species": [
+    {
+      "name": "CuFeS2",
+      "phase": "Solid",
+      "molar_mass": 183.5
+    },
+    {
+      "name": "SiO2",
+      "phase": "Solid",
+      "molar_mass": 60.08
+    },
+    {
+      "name": "H2O",
+      "phase": "Liquid",
+      "molar_mass": 18.015
+    }
+  ],
+  "units": [
+    {
+      "name": "feed",
+      "op": {
+        "type": "feed",
+        "state": {
+          "flows": {
+            "CuFeS2": 40.0,
+            "H2O": 600.0,
+            "SiO2": 360.0
+          },
+          "temperature": 298.15,
+          "pressure": 101.325
+        }
+      }
+    },
+    {
+      "name": "mixer",
+      "op": {
+        "type": "mixer"
+      }
+    },
+    {
+      "name": "tank",
+      "op": {
+        "type": "tank"
+      }
+    },
+    {
+      "name": "split",
+      "op": {
+        "type": "splitter",
+        "fraction": 0.3
+      }
+    },
+    {
+      "name": "product",
+      "op": {
+        "type": "product"
+      }
+    }
+  ],
+  "streams": [
+    {
+      "from": "feed",
+      "to": "mixer",
+      "state": {
+        "flows": {},
+        "temperature": 298.15,
+        "pressure": 101.325
+      }
+    },
+    {
+      "from": "mixer",
+      "to": "tank",
+      "state": {
+        "flows": {},
+        "temperature": 298.15,
+        "pressure": 101.325
+      }
+    },
+    {
+      "from": "tank",
+      "to": "split",
+      "state": {
+        "flows": {},
+        "temperature": 298.15,
+        "pressure": 101.325
+      }
+    },
+    {
+      "from": "split",
+      "to": "mixer",
+      "state": {
+        "flows": {},
+        "temperature": 298.15,
+        "pressure": 101.325
+      }
+    },
+    {
+      "from": "split",
+      "to": "product",
+      "state": {
+        "flows": {},
+        "temperature": 298.15,
+        "pressure": 101.325
+      }
+    }
+  ]
+}

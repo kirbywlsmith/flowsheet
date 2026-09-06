@@ -2,9 +2,6 @@
 
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `src/main.rs`.
 
-- [ ] clap CLI: `flowsheet <flowsheet.json>`
-    - can pass args to determine output format (print to console, save to a file, specify which values to
-      include/ignore)
 - [ ] Split into a workspace: `crates/flowsheet-core` (no CLI deps) and `crates/flowsheet-cli`
 - [ ] Convert `UnitOp` enum to `Box<dyn UnitOp>` trait objects; write up the tradeoff (dispatch cost, open extension) in
   the README
@@ -15,6 +12,9 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
   becomes composite (e.g. `"H2O(g)"`).
 - [ ] Rayon parallel solve of independent branches; bench against serial and record where it stops paying off
 - [ ] README: what it is, quickstart, JSON format, one worked example, rename project 'flowsheet'
+    - Show `flowsheet --json circuit.json > solved.json` in the quickstart. There is deliberately no `--output` flag:
+      the shell already does it, and `--json` output is tested to reload as a legal input. Saying so keeps the
+      omission reading as a decision rather than a gap.
 - [ ] MIT/Apache-2.0 dual licence, `cargo fmt`/`clippy -D warnings` in GitHub Actions, publish to crates.io
 - [ ] Later: better tear heuristics. `tear_streams` takes the lowest-id stream inside each SCC, one per component. Both
   parts cost passes: the tear set is the solver's unknown vector, so extra tears mean more to converge, and interlocking

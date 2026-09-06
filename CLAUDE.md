@@ -82,11 +82,28 @@ Never mix severities in one unlabelled list.
   of flattening it, and `serial::UnitOp`'s variants are newtypes over per-op spec structs (`SplitterSpec`, and `NoSpec`
   for the parameterless ops) that each deny unknown fields themselves. A newtype variant is deserialised as a plain
   struct with the `type` key already stripped, so its own attribute fires. The JSON shape is unchanged by all of this.
+- The **table formatter lives in the library** (`src/report.rs`), not in `main.rs`. A stream's
+  endpoints are only recoverable from the `inlets`/`outlets` of the units that list it, and those
+  are `pub(crate)` — `main.rs` is a separate crate and cannot see them. Keeping the formatter in
+  the library avoids widening `Unit`'s public surface just to compute a display column, and since
+  it has no `clap` dependency it moves into `flowsheet-core` unchanged at the workspace split.
+- Stream labels are `{from}.{to}`, deduped with a **single running counter**: the first occurrence
+  stays bare, repeats become `#2`, `#3`. No counting pre-pass is needed, because only occurrences
+  after the first are ever suffixed.
+- `main` deliberately does **not** return `Result`. Rust prints a returned error with `Debug`, not
+  `Display`, so every message these error types carefully write would surface as a struct literal.
+  Instead `main` calls `run()`, prints `{e}` to stderr, and exits 1.
+- The CLI has **no `--output` flag**. `--json` writes a whole document to stdout and a test proves it reloads as a
+  legal input, so `> solved.json` is the supported way to save one — the shell already owns that job. Column
+  include/ignore flags were dropped from the original clap item for the same reason they were never missed: nothing
+  needs them yet.
 
 ## Testing
 
 - Unit tests in-file (`#[cfg(test)] mod tests`) — can see private items.
-- `tests/` for end-to-end flowsheet solves. Empty until the solver exists.
+- `tests/` for end-to-end flowsheet solves, and for running the binary over a document in `tests/fixtures/`.
+  `recycle.json` is the demo circuit saved as a document; `tests/cli.rs` asserts it byte-for-byte against
+  `serial::Flowsheet::from(&demo::build_flowsheet())`, so it cannot drift from the demo.
 - Every completed TODO item ships with tests. Demo and example code is illustrative and exempt.
 
 ## Commands

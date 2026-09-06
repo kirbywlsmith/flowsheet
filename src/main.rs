@@ -1,5 +1,72 @@
+//! `flowsheet` - load a flowsheet document, solve it, and print the result.
+
+use clap::Parser;
+use process_simulation::flowsheet::{Flowsheet, FlowsheetError};
+use process_simulation::report;
+use process_simulation::serial;
+use process_simulation::solver::Solver;
+use std::error::Error;
+use std::fmt::Write;
+use std::path::PathBuf;
+
+/// Solve a steady-state flowsheet document.
+#[derive(Parser)]
+#[command(name = "flowsheet", version)]
+struct Cli {
+    /// The flowsheet document to solve.
+    file: PathBuf,
+    /// Print the solved document as JSON instead of a table.
+    #[arg(long)]
+    json: bool,
+}
+
 fn main() {
-    println!("Hello, world!");
+    // `fn main() -> Result<..>` would print the error with `Debug`, not `Display`, so every
+    // message these types carefully write would come out as a struct literal instead.
+    if let Err(e) = run() {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse();
+
+    // `serde_json` names the line and column but not the file, so both of these say which.
+    let text =
+        std::fs::read_to_string(&cli.file).map_err(|e| format!("{}: {e}", cli.file.display()))?;
+    let document: serial::Flowsheet =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", cli.file.display()))?;
+
+    let mut solved = Flowsheet::try_from(document)
+        .map_err(|e| format!("{}: {e}", cli.file.display()))?
+        .validate()
+        .map_err(describe_validation)?;
+
+    let report = Solver::default().solve(&mut solved)?;
+
+    if cli.json {
+        let saved = serial::Flowsheet::from(&solved);
+        println!("{}", serde_json::to_string_pretty(&saved)?);
+    } else {
+        print!("{}", report::table(&solved, &report));
+    }
+
+    Ok(())
+}
+
+/// Joins the errors `validate` collected into one message.
+///
+/// `Vec<FlowsheetError>` is not itself an error type, so `?` cannot box it. Collapsing the vector
+/// into a `String` - which *does* convert into `Box<dyn Error>` - keeps all of them, and reporting
+/// all of them is the whole reason `check` collects rather than stopping at the first.
+fn describe_validation(errors: Vec<FlowsheetError>) -> String {
+    let noun = if errors.len() == 1 { "error" } else { "errors" };
+    let mut message = format!("{} validation {noun}:", errors.len());
+    for e in errors {
+        write!(message, "\n  {e}").expect("writing to a String is infallible");
+    }
+    message
 }
 
 // ============================================================================
@@ -12,18 +79,18 @@ fn main() {
 //     ▼
 //   Mixer  ◄─────────────┐   (2 in / 1 out)
 //     │ S1               │
-//     ▼                  │ S4   recycle — this is the TEAR STREAM
+//     ▼                  │ S3   recycle — this is the TEAR STREAM
 //   Conditioning tank    │
 //     │ S2               │   (1 in / 1 out)
 //     ▼                  │
 //   Splitter ────────────┘   (1 in / 2 out)
-//     │ S3
+//     │ S4
 //     ▼
 //   Product                  (sink, 1 in / 0 out)
 //
 // Streams: S0..S4. Units: U0..U4 in the order listed above.
 // The Feed→Mixer→Tank→Splitter→Mixer cycle is why a topological sort alone
-// can't solve this — S4 must be guessed and iterated to convergence.
+// can't solve this — S3 must be guessed and iterated to convergence.
 //
 // Species (fixed list, index = SpeciesId)
 // ---------------------------------------
@@ -52,18 +119,18 @@ fn main() {
 //   S0 feed           40.000   360.000   600.000   1000.000
 //   S1 mixer out      57.143   514.286   857.143   1428.571
 //   S2 tank out       57.143   514.286   857.143   1428.571
-//   S3 product        40.000   360.000   600.000   1000.000
-//   S4 recycle        17.143   154.286   257.143    428.571
+//   S3 recycle        17.143   154.286   257.143    428.571
+//   S4 product        40.000   360.000   600.000   1000.000
 //
 // Two invariants worth asserting in tests:
-//   1. S3 == S0 exactly. Nothing accumulates at steady state, so whatever
+//   1. S4 == S0 exactly. Nothing accumulates at steady state, so whatever
 //      enters the plant must leave it — the recycle only inflates the
 //      INTERNAL flows, never the product.
 //   2. Internal flow amplification is 1/(1-f) = 1/0.7 = 1.42857.
 //
 // Convergence behaviour
 // ---------------------
-// Guess S4 = zeros, then direct substitution: the error shrinks by exactly
+// Guess S3 = zeros, then direct substitution: the error shrinks by exactly
 // f each pass (geometric, ratio 0.3), so ~14 iterations to reach 1e-6.
 // Bump f to 0.9 and it takes ~130 — that's the motivation for Wegstein.
 //
@@ -73,9 +140,9 @@ fn main() {
 //   [ ] Mixer and Splitter as plain functions, unit-tested in isolation
 //   [ ] Arena: Vec<UnitOp>, Vec<Stream>, UnitId/StreamId newtypes
 //   [ ] Wire up the graph above by hand in a build_flowsheet() fn
-//   [ ] Solve WITHOUT the recycle first (delete S4, Mixer takes only S0)
+//   [ ] Solve WITHOUT the recycle first (delete S3, Mixer takes only S0)
 //       — this is acyclic, so a topological sort solves it in one pass
-//   [ ] Add S4 back, detect the cycle, tear at S4, direct substitution
+//   [ ] Add S3 back, detect the cycle, tear at S3, direct substitution
 //   [ ] Wegstein acceleration, tolerance + max-iteration config
 //
 // Later: replace U2 with a flotation cell (1 in / 2 out, per-species
