@@ -8,11 +8,9 @@
 //!    itself at `f / (1 - f)` of the feed.
 
 use approx::assert_relative_eq;
-use process_simulation::demo::{RecycleCircuit, feed_stream, recycle_circuit, registry};
-use process_simulation::flowsheet::{StreamId, ValidFlowsheet};
-use process_simulation::solver::ConvergenceMethod::Wegstein;
-use process_simulation::solver::{Solver, SolverConfig};
-use process_simulation::stream::Stream;
+use flowsheet::ConvergenceMethod::Wegstein;
+use flowsheet::demo::{RecycleCircuit, feed_stream, recycle_circuit, registry};
+use flowsheet::{Solver, SolverConfig, Stream, StreamId, ValidFlowsheet};
 
 /// A solved circuit: the flowsheet, plus the ids kept from build time.
 struct Solved {

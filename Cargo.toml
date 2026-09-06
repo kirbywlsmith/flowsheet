@@ -1,12 +1,16 @@
-[package]
-name = "process_simulation"
-version = "0.1.0"
-edition = "2024"
+# Virtual manifest: this directory is a workspace, not a package. `cargo test` and
+# `cargo clippy` run from here cover every member.
+#
+# `resolver` is not inherited from the members' `edition`, and a virtual manifest
+# defaults to resolver 1 regardless, so it has to be stated.
+[workspace]
+members = ["crates/flowsheet", "crates/flowsheet-cli"]
+resolver = "3"
 
-[dependencies]
-clap = { version = "4.6.6", features = ["derive"] }
+# One version per dependency for the whole workspace. Members opt in with
+# `serde = { workspace = true }`, which also inherits the feature list - that is what
+# keeps `float_roundtrip` from drifting between the two crates that parse JSON.
+[workspace.dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
-
-[dev-dependencies]
 approx = "0.5.1"

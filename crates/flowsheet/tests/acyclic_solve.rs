@@ -1,6 +1,6 @@
 //! End-to-end solves of the demo circuit with the recycle removed.
 //!
-//! The flowsheet is built here rather than taken from [`process_simulation::demo`]
+//! The flowsheet is built here rather than taken from [`flowsheet::demo`]
 //! so the tests keep the [`StreamId`]s that `add_stream` hands back — there is no
 //! way to recover them from a built [`Flowsheet`].
 //!
@@ -10,14 +10,11 @@
 //! ```
 //!
 //! The looped version lives in `recycle_balance.rs`, built from
-//! [`process_simulation::demo::recycle_circuit`].
+//! [`flowsheet::demo::recycle_circuit`].
 
 use approx::assert_relative_eq;
-use process_simulation::demo::{AMBIENT_K, AMBIENT_KPA, feed_stream, registry};
-use process_simulation::flowsheet::{Flowsheet, FlowsheetError, StreamId, ValidFlowsheet};
-use process_simulation::solver::Solver;
-use process_simulation::stream::Stream;
-use process_simulation::unit::UnitOp;
+use flowsheet::demo::{AMBIENT_K, AMBIENT_KPA, feed_stream, registry};
+use flowsheet::{Flowsheet, FlowsheetError, Solver, Stream, StreamId, UnitOp, ValidFlowsheet};
 
 /// A built flowsheet plus the stream ids needed to inspect the solved result.
 struct Circuit {

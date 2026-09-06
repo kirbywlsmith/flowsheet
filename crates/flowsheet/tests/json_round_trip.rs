@@ -1,9 +1,8 @@
 //! End-to-end checks that a flowsheet survives a trip through JSON.
 
-use process_simulation::demo;
-use process_simulation::flowsheet::Flowsheet;
-use process_simulation::serial;
-use process_simulation::solver::Solver;
+use flowsheet::demo;
+use flowsheet::serial;
+use flowsheet::{Flowsheet, Solver};
 
 /// Solves the demo recycle circuit and captures the result as a document.
 fn solved_demo() -> serial::Flowsheet {

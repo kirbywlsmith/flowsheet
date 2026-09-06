@@ -2,8 +2,8 @@
 //!
 //! This lives in the library rather than the binary because a stream's endpoints are only
 //! recoverable from the units that list it, and those port vectors are crate-private. Keeping
-//! the formatter here also keeps it free of any CLI dependency, so it survives the split into
-//! `flowsheet-core` unchanged.
+//! the formatter here also keeps it free of any CLI dependency, so it survived the split into
+//! the `flowsheet` library crate unchanged.
 
 use crate::flowsheet::ValidFlowsheet;
 use crate::solver::SolveReport;

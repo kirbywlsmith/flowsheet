@@ -1,10 +1,9 @@
 //! `flowsheet` - load a flowsheet document, solve it, and print the result.
 
 use clap::Parser;
-use process_simulation::flowsheet::{Flowsheet, FlowsheetError};
-use process_simulation::report;
-use process_simulation::serial;
-use process_simulation::solver::Solver;
+use flowsheet::report;
+use flowsheet::serial;
+use flowsheet::{Flowsheet, FlowsheetError, Solver};
 use std::error::Error;
 use std::fmt::Write;
 use std::path::PathBuf;

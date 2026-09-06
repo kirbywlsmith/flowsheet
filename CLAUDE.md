@@ -59,7 +59,7 @@ Never mix severities in one unlabelled list.
   `ValidFlowsheet` has `Deref` but deliberately no `DerefMut`, so the topology cannot change behind the validation.
 - Kahn's topological sort emits **waves** (`Vec<Vec<UnitId>>`), not a flat order, so parallelism is free later.
 - Float equality: never `==`. `approx` (dev-dependency) in tests; `Stream::max_flow_residual` for the solver.
-- JSON is a **separate wire format** in `src/serial.rs`, not serde attributes on the domain types. `serial::Flowsheet`
+- JSON is a **separate wire format** in `serial.rs`, not serde attributes on the domain types. `serial::Flowsheet`
   etc. reuse the domain names and are told apart by module path, the Rust convention over a `Doc`/`Dto` suffix. The
   rule for what gets `#[derive(Deserialize)]` directly: types whose privacy encodes an invariant (`SpeciesId`,
   `Stream`, `Flowsheet`) get a mirror type; all-public-field data with no constructor (`Species`, `Phase`) does not.
@@ -82,11 +82,11 @@ Never mix severities in one unlabelled list.
   of flattening it, and `serial::UnitOp`'s variants are newtypes over per-op spec structs (`SplitterSpec`, and `NoSpec`
   for the parameterless ops) that each deny unknown fields themselves. A newtype variant is deserialised as a plain
   struct with the `type` key already stripped, so its own attribute fires. The JSON shape is unchanged by all of this.
-- The **table formatter lives in the library** (`src/report.rs`), not in `main.rs`. A stream's
+- The **table formatter lives in the library** (`report.rs`), not in `main.rs`. A stream's
   endpoints are only recoverable from the `inlets`/`outlets` of the units that list it, and those
   are `pub(crate)` — `main.rs` is a separate crate and cannot see them. Keeping the formatter in
-  the library avoids widening `Unit`'s public surface just to compute a display column, and since
-  it has no `clap` dependency it moves into `flowsheet-core` unchanged at the workspace split.
+  the library avoids widening `Unit`'s public surface just to compute a display column, and it
+  moved into the `flowsheet` library crate unchanged at the workspace split, as predicted.
 - Stream labels are `{from}.{to}`, deduped with a **single running counter**: the first occurrence
   stays bare, repeats become `#2`, `#3`. No counting pre-pass is needed, because only occurrences
   after the first are ever suffixed.
@@ -98,20 +98,64 @@ Never mix severities in one unlabelled list.
   include/ignore flags were dropped from the original clap item for the same reason they were never missed: nothing
   needs them yet.
 
+## Layout
+
+Cargo workspace. The root `Cargo.toml` is a **virtual manifest** — `[workspace]`, no `[package]` — so `cargo test`
+and `cargo clippy` at the root cover every member.
+
+```
+crates/flowsheet/       the library: domain types, solver, serial, report. Depends on serde only.
+crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, error printing.
+```
+
+- The split exists so **`clap` stays out of the library's dependency graph**. Cargo has no per-target dependencies,
+  so in a single crate the binary's deps are also the library's, for everyone downstream.
+- `serde_json` is a **dev-dependency** of `flowsheet`, not a dependency. Every `serde_json` call in the library
+  is inside a `#[cfg(test)]` module — the wire types carry the derives, and turning them into bytes is the caller's
+  job. The CLI depends on it for real.
+- **The library gets the plain name**, the CLI package is `flowsheet-cli`. `-core` earns its keep only when a facade
+  crate re-exports it, and there is no facade here; the library is what people `use`, so `_core` would be noise on
+  every import. Same shape as `wasmtime` / `wasmtime-cli`. The cost is that `cargo install flowsheet` fetches the
+  library and installs no binary — the quickstart has to say `cargo install flowsheet-cli`.
+- The CLI's `[[bin]]` sets **`doc = false`**. A `[[bin]]` name is a filename rather than a Rust identifier, which is
+  how package `flowsheet-cli` can produce a binary called plain `flowsheet` — but that makes the bin target and the
+  library share a name, so both want to write `target/doc/flowsheet/index.html` and one silently clobbers the other
+  (rust-lang/cargo#6313). Note `RUSTDOCFLAGS="-D warnings"` does *not* catch this: it is a Cargo warning, not a
+  rustdoc lint.
+- The root manifest sets **`resolver = "3"`** explicitly. A virtual manifest has no `edition` to infer it from and
+  silently defaults to resolver 1 otherwise.
+- Dependency versions are declared once in **`[workspace.dependencies]`** and inherited with
+  `serde_json = { workspace = true }`. That is what keeps the `float_roundtrip` feature from drifting between the two
+  crates that parse JSON. (Closest C# analogue: central package management in `Directory.Packages.props`.)
+- The **headline types are re-exported at the crate root** (`pub use` in `lib.rs`), so callers write
+  `flowsheet::Flowsheet` instead of `flowsheet::flowsheet::Flowsheet` — the crate and its main module share a name and
+  the stutter otherwise shows up at every import. The modules stay `pub`, so the long paths still work. Two things
+  are deliberately *not* re-exported: `serial`'s types, because `serial::Flowsheet` vs `flowsheet::Flowsheet` is
+  exactly the module-path distinction the wire format relies on and flattening them would collide; and free functions
+  like `unit::mix` and `report::table`, which read better carrying their module.
+- **`.gitattributes` pins `eol=lf`.** `core.autocrlf=true` is set on the dev machine, and `tests/cli.rs` compares a
+  fixture byte-for-byte against `serde_json` output, which always writes LF. Without the pin that test passes on CI
+  (Linux) and fails on Windows.
+
 ## Testing
 
 - Unit tests in-file (`#[cfg(test)] mod tests`) — can see private items.
-- `tests/` for end-to-end flowsheet solves, and for running the binary over a document in `tests/fixtures/`.
-  `recycle.json` is the demo circuit saved as a document; `tests/cli.rs` asserts it byte-for-byte against
+- `crates/flowsheet/tests/` for end-to-end flowsheet solves; `crates/flowsheet-cli/tests/` for running the
+  binary over a document in its own `tests/fixtures/`. Cargo sets an integration test's working directory to the
+  *package* root, so the relative fixture paths in `cli.rs` resolve inside `crates/flowsheet-cli/`.
+- `recycle.json` is the demo circuit saved as a document; `cli.rs` asserts it byte-for-byte against
   `serial::Flowsheet::from(&demo::build_flowsheet())`, so it cannot drift from the demo.
 - Every completed TODO item ships with tests. Demo and example code is illustrative and exempt.
 
 ## Commands
 
 ```bash
-cargo test
-cargo clippy --all-targets
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
 
-All three must be clean before removing a TODO item.
+All four must be clean before removing a TODO item. These are exactly what
+`.github/workflows/rust.yml` runs, on both Linux and Windows — the matrix is not redundant, because the byte-exact
+document test in `flowsheet-cli` is line-ending sensitive and only fails on Windows.

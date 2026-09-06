@@ -1,0 +1,5 @@
+# `core.autocrlf=true` is set on this machine, which checks text files out with CRLF.
+# `tests/cli.rs` compares a fixture byte-for-byte against `serde_json` output, and
+# `serde_json` always writes LF, so the fixture must be LF in the working tree too -
+# otherwise that test passes on CI (Linux) and fails on Windows.
+* text=auto eol=lf

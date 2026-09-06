@@ -1,8 +1,8 @@
 //! Convergence rate of the tear-stream methods on a recycle loop.
 
-use process_simulation::demo::recycle_flowsheet;
-use process_simulation::solver::ConvergenceMethod::{DirectSubstitution, Wegstein};
-use process_simulation::solver::{ConvergenceMethod, SolveReport, Solver, SolverConfig};
+use flowsheet::ConvergenceMethod::{DirectSubstitution, Wegstein};
+use flowsheet::demo::recycle_flowsheet;
+use flowsheet::{ConvergenceMethod, SolveReport, Solver, SolverConfig};
 
 const WEGSTEIN: ConvergenceMethod = Wegstein {
     q_min: -5.0,

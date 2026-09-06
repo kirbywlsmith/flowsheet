@@ -2,7 +2,7 @@
 //!
 //! Run with:  cargo run --example recycle_circuit
 
-use process_simulation::demo::build_flowsheet;
+use flowsheet::demo::build_flowsheet;
 
 fn main() {
     let flowsheet = build_flowsheet();

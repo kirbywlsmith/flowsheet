@@ -1,0 +1,27 @@
+[package]
+name = "flowsheet-cli"
+version = "0.1.0"
+edition = "2024"
+
+# The package is `flowsheet-cli` because the plain `flowsheet` name belongs to the library,
+# which is what people depend on. The binary users type is still just `flowsheet`: a `[[bin]]`
+# name is a filename, not a Rust identifier, so it is free to differ from the package name.
+# The cost is that `cargo install flowsheet` gets the library and no binary - it is
+# `cargo install flowsheet-cli` that installs the tool.
+#
+# `doc = false` because the bin target and the library are both called `flowsheet`, so both
+# want to write `target/doc/flowsheet/index.html` and one silently overwrites the other
+# (rust-lang/cargo#6313). The binary has no API to document - its interface is `--help` - so
+# the library is the one that should own that path.
+[[bin]]
+name = "flowsheet"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+flowsheet = { path = "../flowsheet" }
+clap = { version = "4.6.6", features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "flowsheet"
+version = "0.1.0"
+edition = "2024"
+
+# `serde` alone, for the derives on the `serial` wire types. The library never turns a
+# document into bytes itself - every `serde_json` call in this crate is inside a
+# `#[cfg(test)]` module, so the format lives with the caller.
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+serde_json = { workspace = true }

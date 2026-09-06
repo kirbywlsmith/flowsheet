@@ -5,9 +5,8 @@
 //! directory is the package root, which is what makes the `tests/fixtures` paths below work.
 
 use approx::assert_relative_eq;
-use process_simulation::flowsheet::Flowsheet;
-use process_simulation::serial;
-use process_simulation::solver::Solver;
+use flowsheet::serial;
+use flowsheet::{Flowsheet, Solver};
 use std::process::Command;
 
 /// What one run of the binary produced.
@@ -18,7 +17,7 @@ struct Run {
 }
 
 fn flowsheet(args: &[&str]) -> Run {
-    let out = Command::new(env!("CARGO_BIN_EXE_process_simulation"))
+    let out = Command::new(env!("CARGO_BIN_EXE_flowsheet"))
         .args(args)
         .output()
         .expect("the binary runs");
@@ -31,8 +30,8 @@ fn flowsheet(args: &[&str]) -> Run {
 
 #[test]
 fn the_default_table_matches_the_worked_example() {
-    // These are the numbers in the `src/main.rs` header comment: the product equals the feed,
-    // and the internal flows are amplified by 1 / (1 - 0.3) = 1.42857.
+    // These are the numbers in this crate's `src/main.rs` header comment: the product
+    // equals the feed, and the internal flows are amplified by 1 / (1 - 0.3) = 1.42857.
     let run = flowsheet(&["tests/fixtures/recycle.json"]);
     assert!(run.ok, "{}", run.stderr);
 
@@ -136,7 +135,7 @@ fn an_invalid_flowsheet_reports_what_validation_found() {
 /// pretty-printing the document this test builds.
 #[test]
 fn the_recycle_fixture_is_the_demo_circuit_saved() {
-    let demo = process_simulation::demo::build_flowsheet()
+    let demo = flowsheet::demo::build_flowsheet()
         .validate()
         .expect("the demo circuit is valid");
     let generated = serde_json::to_string_pretty(&serial::Flowsheet::from(&demo))
