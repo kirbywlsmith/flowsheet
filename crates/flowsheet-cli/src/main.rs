@@ -69,7 +69,7 @@ fn describe_validation(errors: Vec<FlowsheetError>) -> String {
 }
 
 // ============================================================================
-// TARGET FLOWSHEET — "simple recycle circuit"
+// TARGET FLOWSHEET — "rougher flotation circuit with a scavenger recycle"
 //
 // Topology
 // --------
@@ -77,19 +77,20 @@ fn describe_validation(errors: Vec<FlowsheetError>) -> String {
 //     │ S0
 //     ▼
 //   Mixer  ◄─────────────┐   (2 in / 1 out)
-//     │ S1               │
-//     ▼                  │ S3   recycle — this is the TEAR STREAM
-//   Conditioning tank    │
-//     │ S2               │   (1 in / 1 out)
+//     │ S1  ← TEAR STREAM │
+//     ▼                  │ S4   recycle
+//   Flotation cell       │
+//     ├── S2 ──▶ Concentrate   (1 in / 2 out)
+//     │ S3               │
 //     ▼                  │
 //   Splitter ────────────┘   (1 in / 2 out)
-//     │ S4
+//     │ S5
 //     ▼
-//   Product                  (sink, 1 in / 0 out)
+//   Tailings                 (sink, 1 in / 0 out)
 //
-// Streams: S0..S4. Units: U0..U4 in the order listed above.
-// The Feed→Mixer→Tank→Splitter→Mixer cycle is why a topological sort alone
-// can't solve this — S3 must be guessed and iterated to convergence.
+// Streams: S0..S5. Units: U0..U5 in the order listed above.
+// The Feed→Mixer→Flotation→Splitter→Mixer cycle is why a topological sort
+// alone can't solve this — S1 must be guessed and iterated to convergence.
 //
 // Species (fixed list, index = SpeciesId)
 // ---------------------------------------
@@ -104,34 +105,58 @@ fn describe_validation(errors: Vec<FlowsheetError>) -> String {
 // -----------
 //   U0 Feed        outlet = fixed vector [40.0, 360.0, 600.0]
 //   U1 Mixer       outlet[i] = sum of inlet[i] over all inlets
-//   U2 Tank        outlet = inlet          (pass-through at steady state)
-//   U3 Splitter    param: recycle_fraction f = 0.3
+//   U2 Flotation   param: recovery r = [0.85, 0.05, 0.30]
+//                  concentrate[i] = inlet[i] * r[i]
+//                  tails[i]       = inlet[i] * (1.0 - r[i])
+//   U3 Concentrate accumulates inlet, no outlets
+//   U4 Splitter    param: recycle_fraction f = 0.3
 //                  recycle_outlet[i] = inlet[i] * f
-//                  product_outlet[i] = inlet[i] * (1.0 - f)
-//   U4 Product     accumulates inlet, no outlets
+//                  tailings_outlet[i] = inlet[i] * (1.0 - f)
+//   U5 Tailings    accumulates inlet, no outlets
 //
 // Every unit must satisfy: sum(inlets) == sum(outlets), per species.
 //
+// The flotation cell is what makes this a plant rather than a plumbing
+// diagram. A splitter sends the same composition to both outlets, so no
+// arrangement of splitters can concentrate anything; recovering each species
+// at its own rate is the whole of mineral processing in one line of code.
+//
 // Expected converged solution (t/h)
 // ---------------------------------
-//                    CuFeS2     SiO2      H2O       total
-//   S0 feed           40.000   360.000   600.000   1000.000
-//   S1 mixer out      57.143   514.286   857.143   1428.571
-//   S2 tank out       57.143   514.286   857.143   1428.571
-//   S3 recycle        17.143   154.286   257.143    428.571
-//   S4 product        40.000   360.000   600.000   1000.000
+// Each species travels the loop independently, so one scalar equation per
+// species is the whole answer. With F the feed, r the recovery and f the
+// recycle fraction, the mixer outlet M satisfies M = F + f(1 - r)M, so
 //
-// Two invariants worth asserting in tests:
-//   1. S4 == S0 exactly. Nothing accumulates at steady state, so whatever
-//      enters the plant must leave it — the recycle only inflates the
-//      INTERNAL flows, never the product.
-//   2. Internal flow amplification is 1/(1-f) = 1/0.7 = 1.42857.
+//   M = F / (1 - f(1 - r))
+//
+// and everything else follows. `flowsheet::demo::balance` is that formula,
+// and the balance tests assert against it rather than against these numbers.
+//
+//                        CuFeS2     SiO2      H2O       total
+//   S0 feed               40.000  360.000  600.000   1000.000
+//   S1 mixer out          41.885  503.497  759.494   1304.875
+//   S2 concentrate        35.602   25.175  227.848    288.625
+//   S3 cell tails          6.283  478.322  531.646   1016.250
+//   S4 recycle             1.885  143.497  159.494    304.875
+//   S5 tailings            4.398  334.825  372.152    711.375
+//
+// Three invariants worth asserting in tests:
+//   1. S2 + S5 == S0, per species. Nothing accumulates at steady state, so
+//      whatever enters the plant must leave it by one of the two doors — the
+//      recycle only inflates the INTERNAL flows.
+//   2. The concentrate is upgraded: 4.00% CuFeS2 in the feed becomes 12.33%
+//      in S2, and the tailings drop to 0.62%. Grade is the point.
+//   3. Amplification is now per species: 1/(1 - f(1 - r)) is 1.047 for the
+//      chalcopyrite that mostly floats out, but 1.399 for the gangue that
+//      keeps going round. One number no longer describes the circuit.
 //
 // Convergence behaviour
 // ---------------------
-// Guess S3 = zeros, then direct substitution: the error shrinks by exactly
-// f each pass (geometric, ratio 0.3), so ~14 iterations to reach 1e-6.
-// Bump f to 0.9 and it takes ~130 — that's the motivation for Wegstein.
+// Guess S1 = zeros, then direct substitution: the error in each species
+// shrinks by f(1 - r) each pass, so the slowest species sets the rate. Here
+// that is the gangue at 0.3 * 0.95 = 0.285, giving 17 iterations to 1e-9.
+// Bump f to 0.9 and the factor is 0.855 and it takes 118 — that's the
+// motivation for Wegstein, which does it in 11.
 //
 // Build order
 // -----------
@@ -139,13 +164,8 @@ fn describe_validation(errors: Vec<FlowsheetError>) -> String {
 //   [ ] Mixer and Splitter as plain functions, unit-tested in isolation
 //   [ ] Arena: Vec<UnitOp>, Vec<Stream>, UnitId/StreamId newtypes
 //   [ ] Wire up the graph above by hand in a build_flowsheet() fn
-//   [ ] Solve WITHOUT the recycle first (delete S3, Mixer takes only S0)
+//   [ ] Solve WITHOUT the recycle first (delete S4, Mixer takes only S0)
 //       — this is acyclic, so a topological sort solves it in one pass
-//   [ ] Add S3 back, detect the cycle, tear at S3, direct substitution
+//   [ ] Add S4 back, detect the cycle, tear at S1, direct substitution
 //   [ ] Wegstein acceleration, tolerance + max-iteration config
-//
-// Later: replace U2 with a flotation cell (1 in / 2 out, per-species
-// recovery — say 0.85 for CuFeS2, 0.05 for SiO2, 0.30 for H2O) and route
-// its tails to the splitter. The loop then genuinely upgrades the ore and
-// the arithmetic stops being checkable by hand.
 // ============================================================================

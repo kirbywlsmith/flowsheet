@@ -39,9 +39,20 @@
       }
     },
     {
-      "name": "tank",
+      "name": "flotation",
       "op": {
-        "type": "tank"
+        "type": "flotation",
+        "recovery": {
+          "CuFeS2": 0.85,
+          "H2O": 0.3,
+          "SiO2": 0.05
+        }
+      }
+    },
+    {
+      "name": "concentrate",
+      "op": {
+        "type": "product"
       }
     },
     {
@@ -52,7 +63,7 @@
       }
     },
     {
-      "name": "product",
+      "name": "tailings",
       "op": {
         "type": "product"
       }
@@ -70,7 +81,7 @@
     },
     {
       "from": "mixer",
-      "to": "tank",
+      "to": "flotation",
       "state": {
         "flows": {},
         "temperature": 298.15,
@@ -78,7 +89,16 @@
       }
     },
     {
-      "from": "tank",
+      "from": "flotation",
+      "to": "concentrate",
+      "state": {
+        "flows": {},
+        "temperature": 298.15,
+        "pressure": 101.325
+      }
+    },
+    {
+      "from": "flotation",
       "to": "split",
       "state": {
         "flows": {},
@@ -97,7 +117,7 @@
     },
     {
       "from": "split",
-      "to": "product",
+      "to": "tailings",
       "state": {
         "flows": {},
         "temperature": 298.15,

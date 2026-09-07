@@ -1,4 +1,4 @@
-//! The worked example flowsheet from the project README — a simple recycle circuit.
+//! The worked example flowsheet from the project README — a flotation circuit with a recycle.
 //!
 //! Kept in the library (rather than `examples/`) so `main.rs`, integration tests,
 //! and benchmarks can all build the same flowsheet.
@@ -6,12 +6,18 @@
 use crate::flowsheet::{Flowsheet, StreamId};
 use crate::species::{Phase, Species, SpeciesRegistry};
 use crate::stream::Stream;
-use crate::unit::{Feed, Mixer, Product, Splitter, Tank};
+use crate::unit::{Feed, Flotation, Mixer, Product, Splitter};
 
 /// 25 °C in Kelvin.
 pub const AMBIENT_K: f64 = 298.15;
 /// 1 atm in kPa.
 pub const AMBIENT_KPA: f64 = 101.325;
+
+/// The rougher cell's recovery to concentrate, in [`crate::species::SpeciesId`] order.
+///
+/// Most of the chalcopyrite floats, almost none of the gangue, and the water splits somewhere
+/// in between - it is carried over mechanically rather than floated.
+pub const ROUGHER_RECOVERY: [f64; 3] = [0.85, 0.05, 0.30];
 
 /// The three [`Species`] of the demo circuit: the valuable mineral, the gangue, and water.
 pub fn registry() -> SpeciesRegistry {
@@ -44,39 +50,47 @@ pub fn build_flowsheet() -> Flowsheet {
     recycle_flowsheet(0.3)
 }
 
-/// Builds a recycle circuit with a configurable splitter `fraction`.
+/// Builds the flotation circuit with a configurable splitter `fraction`.
 pub fn recycle_flowsheet(fraction: f64) -> Flowsheet {
     recycle_circuit(fraction).flowsheet
 }
 
-/// The demo recycle circuit, together with the [`StreamId`]s `add_stream` handed back.
+/// The demo flotation circuit, together with the [`StreamId`]s `add_stream` handed back.
 ///
 /// A built [`Flowsheet`] has no way to recover which id belongs to which connection, so a
 /// test that wants to assert on a particular stream has to keep the ids from build time.
 ///
 /// ```text
-///   Feed ──S0──▶ Mixer ──S1──▶ Tank ──S2──▶ Splitter ──S4──┐  recycle (f)
-///                  ▲                            │          │
-///                  └────────────────────────────┼──────────┘
-///                                               └──S3──▶ Product (1 - f)
+///   Feed ──S0──▶ Mixer ──S1──▶ Flotation ──S2──▶ Concentrate
+///                  ▲               │
+///                  │              S3 (tails)
+///                  │               ▼
+///                  └────S4────  Splitter ──S5──▶ Tailings
+///                    recycle (f)            (1 - f)
 /// ```
+///
+/// The recycle is what makes this worth solving: the tails that would otherwise leave are sent
+/// back to the cell for another chance to float, so the circuit recovers more of the mineral
+/// than one pass could.
 #[derive(Debug)]
 pub struct RecycleCircuit {
     /// The wired-but-unvalidated flowsheet. Call [`Flowsheet::validate`] before solving.
     pub flowsheet: Flowsheet,
     /// S0 — the plant feed entering the mixer.
     pub feed: StreamId,
-    /// S1 — mixer outlet, the circulating load. Carries `1 / (1 - fraction)` of the feed.
+    /// S1 — mixer outlet, the circulating load entering the cell.
     pub mixer_out: StreamId,
-    /// S2 — tank outlet, identical to S1 because the tank is a pass-through.
-    pub tank_out: StreamId,
+    /// S2 — the flotation concentrate, upgraded in the valuable species.
+    pub concentrate: StreamId,
+    /// S3 — the flotation tails, on their way to the splitter.
+    pub tails: StreamId,
     /// S4 — the recycle back to the mixer, and the stream the solver tears.
     pub recycle: StreamId,
-    /// S3 — the product leaving the plant. Equals the feed at steady state.
-    pub product: StreamId,
+    /// S5 — the final tailings leaving the plant.
+    pub tailings: StreamId,
 }
 
-/// Builds the recycle circuit with a configurable splitter `fraction`, keeping its stream ids.
+/// Builds the flotation circuit with a configurable splitter `fraction`, keeping its stream ids.
 pub fn recycle_circuit(fraction: f64) -> RecycleCircuit {
     let r = registry();
 
@@ -90,24 +104,79 @@ pub fn recycle_circuit(fraction: f64) -> RecycleCircuit {
     let u_mixer = fs.add_unit("mixer", Mixer);
     let feed = fs.add_stream(u_feed, blank.clone(), u_mixer);
 
-    let u_tank = fs.add_unit("tank", Tank);
-    let mixer_out = fs.add_stream(u_mixer, blank.clone(), u_tank);
+    let u_cell = fs.add_unit(
+        "flotation",
+        Flotation {
+            recovery: ROUGHER_RECOVERY.to_vec(),
+        },
+    );
+    let mixer_out = fs.add_stream(u_mixer, blank.clone(), u_cell);
+
+    // Outlet order is positional: the cell's first outlet is the concentrate.
+    let u_concentrate = fs.add_unit("concentrate", Product);
+    let concentrate = fs.add_stream(u_cell, blank.clone(), u_concentrate);
 
     let u_split = fs.add_unit("split", Splitter { fraction });
-    let tank_out = fs.add_stream(u_tank, blank.clone(), u_split);
+    let tails = fs.add_stream(u_cell, blank.clone(), u_split);
 
-    // Outlet order is positional: the first stream out of the splitter gets `fraction`.
+    // And the splitter's first outlet gets `fraction`.
     let recycle = fs.add_stream(u_split, blank.clone(), u_mixer);
 
-    let u_product = fs.add_unit("product", Product);
-    let product = fs.add_stream(u_split, blank, u_product);
+    let u_tailings = fs.add_unit("tailings", Product);
+    let tailings = fs.add_stream(u_split, blank, u_tailings);
 
     RecycleCircuit {
         flowsheet: fs,
         feed,
         mixer_out,
-        tank_out,
+        concentrate,
+        tails,
         recycle,
-        product,
+        tailings,
+    }
+}
+
+/// The exact steady-state solution of [`recycle_circuit`], species by species.
+///
+/// Each species travels the loop independently, so a scalar balance per species is enough:
+/// with `F` the feed, `r` the recovery and `f` the recycle fraction, the mixer outlet `M`
+/// satisfies `M = F + f(1 - r)M`, giving `M = F / (1 - f(1 - r))`. Everything else follows.
+///
+/// This is what the tests assert against, and the reason the circuit stays hand-checkable
+/// even though the flotation cell has made the arithmetic species-dependent.
+#[derive(Debug, Clone, Copy)]
+pub struct Balance {
+    /// The circulating load entering the cell.
+    pub mixer_out: f64,
+    /// What reports to the concentrate.
+    pub concentrate: f64,
+    /// What leaves the cell in the tails.
+    pub tails: f64,
+    /// What the splitter sends back to the mixer.
+    pub recycle: f64,
+    /// What leaves the plant in the tailings.
+    pub tailings: f64,
+}
+
+/// Solves [`Balance`] by hand for one species.
+///
+/// # Panics
+/// If `f * (1.0 - recovery)` is 1.0 - a circuit that recycles everything never converges.
+pub fn balance(feed: f64, recovery: f64, fraction: f64) -> Balance {
+    let denominator = 1.0 - fraction * (1.0 - recovery);
+    assert!(
+        denominator > 0.0,
+        "a circuit that recycles all of its tails has no steady state"
+    );
+
+    let mixer_out = feed / denominator;
+    let tails = mixer_out * (1.0 - recovery);
+
+    Balance {
+        mixer_out,
+        concentrate: mixer_out * recovery,
+        tails,
+        recycle: tails * fraction,
+        tailings: tails * (1.0 - fraction),
     }
 }

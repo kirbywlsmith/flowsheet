@@ -59,10 +59,11 @@ fn stream_labels(fs: &ValidFlowsheet) -> Vec<String> {
 /// identity; the label beside it is for reading, and may be suffixed to break a tie.
 ///
 /// ```text
-///   #  stream         CuFeS2     SiO2      H2O     total
-///   0  feed.mixer     40.000  360.000  600.000  1000.000
-///   1  mixer.tank     57.143  514.286  857.143  1428.571
-///      converged in 18 iterations, residual 5.4e-10
+///   #  stream                 CuFeS2     SiO2      H2O     total
+///   0  feed.mixer             40.000  360.000  600.000  1000.000
+///   1  mixer.flotation        41.885  503.497  759.494  1304.875
+///   2  flotation.concentrate  35.602   25.175  227.848   288.625
+///      converged in 17 iterations, residual 5.4e-10
 /// ```
 pub fn table(fs: &ValidFlowsheet, report: &SolveReport) -> String {
     let mut header: Vec<String> = vec!["#".to_string(), "stream".to_string()];
@@ -190,10 +191,11 @@ mod tests {
             stream_labels(&solved_demo()),
             [
                 "feed.mixer",
-                "mixer.tank",
-                "tank.split",
+                "mixer.flotation",
+                "flotation.concentrate",
+                "flotation.split",
                 "split.mixer",
-                "split.product",
+                "split.tailings",
             ]
         );
     }
@@ -227,12 +229,13 @@ mod tests {
         assert_eq!(
             table(&solved_demo(), &report(18, 5.4e-10)),
             concat!(
-                "  #  stream         CuFeS2     SiO2      H2O     total\n",
-                "  0  feed.mixer     40.000  360.000  600.000  1000.000\n",
-                "  1  mixer.tank     57.143  514.286  857.143  1428.571\n",
-                "  2  tank.split     57.143  514.286  857.143  1428.571\n",
-                "  3  split.mixer    17.143  154.286  257.143   428.571\n",
-                "  4  split.product  40.000  360.000  600.000  1000.000\n",
+                "  #  stream                 CuFeS2     SiO2      H2O     total\n",
+                "  0  feed.mixer             40.000  360.000  600.000  1000.000\n",
+                "  1  mixer.flotation        41.885  503.497  759.494  1304.875\n",
+                "  2  flotation.concentrate  35.602   25.175  227.848   288.625\n",
+                "  3  flotation.split         6.283  478.322  531.646  1016.250\n",
+                "  4  split.mixer             1.885  143.497  159.494   304.875\n",
+                "  5  split.tailings          4.398  334.825  372.152   711.375\n",
                 "     converged in 18 iterations, residual 5.4e-10\n",
             )
         );

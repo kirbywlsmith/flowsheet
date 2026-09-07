@@ -74,124 +74,22 @@ impl Arity {
     }
 }
 
-/// No inlets, one outlet: emits a fixed [`Stream`] into the flowsheet.
-#[derive(Debug, Clone)]
-pub struct Feed {
-    /// The outlet [`Stream`].
-    pub stream: Stream,
-}
+mod feed;
+mod flotation;
+mod mixer;
+mod product;
+mod splitter;
+mod tank;
 
-/// Any number of inlets, one outlet: combines them all with [`mix`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Mixer;
-
-/// One inlet, two outlets: `fraction` and `1.0 - fraction`.
-#[derive(Debug, Clone, Copy)]
-pub struct Splitter {
-    /// The `fraction` to pass to [`split`].
-    pub fraction: f64,
-}
-
-/// One inlet, one outlet per ratio.
-#[derive(Debug, Clone)]
-pub struct SplitterN {
-    /// The `ratios` to pass to [`split_n`].
-    pub ratios: Vec<f64>,
-}
-
-/// One inlet, one outlet: passes its inlet straight through.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Tank;
-
-/// One inlet, no outlets: where material leaves the flowsheet.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Product;
-
-impl UnitOp for Feed {
-    fn inlet_arity(&self) -> Arity {
-        Arity::exactly(0)
-    }
-
-    fn outlet_arity(&self) -> Arity {
-        Arity::exactly(1)
-    }
-
-    fn evaluate(&self, _inlets: &[&Stream]) -> Vec<Stream> {
-        vec![self.stream.clone()]
-    }
-}
-
-impl UnitOp for Mixer {
-    fn inlet_arity(&self) -> Arity {
-        // The only unbounded side in the model.
-        Arity::at_least(1)
-    }
-
-    fn outlet_arity(&self) -> Arity {
-        Arity::exactly(1)
-    }
-
-    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
-        vec![mix(inlets.iter().copied()).expect("mixer needs at least one inlet")]
-    }
-}
-
-impl UnitOp for Splitter {
-    fn inlet_arity(&self) -> Arity {
-        Arity::exactly(1)
-    }
-
-    fn outlet_arity(&self) -> Arity {
-        Arity::exactly(2)
-    }
-
-    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
-        let (a, b) = split(inlets[0], self.fraction);
-        vec![a, b]
-    }
-}
-
-impl UnitOp for SplitterN {
-    fn inlet_arity(&self) -> Arity {
-        Arity::exactly(1)
-    }
-
-    fn outlet_arity(&self) -> Arity {
-        Arity::exactly(self.ratios.len())
-    }
-
-    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
-        split_n(inlets[0], &self.ratios)
-    }
-}
-
-impl UnitOp for Tank {
-    fn inlet_arity(&self) -> Arity {
-        Arity::exactly(1)
-    }
-
-    fn outlet_arity(&self) -> Arity {
-        Arity::exactly(1)
-    }
-
-    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
-        vec![inlets[0].clone()]
-    }
-}
-
-impl UnitOp for Product {
-    fn inlet_arity(&self) -> Arity {
-        Arity::exactly(1)
-    }
-
-    fn outlet_arity(&self) -> Arity {
-        Arity::exactly(0)
-    }
-
-    fn evaluate(&self, _inlets: &[&Stream]) -> Vec<Stream> {
-        vec![]
-    }
-}
+// Re-exported flat, so every call site keeps writing `unit::Mixer` rather than
+// `unit::mixer::Mixer`. The submodules stay private: they are a file-layout detail, and one
+// operation per file is the only thing they buy.
+pub use feed::Feed;
+pub use flotation::Flotation;
+pub use mixer::Mixer;
+pub use product::Product;
+pub use splitter::{Splitter, SplitterN};
+pub use tank::Tank;
 
 /// A distinct section of a system that takes inlet [`Stream`]s and performs a [`UnitOp`] to produce outlet streams.
 #[derive(Debug)]
@@ -247,6 +145,37 @@ pub fn split_n(inlet: &Stream, ratios: &[f64]) -> Vec<Stream> {
     ratios.iter().map(|r| inlet.scaled(r / sum)).collect()
 }
 
+/// Splits an inlet into a (concentrate, tails) pair by recovering each species separately.
+///
+/// `recovery[i]` is the fraction of species `i` reporting to the concentrate. Unlike [`split`],
+/// this changes the composition of both outlets - it is what a [`Flotation`] cell does.
+///
+/// # Panics
+/// If `recovery`:
+/// - Has a different length than the inlet's species count; or
+/// - Contains a value below 0.0, above 1.0, or NaN.
+pub fn recover(inlet: &Stream, recovery: &[f64]) -> (Stream, Stream) {
+    assert_eq!(
+        recovery.len(),
+        inlet.species_count(),
+        "flotation needs one recovery per species"
+    );
+    assert!(
+        recovery.iter().all(|r| (0.0..=1.0).contains(r)),
+        "flotation recovery must be between 0.0 and 1.0, got {recovery:?}"
+    );
+
+    let mut concentrate = inlet.clone();
+    let mut tails = inlet.clone();
+    for (i, r) in recovery.iter().enumerate() {
+        concentrate.flows_mut()[i] = inlet.flows()[i] * r;
+        // Not `inlet - concentrate`: `1.0 - r` keeps the two sides symmetric, and neither
+        // can come out negative from a rounding error the way a subtraction could.
+        tails.flows_mut()[i] = inlet.flows()[i] * (1.0 - r);
+    }
+
+    (concentrate, tails)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,74 +343,74 @@ mod tests {
         split_n(&feed(&r), &[0.0, 0.0]);
     }
 
-    // ---- evaluate ----
+    // ---- recover ----
 
     #[test]
-    fn feed_emits_its_stream_and_ignores_inlets() {
-        let r = demo_registry();
-        let op = Feed { stream: feed(&r) };
-
-        let outs = op.evaluate(&[]);
-
-        assert_eq!(outs.len(), 1);
-        assert_relative_eq!(outs[0].total(), 1000.0);
-    }
-
-    #[test]
-    fn mixer_sums_all_inlets_into_one_outlet() {
-        let r = demo_registry();
-        let a = feed(&r);
-        let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], AMBIENT_K, AMBIENT_KPA);
-
-        let outs = Mixer.evaluate(&[&a, &b]);
-
-        assert_eq!(outs.len(), 1);
-        assert_relative_eq!(outs[0].total(), 1060.0, max_relative = 1e-12);
-    }
-
-    #[test]
-    fn tank_passes_its_inlet_straight_through() {
+    fn recover_conserves_every_species() {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = Tank.evaluate(&[&inlet]);
+        let (concentrate, tails) = recover(&inlet, &[0.85, 0.05, 0.30]);
 
-        assert_eq!(outs.len(), 1);
-        assert!(inlet.flows_approx_eq(&outs[0], 1e-12));
+        for id in all_ids(&r) {
+            assert_relative_eq!(concentrate[id] + tails[id], inlet[id], max_relative = 1e-12);
+        }
     }
 
     #[test]
-    fn splitter_returns_the_fraction_side_first() {
+    fn recover_moves_each_species_at_its_own_rate() {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = Splitter { fraction: 0.3 }.evaluate(&[&inlet]);
+        let (concentrate, _) = recover(&inlet, &[0.85, 0.05, 0.30]);
 
-        assert_eq!(outs.len(), 2);
-        assert_relative_eq!(outs[0].total(), 300.0, max_relative = 1e-12);
-        assert_relative_eq!(outs[1].total(), 700.0, max_relative = 1e-12);
+        assert_relative_eq!(concentrate.flows()[0], 34.0, max_relative = 1e-12);
+        assert_relative_eq!(concentrate.flows()[1], 18.0, max_relative = 1e-12);
+        assert_relative_eq!(concentrate.flows()[2], 180.0, max_relative = 1e-12);
     }
 
     #[test]
-    fn splitter_n_returns_one_outlet_per_ratio() {
+    fn recovering_everything_leaves_empty_tails() {
         let r = demo_registry();
         let inlet = feed(&r);
-        let op = SplitterN {
-            ratios: vec![1.0, 1.0, 2.0],
-        };
 
-        let outs = op.evaluate(&[&inlet]);
+        let (concentrate, tails) = recover(&inlet, &[1.0, 1.0, 1.0]);
 
-        assert_eq!(outs.len(), 3);
-        assert_relative_eq!(outs[0].total(), 250.0, max_relative = 1e-12);
-        assert_relative_eq!(outs[2].total(), 500.0, max_relative = 1e-12);
+        assert!(inlet.flows_approx_eq(&concentrate, 1e-12));
+        assert_relative_eq!(tails.total(), 0.0);
     }
 
     #[test]
-    fn product_consumes_its_inlet_and_emits_nothing() {
+    fn recover_keeps_the_inlet_temperature_on_both_sides() {
+        // Same limitation as `mix`: no energy balance yet, so T and P ride along unchanged.
         let r = demo_registry();
-        let outs = Product.evaluate(&[&feed(&r)]);
-        assert!(outs.is_empty());
+        let inlet = feed(&r);
+
+        let (concentrate, tails) = recover(&inlet, &[0.85, 0.05, 0.30]);
+
+        assert_relative_eq!(concentrate.temperature(), inlet.temperature());
+        assert_relative_eq!(tails.pressure(), inlet.pressure());
+    }
+
+    #[test]
+    #[should_panic(expected = "one recovery per species")]
+    fn recover_rejects_a_recovery_of_the_wrong_length() {
+        let r = demo_registry();
+        recover(&feed(&r), &[0.85, 0.05]);
+    }
+
+    #[test]
+    #[should_panic(expected = "recovery must be between 0.0 and 1.0")]
+    fn recover_rejects_a_negative_recovery() {
+        let r = demo_registry();
+        recover(&feed(&r), &[-0.1, 0.05, 0.30]);
+    }
+
+    #[test]
+    #[should_panic(expected = "recovery must be between 0.0 and 1.0")]
+    fn recover_by_nan_panics() {
+        let r = demo_registry();
+        recover(&feed(&r), &[f64::NAN, 0.05, 0.30]);
     }
 
     // ---- arity ----
@@ -501,8 +430,8 @@ mod tests {
     fn every_op_declares_the_arity_its_evaluate_assumes() {
         let r = demo_registry();
 
-        // `Box<dyn UnitOp>` is what lets one array hold six different concrete types. The enum
-        // version of this test relied on them all being the same type instead.
+        // `Box<dyn UnitOp>` is what lets one array hold seven different concrete types. The
+        // enum version of this test relied on them all being the same type instead.
         type Case = (
             Box<dyn UnitOp>,
             (usize, Option<usize>),
@@ -528,6 +457,13 @@ mod tests {
                 }),
                 (1, Some(1)),
                 (3, Some(3)),
+            ),
+            (
+                Box::new(Flotation {
+                    recovery: vec![0.85, 0.05, 0.30],
+                }),
+                (1, Some(1)),
+                (2, Some(2)),
             ),
             (Box::new(Product), (1, Some(1)), (0, Some(0))),
         ];

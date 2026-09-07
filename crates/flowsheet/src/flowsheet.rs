@@ -367,7 +367,7 @@ mod tests {
     use super::*;
     use crate::species::{Phase, Species};
     use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
-    use crate::unit::{Feed, Mixer, Product, Splitter, Tank};
+    use crate::unit::{Feed, Flotation, Mixer, Product, Splitter, Tank};
     use approx::assert_relative_eq;
 
     /// A placeholder stream value — the solver overwrites these.
@@ -461,19 +461,27 @@ mod tests {
 
         let u_feed = fs.add_unit("feed", Feed { stream: feed(&r) });
         let u_mixer = fs.add_unit("mixer", Mixer);
-        let u_tank = fs.add_unit("tank", Tank);
+        let u_cell = fs.add_unit(
+            "flotation",
+            Flotation {
+                recovery: vec![0.85, 0.05, 0.30],
+            },
+        );
+        let u_concentrate = fs.add_unit("concentrate", Product);
         let u_split = fs.add_unit("split", Splitter { fraction: 0.3 });
-        let u_product = fs.add_unit("product", Product);
+        let u_tailings = fs.add_unit("tailings", Product);
 
         let s0 = fs.add_stream(u_feed, blank(&r), u_mixer);
-        let s1 = fs.add_stream(u_mixer, blank(&r), u_tank);
-        let s2 = fs.add_stream(u_tank, blank(&r), u_split);
+        let s1 = fs.add_stream(u_mixer, blank(&r), u_cell);
+        // Concentrate added FIRST so it takes the cell's recovered side.
+        let s2 = fs.add_stream(u_cell, blank(&r), u_concentrate);
+        let s3 = fs.add_stream(u_cell, blank(&r), u_split);
         // Recycle added FIRST so it takes the 0.3 side of the splitter.
         let s4 = fs.add_stream(u_split, blank(&r), u_mixer);
-        let s3 = fs.add_stream(u_split, blank(&r), u_product);
+        let s5 = fs.add_stream(u_split, blank(&r), u_tailings);
 
-        assert_eq!(fs.units.len(), 5);
-        assert_eq!(fs.streams.len(), 5);
+        assert_eq!(fs.units.len(), 6);
+        assert_eq!(fs.streams.len(), 6);
 
         assert!(fs.units[u_feed.as_usize()].inlets.is_empty());
         assert_eq!(fs.units[u_feed.as_usize()].outlets, vec![s0]);
@@ -481,14 +489,17 @@ mod tests {
         assert_eq!(fs.units[u_mixer.as_usize()].inlets, vec![s0, s4]);
         assert_eq!(fs.units[u_mixer.as_usize()].outlets, vec![s1]);
 
-        assert_eq!(fs.units[u_tank.as_usize()].inlets, vec![s1]);
-        assert_eq!(fs.units[u_tank.as_usize()].outlets, vec![s2]);
+        assert_eq!(fs.units[u_cell.as_usize()].inlets, vec![s1]);
+        assert_eq!(fs.units[u_cell.as_usize()].outlets, vec![s2, s3]);
 
-        assert_eq!(fs.units[u_split.as_usize()].inlets, vec![s2]);
-        assert_eq!(fs.units[u_split.as_usize()].outlets, vec![s4, s3]);
+        assert_eq!(fs.units[u_concentrate.as_usize()].inlets, vec![s2]);
+        assert!(fs.units[u_concentrate.as_usize()].outlets.is_empty());
 
-        assert_eq!(fs.units[u_product.as_usize()].inlets, vec![s3]);
-        assert!(fs.units[u_product.as_usize()].outlets.is_empty());
+        assert_eq!(fs.units[u_split.as_usize()].inlets, vec![s3]);
+        assert_eq!(fs.units[u_split.as_usize()].outlets, vec![s4, s5]);
+
+        assert_eq!(fs.units[u_tailings.as_usize()].inlets, vec![s5]);
+        assert!(fs.units[u_tailings.as_usize()].outlets.is_empty());
     }
 
     // ---- validation ----

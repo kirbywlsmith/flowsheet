@@ -75,6 +75,21 @@ Never mix severities in one unlabelled list.
 - `Box<dyn UnitOp>` is **not `Clone`**, and nothing needed it to be, so the old `#[derive(Clone)]` on the enum was
   dropped rather than replaced with a `clone_box` method or the `dyn-clone` crate. The concrete op structs still derive
   it. `Debug` is a supertrait because `Flowsheet` derives `Debug` and a derive cannot reach through the box otherwise.
+- The **flotation cell is the first op that changes composition**. `Flotation { recovery: Vec<f64> }` recovers each
+  species to the concentrate at its own rate, which is what a `Splitter` structurally cannot do - a splitter sends the
+  same composition to both outlets, so no arrangement of splitters concentrates anything. Outlets are positional:
+  concentrate first, tails second.
+- `recovery` is a **dense `Vec<f64>` in `SpeciesId` order**, the same shape as `Stream::flows`, and the validation
+  lives in the `unit::recover` free function rather than in a constructor - matching `split`/`Splitter`, and for the
+  same reason: the field is public and the species count is not known until an inlet arrives.
+- On the wire, `recovery` is a **species-name map**, like flows, so a document does not depend on species order.
+  Two asymmetries with flows, both deliberate: an omitted species recovers **zero** (it leaves in the tails), and a
+  zero recovery is **not dropped on save** - a zero flow says nothing, but a zero recovery is a statement that the
+  species does not float, and it belongs on the page next to the ones that do.
+- `demo::balance` is the **circuit's scalar solution worked out by hand**: each species travels the loop
+  independently, so `M = F / (1 - f(1 - r))` is the whole answer. The balance tests assert against that formula
+  rather than against pasted numbers, so changing `f` or the recovery vector does not invalidate them. Convergence
+  now varies by species too - the rate is `f(1 - r)`, and the slowest species sets it.
 - Outlet order is positional: the Nth `add_stream` from a unit matches the Nth stream from `UnitOp::evaluate`. Wiring a
   splitter backwards still balances mass, so it fails silently.
 - Flowsheets are built loosely then validated: `Flowsheet::validate` consumes `self` and hands back a `ValidFlowsheet`,
@@ -106,6 +121,10 @@ Never mix severities in one unlabelled list.
   of flattening it, and `serial::UnitOp`'s variants are newtypes over per-op spec structs (`SplitterSpec`, and `NoSpec`
   for the parameterless ops) that each deny unknown fields themselves. A newtype variant is deserialised as a plain
   struct with the `type` key already stripped, so its own attribute fires. The JSON shape is unchanged by all of this.
+- `unit.rs` keeps the trait, `Arity`, `Unit` and the `mix`/`split`/`split_n`/`recover` free functions; each operation
+  gets **its own file under `unit/`**, re-exported flat (`pub use feed::Feed;`) so every call site still writes
+  `unit::Mixer`. The submodules stay private - they are a file-layout detail and buy nothing else. Sibling-file module
+  style (`unit.rs` next to `unit/`), not `unit/mod.rs`.
 - The **table formatter lives in the library** (`report.rs`), not in `main.rs`. A stream's
   endpoints are only recoverable from the `inlets`/`outlets` of the units that list it, and those
   are `pub(crate)` — `main.rs` is a separate crate and cannot see them. Keeping the formatter in
@@ -129,6 +148,8 @@ and `cargo clippy` at the root cover every member.
 
 ```
 crates/flowsheet/       the library: domain types, solver, serial, report. Depends on serde only.
+  src/unit.rs           the `UnitOp` trait, `Arity`, `Unit`, and the free functions ops are built from.
+  src/unit/             one file per operation, re-exported flat from `unit.rs`.
 crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, error printing.
 ```
 

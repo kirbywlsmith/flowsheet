@@ -1,5 +1,11 @@
 //! Convergence rate of the tear-stream methods on a recycle loop.
+//!
+//! The rate is set by how much of the tear stream comes back on the next pass. With a
+//! flotation cell in the loop that is `f * (1 - r)`, not `f`: whatever the cell floats off to
+//! the concentrate never reaches the splitter, so it never returns. The slowest species
+//! decides, and here that is the gangue at `r = 0.05` - so the loop contracts at `0.95 f`.
 
+use approx::assert_relative_eq;
 use flowsheet::ConvergenceMethod::{DirectSubstitution, Wegstein};
 use flowsheet::demo::recycle_flowsheet;
 use flowsheet::{ConvergenceMethod, SolveReport, Solver, SolverConfig};
@@ -30,40 +36,43 @@ fn solve_recycle(fraction: f64, tolerance: f64, method: ConvergenceMethod) -> So
 }
 
 #[test]
-fn low_recycle_tight_tolerance_takes_18_passes() {
-    assert_eq!(solve_recycle(0.3, 1e-9, DirectSubstitution).iterations, 18);
+fn low_recycle_tight_tolerance_takes_17_passes() {
+    assert_eq!(solve_recycle(0.3, 1e-9, DirectSubstitution).iterations, 17);
 }
 
 #[test]
-fn high_recycle_tight_tolerance_takes_171_passes() {
-    assert_eq!(solve_recycle(0.9, 1e-9, DirectSubstitution).iterations, 171);
+fn high_recycle_tight_tolerance_takes_118_passes() {
+    assert_eq!(solve_recycle(0.9, 1e-9, DirectSubstitution).iterations, 118);
 }
 
 #[test]
-fn low_recycle_loose_tolerance_takes_12_passes() {
-    assert_eq!(solve_recycle(0.3, 1e-6, DirectSubstitution).iterations, 12);
+fn low_recycle_loose_tolerance_takes_11_passes() {
+    assert_eq!(solve_recycle(0.3, 1e-6, DirectSubstitution).iterations, 11);
 }
 
 #[test]
-fn high_recycle_loose_tolerance_takes_106_passes() {
-    assert_eq!(solve_recycle(0.9, 1e-6, DirectSubstitution).iterations, 106);
+fn high_recycle_loose_tolerance_takes_74_passes() {
+    assert_eq!(solve_recycle(0.9, 1e-6, DirectSubstitution).iterations, 74);
 }
 
 #[test]
-fn wegstein_cuts_high_recycle_from_171_passes_to_22() {
-    assert_eq!(solve_recycle(0.9, 1e-9, WEGSTEIN).iterations, 22);
+fn wegstein_cuts_high_recycle_from_118_passes_to_11() {
+    assert_eq!(solve_recycle(0.9, 1e-9, WEGSTEIN).iterations, 11);
 }
 
 #[test]
-fn wegstein_cuts_low_recycle_from_18_passes_to_3() {
+fn wegstein_cuts_low_recycle_from_17_passes_to_3() {
     assert_eq!(solve_recycle(0.3, 1e-9, WEGSTEIN).iterations, 3);
 }
 
 #[test]
-fn an_unclamped_floor_solves_high_recycle_exactly_on_the_third_pass() {
+fn an_unclamped_floor_solves_high_recycle_on_the_third_pass() {
+    // `q` is computed per species, so each one gets its own extrapolation and all three land
+    // on the answer together. What is left is rounding, not iteration error - before the cell
+    // arrived every species shared one `q` and this came out at exactly zero.
     let report = solve_recycle(0.9, 1e-9, WEGSTEIN_LOOSE_FLOOR);
     assert_eq!(report.iterations, 3);
-    assert_eq!(report.residual, 0.0);
+    assert_relative_eq!(report.residual, 0.0, epsilon = 1e-15);
 }
 
 #[test]
@@ -79,5 +88,5 @@ fn wegstein_converges_inside_the_default_iteration_cap() {
     .solve(&mut fs)
     .expect("wegstein converges well inside the default 100 passes");
 
-    assert_eq!(report.iterations, 22);
+    assert_eq!(report.iterations, 11);
 }

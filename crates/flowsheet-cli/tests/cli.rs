@@ -30,31 +30,33 @@ fn flowsheet(args: &[&str]) -> Run {
 
 #[test]
 fn the_default_table_matches_the_worked_example() {
-    // These are the numbers in this crate's `src/main.rs` header comment: the product
-    // equals the feed, and the internal flows are amplified by 1 / (1 - 0.3) = 1.42857.
+    // These are the numbers in this crate's `src/main.rs` header comment: the two products
+    // together equal the feed, and the concentrate is upgraded from 4.00% to 12.33% CuFeS2.
     let run = flowsheet(&["tests/fixtures/recycle.json"]);
     assert!(run.ok, "{}", run.stderr);
 
     let lines: Vec<&str> = run.stdout.lines().collect();
     assert_eq!(
-        lines[..6],
+        lines[..7],
         [
-            "  #  stream         CuFeS2     SiO2      H2O     total",
-            "  0  feed.mixer     40.000  360.000  600.000  1000.000",
-            "  1  mixer.tank     57.143  514.286  857.143  1428.571",
-            "  2  tank.split     57.143  514.286  857.143  1428.571",
-            "  3  split.mixer    17.143  154.286  257.143   428.571",
-            "  4  split.product  40.000  360.000  600.000  1000.000",
+            "  #  stream                 CuFeS2     SiO2      H2O     total",
+            "  0  feed.mixer             40.000  360.000  600.000  1000.000",
+            "  1  mixer.flotation        41.885  503.497  759.494  1304.875",
+            "  2  flotation.concentrate  35.602   25.175  227.848   288.625",
+            "  3  flotation.split         6.283  478.322  531.646  1016.250",
+            "  4  split.mixer             1.885  143.497  159.494   304.875",
+            "  5  split.tailings          4.398  334.825  372.152   711.375",
         ]
     );
-    // Direct substitution shrinks the error by exactly f = 0.3 a pass, so 0.3^n <= 1e-9 puts
-    // the count at 18. The residual's last digits are float noise, so only its prefix is pinned.
+    // Direct substitution shrinks the error by f * (1 - r) a pass, worst for the gangue at
+    // 0.3 * 0.95 = 0.285, so 0.285^n <= 1e-9 puts the count at 17. The residual's last digits
+    // are float noise, so only its prefix is pinned.
     assert!(
-        lines[6]
+        lines[7]
             .trim()
-            .starts_with("converged in 18 iterations, residual "),
+            .starts_with("converged in 17 iterations, residual "),
         "{}",
-        lines[6]
+        lines[7]
     );
 }
 
@@ -66,12 +68,18 @@ fn json_mode_prints_a_document_carrying_the_solved_flows() {
     let doc: serial::Flowsheet =
         serde_json::from_str(&run.stdout).expect("stdout is a whole document");
 
-    // streams[4] is the product. At steady state it must equal the feed exactly.
-    let product = &doc.streams[4].state.flows;
-    assert_eq!(doc.streams[4].to, "product");
+    // streams[2] and streams[5] are the two plant products. At steady state they must add up
+    // to the feed exactly - the recycle inflates the internal flows and nothing else.
+    assert_eq!(doc.streams[2].to, "concentrate");
+    assert_eq!(doc.streams[5].to, "tailings");
+    let concentrate = &doc.streams[2].state.flows;
+    let tailings = &doc.streams[5].state.flows;
     for (name, expected) in [("CuFeS2", 40.0), ("SiO2", 360.0), ("H2O", 600.0)] {
-        assert_relative_eq!(product[name], expected, epsilon = 1e-6);
+        assert_relative_eq!(concentrate[name] + tailings[name], expected, epsilon = 1e-6);
     }
+    // And the cell did its job: most of the chalcopyrite floated, almost none of the gangue.
+    assert_relative_eq!(concentrate["CuFeS2"], 35.602094, epsilon = 1e-6);
+    assert_relative_eq!(concentrate["SiO2"], 25.174825, epsilon = 1e-6);
 
     // And the printed document must be a legal input in its own right - `> out.json` is the
     // only way this mode is meant to be used.

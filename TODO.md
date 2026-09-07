@@ -2,9 +2,6 @@
 
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `crates/flowsheet-cli/src/main.rs`.
 
-- [ ] Flotation cell unit: 1 in / 2 out, per-species recovery; replace the tank and re-derive the expected numbers
-  - Split `unit.rs` into `unit/{op}.rs`. `unit.rs` keeps the trait, `Arity`, `Unit` and the `mix`/`split`/`split_n` free functions.
-    Look at `serial.rs` (603 non-test lines, the largest in the repo) at the same time.
 - [ ] Criterion benches: solve time vs unit count, vs tear count, and trait-object dispatch against the enum
   baseline (recover the enum from commit `1612492`, behind a bench-only module)
 - [ ] Energy balance: per-species enthalpy `h(T)`, mixer outlet T by hand-rolled Newton solve, convergence tests.
@@ -34,7 +31,15 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
   dev-dependency of the library, and `deny_unknown_fields` no longer fires for free on an op's own parameters, so each
   op has to opt back in. Not worth doing until something outside this crate actually implements `UnitOp`; until then
   the honest position is documented on `serial::ToDocument`.
-- [ ] Later: more unit ops (heat exchanger, reactor, screen) and design constraints
+- [ ] Later: chemical reactions. Carved out of the unit-op item below, because a reactor is not one more op like
+  a screen: it needs reaction stoichiometry, a conversion or extent-of-reaction spec, and enthalpies of formation
+  feeding the energy balance above. Three models in ascending cost: conversion (specify fractional conversion of a
+  limiting reactant), equilibrium (Gibbs free energy minimisation), kinetic (rate laws, plus the residence time that
+  only the dynamic-simulation item below can supply). Start with conversion. It is isothermal, so it needs none of
+  the energy balance, and it is structurally the sibling of `Flotation`: one inlet, a dense `Vec<f64>` parameter in
+  `SpeciesId` order validated by a free function, composition changed by transforming species rather than
+  partitioning them. That makes it the cheap second test of whether the op set is really open.
+- [ ] Later: more unit ops (heat exchanger, screen) and design constraints
 - [ ] Later: allow streaming solve events (e.g. `UnitEvaluated { id, iteration, residual }`) to subscribers during a run
 - [ ] Later: dynamic simulation — inventory/holdup, fixed-step integrator
 - [ ] Later: scenario runs and Monte Carlo over feed uncertainty

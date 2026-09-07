@@ -81,6 +81,8 @@ pub enum UnitOp {
     Splitter(SplitterSpec),
     /// One inlet, one outlet per ratio.
     SplitterN(SplitterNSpec),
+    /// One inlet, two outlets: concentrate and tails, at a recovery per species.
+    Flotation(FlotationSpec),
     /// One inlet, one outlet.
     Tank(NoSpec),
     /// One inlet.
@@ -109,6 +111,18 @@ pub struct SplitterSpec {
 pub struct SplitterNSpec {
     /// The ratios, one per outlet.
     pub ratios: Vec<f64>,
+}
+
+/// The parameters of a [`UnitOp::Flotation`].
+///
+/// `recovery` is keyed by species name, for the same reason [`State::flows`] is: a document
+/// should not depend on the order of the `species` list. A species the map omits recovers
+/// nothing and leaves entirely in the tails, the same way an omitted flow is zero.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlotationSpec {
+    /// The fraction of each species reporting to the concentrate, keyed by species name.
+    pub recovery: BTreeMap<String, f64>,
 }
 
 /// The parameters of a unit operation that takes none. Empty, but not omitted: it is what rejects
@@ -370,6 +384,28 @@ impl UnitOp {
                     ratios: ratios.clone(),
                 })
             }
+            UnitOp::Flotation(FlotationSpec { recovery }) => {
+                // Resolved into a dense `SpeciesId`-ordered vector, the same shape as a
+                // stream's flows. A species the map leaves out recovers nothing.
+                let mut dense = vec![0.0; registry.len()];
+                for (name, &value) in recovery {
+                    let id = species_ids
+                        .get(name)
+                        .ok_or_else(|| LoadError::UnknownSpecies {
+                            at: at.clone(),
+                            name: name.clone(),
+                        })?;
+                    require(
+                        (0.0..=1.0).contains(&value),
+                        at,
+                        name,
+                        value,
+                        "between 0.0 and 1.0",
+                    )?;
+                    dense[id.as_usize()] = value;
+                }
+                Box::new(unit::Flotation { recovery: dense })
+            }
             UnitOp::Tank(_) => Box::new(unit::Tank),
             UnitOp::Product(_) => Box::new(unit::Product),
         })
@@ -543,6 +579,32 @@ impl ToDocument for unit::SplitterN {
     }
 }
 
+impl ToDocument for unit::Flotation {
+    /// # Panics
+    /// If `recovery` does not hold exactly one entry per species. `zip` would otherwise
+    /// truncate to the shorter side and write a document that reloads as a *different* cell -
+    /// silently, and with nothing for the reload to complain about.
+    fn to_document(&self, registry: &SpeciesRegistry) -> UnitOp {
+        assert_eq!(
+            self.recovery.len(),
+            registry.len(),
+            "flotation needs one recovery per species"
+        );
+
+        // Every species is written out, including the ones that recover nothing. A zero flow is
+        // omitted because it says nothing - a zero recovery is a deliberate statement that the
+        // species does not float, and it belongs on the page next to the ones that do.
+        let recovery = self
+            .recovery
+            .iter()
+            .zip(registry.all())
+            .map(|(&r, species)| (species.name.clone(), r))
+            .collect();
+
+        UnitOp::Flotation(FlotationSpec { recovery })
+    }
+}
+
 impl ToDocument for unit::Tank {
     fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
         UnitOp::Tank(NoSpec {})
@@ -612,8 +674,11 @@ mod tests {
     use super::*;
     use crate::flowsheet::Flowsheet as DomainFlowsheet;
 
-    /// The demo recycle circuit as a document: feed -> mixer -> tank -> splitter, with the
-    /// splitter's first outlet recycling to the mixer and its second going to product.
+    /// A recycle circuit as a document: feed -> mixer -> tank -> splitter, with the splitter's
+    /// first outlet recycling to the mixer and its second going to product.
+    ///
+    /// Its own circuit, not `demo::build_flowsheet` - that one runs a flotation cell into two
+    /// products, and the fixture tracking it byte-for-byte lives in `flowsheet-cli`.
     fn recycle_json() -> &'static str {
         r#"{
           "species": [
@@ -900,6 +965,100 @@ mod tests {
         let state = &spec.state;
         assert_eq!(state.flows.len(), 1, "the zero H2O should be dropped");
         assert!(state.flows.contains_key("SiO2"));
+    }
+
+    #[test]
+    fn a_recovery_above_one_is_an_error_not_a_panic() {
+        let json = minimal(
+            r#"{ "name": "c", "op": { "type": "flotation", "recovery": { "H2O": 1.5 } } }"#,
+            "",
+        );
+        let e = load(&json).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "unit `c`: `H2O` is 1.5, expected between 0.0 and 1.0"
+        );
+    }
+
+    #[test]
+    fn an_unknown_species_in_a_recovery_map_names_where_it_appeared() {
+        let json = minimal(
+            r#"{ "name": "c", "op": { "type": "flotation", "recovery": { "CO2": 0.5 } } }"#,
+            "",
+        );
+        assert_eq!(
+            load(&json).unwrap_err(),
+            LoadError::UnknownSpecies {
+                at: Location::Unit("c".into()),
+                name: "CO2".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_species_left_out_of_a_recovery_map_recovers_nothing() {
+        let json = r#"{ "species": [
+            { "name": "H2O",  "phase": "Liquid", "molar_mass": 18.015 },
+            { "name": "SiO2", "phase": "Solid",  "molar_mass": 60.08 }
+          ],
+          "units": [
+            { "name": "f", "op": { "type": "feed",
+              "state": { "flows": { "H2O": 10.0, "SiO2": 5.0 } } } },
+            { "name": "c", "op": { "type": "flotation", "recovery": { "SiO2": 0.4 } } },
+            { "name": "conc", "op": { "type": "product" } },
+            { "name": "tails", "op": { "type": "product" } }
+          ],
+          "streams": [
+            { "from": "f", "to": "c" },
+            { "from": "c", "to": "conc" },
+            { "from": "c", "to": "tails" }
+          ] }"#;
+        let mut fs = load(json).unwrap().validate().unwrap();
+        crate::solver::Solver::default().solve(&mut fs).unwrap();
+
+        // Saving writes the omitted species back explicitly, as a zero.
+        let doc = Flowsheet::from(&fs);
+        let UnitOp::Flotation(spec) = &doc.units[1].op else {
+            panic!("unit 1 is the flotation cell")
+        };
+        assert_eq!(spec.recovery.len(), 2, "a zero recovery is not dropped");
+        assert_eq!(spec.recovery["H2O"], 0.0);
+        assert_eq!(spec.recovery["SiO2"], 0.4);
+    }
+
+    #[test]
+    #[should_panic(expected = "one recovery per species")]
+    fn saving_a_flotation_cell_with_the_wrong_recovery_length_panics() {
+        // `check` does not inspect `recovery`, so this flowsheet validates. Without the
+        // assert, `zip` would quietly write a one-species map that reloads as a different
+        // cell - the one corruption the wire format cannot detect on the way back in.
+        // Two identical registries: `Flowsheet::new` takes ownership and `SpeciesRegistry`
+        // is deliberately not `Clone`, so the streams are built against a second copy.
+        let r = crate::demo::registry();
+        let mut fs = DomainFlowsheet::new(crate::demo::registry());
+        let f = fs.add_unit(
+            "f",
+            unit::Feed {
+                stream: crate::demo::feed_stream(&r),
+            },
+        );
+        let c = fs.add_unit(
+            "cell",
+            unit::Flotation {
+                recovery: vec![0.85],
+            },
+        );
+        let conc = fs.add_unit("conc", unit::Product);
+        let tails = fs.add_unit("tails", unit::Product);
+        let blank = crate::stream::Stream::zeros(&r, 298.15, 101.325);
+        fs.add_stream(f, blank.clone(), c);
+        fs.add_stream(c, blank.clone(), conc);
+        fs.add_stream(c, blank, tails);
+
+        let fs = fs
+            .validate()
+            .expect("a short recovery is not a validation error");
+        let _ = Flowsheet::from(&fs);
     }
 
     #[test]

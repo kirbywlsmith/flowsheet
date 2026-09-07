@@ -332,19 +332,21 @@ mod tests {
     #[test]
     fn a_recycle_collapses_into_one_component_in_reverse_topological_order() {
         // The target circuit: S4 sends the splitter's 0.3 side back to the mixer, so the
-        // mixer, tank and splitter can only be solved together.
+        // mixer, flotation cell and splitter can only be solved together.
         let fs = crate::demo::build_flowsheet();
 
         let components = fs.components();
 
-        assert_eq!(components.len(), 3);
-        assert_eq!(components[0].len(), 1, "the product is a sink");
+        // Both products are sinks, so both come out before the loop that feeds them.
+        assert_eq!(components.len(), 4);
+        assert_eq!(components[0], vec![UnitId(3)], "the concentrate is a sink");
+        assert_eq!(components[1], vec![UnitId(5)], "the tailings are a sink");
         assert_eq!(
-            components[1],
-            vec![UnitId(1), UnitId(2), UnitId(3)],
-            "mixer, tank and splitter form the loop"
+            components[2],
+            vec![UnitId(1), UnitId(2), UnitId(4)],
+            "mixer, flotation and splitter form the loop"
         );
-        assert_eq!(components[2], vec![UnitId(0)], "the feed is the source");
+        assert_eq!(components[3], vec![UnitId(0)], "the feed is the source");
 
         // Reversing gives the order the solver evaluates in: source first.
         let mut order = components;
@@ -393,8 +395,8 @@ mod tests {
     #[test]
     fn tearing_the_recycle_circuit_makes_it_orderable() {
         // Untorn this is the `recycle_circuit_reports_the_units_it_could_not_order` case.
-        // S1 (mixer -> tank) is the tear, so the tank runs first on a stale value and the mixer
-        // drops to the last wave.
+        // S1 (mixer -> flotation) is the tear, so the cell runs first on a stale value and the
+        // mixer drops to the last wave.
         let fs = crate::demo::build_flowsheet();
 
         let waves = fs
@@ -404,9 +406,9 @@ mod tests {
         assert_eq!(
             waves,
             vec![
-                vec![UnitId(0), UnitId(2)], // feed, tank
-                vec![UnitId(3)],            // splitter
-                vec![UnitId(1), UnitId(4)], // mixer, product
+                vec![UnitId(0), UnitId(2)], // feed, flotation
+                vec![UnitId(3), UnitId(4)], // concentrate, splitter
+                vec![UnitId(1), UnitId(5)], // mixer, tailings
             ]
         );
     }
@@ -414,13 +416,13 @@ mod tests {
     #[test]
     fn tearing_a_stream_outside_the_loop_leaves_the_loop() {
         // S0 is the feed into the mixer. Cutting it drops the mixer's wait on the feed but not on
-        // the splitter, so the loop survives - and the product is dragged down with it, being
-        // downstream of a splitter that never runs.
+        // the splitter, so the loop survives - and both products are dragged down with it, being
+        // downstream of units that never run.
         let fs = crate::demo::build_flowsheet();
 
         assert_eq!(
             fs.evaluation_waves_with_tears(&[StreamId(0)]),
-            Err(vec![UnitId(1), UnitId(2), UnitId(3), UnitId(4)])
+            Err(vec![UnitId(1), UnitId(2), UnitId(3), UnitId(4), UnitId(5)])
         );
     }
 
@@ -448,11 +450,11 @@ mod tests {
 
     #[test]
     fn the_recycle_circuit_tears_the_stream_inside_the_loop_not_the_feed() {
-        // The mixer has two inlets: S0 from the feed and S3 back from the splitter. S0 crosses
+        // The mixer has two inlets: S0 from the feed and S4 back from the splitter. S0 crosses
         // into the loop from outside, so cutting it would leave the loop intact, and it is never a
         // candidate - even though it is the lowest-numbered inlet on the loop.
         //
-        // All three of S1, S2 and S3 sit inside the loop and any one of them breaks it, so the
+        // All three of S1, S3 and S4 sit inside the loop and any one of them breaks it, so the
         // lowest-id tiebreak lands on S1 rather than on the recycle an engineer would nominate.
         let fs = crate::demo::build_flowsheet();
 

@@ -33,4 +33,6 @@ pub use crate::flowsheet::{Flowsheet, FlowsheetError, StreamId, UnitId, ValidFlo
 pub use crate::solver::{ConvergenceMethod, SolveError, SolveReport, Solver, SolverConfig};
 pub use crate::species::{Phase, Species, SpeciesId, SpeciesRegistry};
 pub use crate::stream::Stream;
-pub use crate::unit::{Arity, Feed, Mixer, Product, Splitter, SplitterN, Tank, Unit, UnitOp};
+pub use crate::unit::{
+    Arity, Feed, Flotation, Mixer, Product, Splitter, SplitterN, Tank, Unit, UnitOp,
+};
