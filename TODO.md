@@ -37,6 +37,13 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
   the energy balance, and it is structurally the sibling of `Flotation`: one inlet, a dense `Vec<f64>` parameter in
   `SpeciesId` order validated by a free function, composition changed by transforming species rather than
   partitioning them. That makes it the cheap second test of whether the op set is really open.
+- [ ] Later: pressure. Nothing reads it and nothing solves it - `Stream::add_assign` says so in a comment, and the
+  field survives a whole solve untouched. Aspen Plus and HYSYS specify it rather than solve it at this level too:
+  each op declares a pressure drop and pressure propagates downstream, one more field `evaluate` writes. Solving it
+  properly makes flows and pressures simultaneous unknowns, which is the hydraulic network problem and belongs with
+  the dynamic item below. Wait until an op reads pressure. A pump adds head, a heat exchanger declares a drop, and
+  a flash cannot pick a phase without both P and T. Until one of those lands, `pressure` is a label the documents
+  carry and the solver ignores.
 - [ ] Later: more unit ops (heat exchanger, screen) and design constraints
 - [ ] Later: allow streaming solve events (e.g. `UnitEvaluated { id, iteration, residual }`) to subscribers during a run
 - [ ] Later: dynamic simulation — inventory/holdup, fixed-step integrator
