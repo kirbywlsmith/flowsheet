@@ -2,8 +2,6 @@
 
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `crates/flowsheet-cli/src/main.rs`.
 
-- [ ] Criterion benches: solve time vs unit count, vs tear count, and trait-object dispatch against the enum
-  baseline (recover the enum from commit `1612492`, behind a bench-only module)
 - [ ] Energy balance: per-species enthalpy `h(T)`, mixer outlet T by hand-rolled Newton solve, convergence tests.
   Blocked first by the name-keyed JSON flows map: it rejects `H2O` liquid + `H2O` gas, so no phase change until the key
   becomes composite (e.g. `"H2O(g)"`).

@@ -136,6 +136,24 @@ Never mix severities in one unlabelled list.
 - `main` deliberately does **not** return `Result`. Rust prints a returned error with `Debug`, not
   `Display`, so every message these error types carefully write would surface as a struct literal.
   Instead `main` calls `run()`, prints `{e}` to stderr, and exits 1.
+- Benches are **one criterion target**, two groups: `solve/units` over an acyclic chain of tanks and `solve/tears`
+  over `k` independent recycle loops. The fixtures live in `benches/solve.rs` rather than `demo` or `test_support` —
+  `test_support` is `#[cfg(test)]` and a bench is compiled without it, and a chain of 4096 tanks is not a circuit
+  anyone needs demonstrated. `iter_batched_ref`, never `iter`: `solve` writes into the flowsheet, so a reused one is
+  already converged and the second iteration would silently measure a single no-op pass. The `units` group uses
+  `BatchSize::LargeInput` because `SmallInput` holds a tenth of the iteration count in memory at once and a
+  4096-unit flowsheet is about a megabyte.
+- `criterion` is pulled with **`default-features = false, features = ["cargo_bench_support"]`**, which drops
+  `plotters` and `rayon`. It still adds ~15 crates (clap, regex, walkdir, ciborium) to the dev graph, and
+  `cargo clippy --all-targets` compiles all of them on every run. CI does not run `cargo bench` — a shared
+  runner has no stable baseline to compare against, and `--all-targets` already proves the benches build.
+- The **enum-vs-trait-object bench** was run once and deleted, so its numbers live here instead. On the demo
+  circuit, 64 passes: enum 22.9 µs, `Box<dyn UnitOp>` 23.3 µs — +1.8%, with overlapping confidence intervals. On a
+  bare `inlet_arity()` over 1024 ops: enum 0.11 ns/call, dyn 1.36 ns/call. The vtable hop is ~1.4 ns against a ~60 ns
+  `evaluate` that allocates a `Vec<Stream>`, so dispatch is ~2% of a unit evaluation and invisible end to end. The
+  12× on the bare call is a ceiling, not a per-call instruction cost: the enum loop auto-vectorises (>1 element per
+  cycle), and a `dyn` call is an optimisation barrier, so it cannot vectorise at all. Re-measure only if `evaluate`
+  ever stops allocating.
 - The CLI has **no `--output` flag**. `--json` writes a whole document to stdout and a test proves it reloads as a
   legal input, so `> solved.json` is the supported way to save one — the shell already owns that job. Column
   include/ignore flags were dropped from the original clap item for the same reason they were never missed: nothing
@@ -150,6 +168,7 @@ and `cargo clippy` at the root cover every member.
 crates/flowsheet/       the library: domain types, solver, serial, report. Depends on serde only.
   src/unit.rs           the `UnitOp` trait, `Arity`, `Unit`, and the free functions ops are built from.
   src/unit/             one file per operation, re-exported flat from `unit.rs`.
+  benches/solve.rs      criterion, `harness = false`. Solve time vs unit count and vs tear count.
 crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, error printing.
 ```
 
@@ -200,6 +219,14 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
+
+Plus, when touching the solver or a unit op:
+
+```bash
+cargo bench -p flowsheet
+```
+
+Not part of CI, and not a gate on removing a TODO item — `--all-targets` above already compiles it.
 
 All four must be clean before removing a TODO item. These are exactly what
 `.github/workflows/rust.yml` runs, on both Linux and Windows — the matrix is not redundant, because the byte-exact
