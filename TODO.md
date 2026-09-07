@@ -41,4 +41,4 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
 - [ ] Later: allow streaming solve events (e.g. `UnitEvaluated { id, iteration, residual }`) to subscribers during a run
 - [ ] Later: dynamic simulation — inventory/holdup, fixed-step integrator
 - [ ] Later: scenario runs and Monte Carlo over feed uncertainty
-- [ ] Later: C ABI (`extern "C"` + `cbindgen`) so .NET can P/Invoke it; UI on top of that - WinUI 3?
+- [ ] Later: C ABI (`extern "C"` + `cbindgen`) so .NET can P/Invoke it; UI on top of that - WinUI 3? Ratatui?
