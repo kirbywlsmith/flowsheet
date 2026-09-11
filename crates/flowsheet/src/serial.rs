@@ -84,6 +84,8 @@ pub enum UnitOp {
     SplitterN(SplitterNSpec),
     /// One inlet, two outlets: concentrate and tails, at a recovery per species.
     Flotation(FlotationSpec),
+    /// One inlet, one outlet, with `duty` added to its enthalpy flow.
+    Heater(HeaterSpec),
     /// One inlet, one outlet.
     Tank(NoSpec),
     /// One inlet.
@@ -124,6 +126,18 @@ pub struct SplitterNSpec {
 pub struct FlotationSpec {
     /// The fraction of each species reporting to the concentrate, keyed by species name.
     pub recovery: BTreeMap<String, f64>,
+}
+
+/// The parameters of a [`UnitOp::Heater`].
+///
+/// `duty` has no load-time check. The domain rejects only a non-finite duty, and a document
+/// cannot contain one: `serde_json` refuses `NaN`, `Infinity` and out-of-range literals such as
+/// `1e400`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeaterSpec {
+    /// Heat added, in MJ/h. Negative removes it.
+    pub duty: f64,
 }
 
 /// The parameters of a unit operation that takes none. Empty, but not omitted: it is what rejects
@@ -407,6 +421,7 @@ impl UnitOp {
                 }
                 Box::new(unit::Flotation { recovery: dense })
             }
+            UnitOp::Heater(HeaterSpec { duty }) => Box::new(unit::Heater { duty: *duty }),
             UnitOp::Tank(_) => Box::new(unit::Tank),
             UnitOp::Product(_) => Box::new(unit::Product),
         })
@@ -613,6 +628,12 @@ impl ToDocument for unit::Flotation {
             .collect();
 
         UnitOp::Flotation(FlotationSpec { recovery })
+    }
+}
+
+impl ToDocument for unit::Heater {
+    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
+        UnitOp::Heater(HeaterSpec { duty: self.duty })
     }
 }
 
@@ -1092,6 +1113,44 @@ mod tests {
             .validate()
             .expect("a short recovery is not a validation error");
         let _ = Flowsheet::from(&fs);
+    }
+
+    #[test]
+    fn a_heater_duty_survives_load_solve_save() {
+        let json = minimal(
+            r#"{ "name": "f", "op": { "type": "feed", "state": { "flows": { "H2O": 10.0 } } } },
+               { "name": "cooler", "op": { "type": "heater", "duty": -500.0 } },
+               { "name": "p", "op": { "type": "product" } }"#,
+            r#"{ "from": "f", "to": "cooler" }, { "from": "cooler", "to": "p" }"#,
+        );
+        let mut fs = load(&json).unwrap().validate().unwrap();
+        crate::solver::Solver::default().solve(&mut fs).unwrap();
+
+        assert!(
+            fs.streams()[1].temperature() < AMBIENT_K,
+            "a negative duty should cool"
+        );
+        let doc = Flowsheet::from(&fs);
+        let UnitOp::Heater(spec) = &doc.units[1].op else {
+            panic!("unit 1 is the heater")
+        };
+        assert_eq!(spec.duty, -500.0);
+    }
+
+    /// Why `to_domain` has no `require` for a heater: JSON cannot express the only duty the domain
+    /// rejects.
+    #[test]
+    fn a_non_finite_duty_cannot_be_written_in_json() {
+        for duty in ["NaN", "Infinity", "1e400"] {
+            let json = minimal(
+                &format!(r#"{{ "name": "h", "op": {{ "type": "heater", "duty": {duty} }} }}"#),
+                "",
+            );
+            assert!(
+                serde_json::from_str::<Flowsheet>(&json).is_err(),
+                "{duty} should not parse"
+            );
+        }
     }
 
     #[test]

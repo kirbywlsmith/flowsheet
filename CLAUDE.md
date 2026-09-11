@@ -108,13 +108,22 @@ Never mix severities in one unlabelled list.
   times kJ/kg is MJ/h.
 - Demo heat capacities: water and quartz are **NIST-JANAF Shomate fits**. Chalcopyrite has no published fit, so it is a
   **Neumann-Kopp estimate** - Cu + Fe + 2 S at 298.15 K, 95.0 J/(mol·K) - held constant.
-- `Mixer` is the **only op with a temperature solve**. `Splitter`, `SplitterN` and `Flotation` partition flows at
-  constant temperature, which conserves enthalpy exactly. `unit::mix` sums inlet enthalpy and hands it to
+- `Mixer` and `Heater` are the **only ops with a temperature solve**. `Splitter`, `SplitterN` and `Flotation`
+  partition flows at constant temperature, which conserves enthalpy exactly. `unit::mix` sums inlet enthalpy and hands it to
   `unit::solve_temperature`: Newton on `H(T) - target`, whose slope is the heat capacity flow and therefore positive,
   so there is exactly one root. It is seeded with the heat-capacity-weighted mean temperature, exact for constant cp,
   and takes 2-3 steps from there. Its 1e-9 K tolerance sits far inside the solver's, or the outer loop would converge
   on inner-solve noise. All-empty inlets keep the first inlet's temperature; the outlet takes the first inlet's
   pressure.
+- `Heater { duty }` is **duty-specified, MJ/h, negative cools** - no separate `Cooler`, and no outlet-temperature
+  spec yet. `unit::heat` hands `H_in + duty` to `solve_temperature` starting from the inlet temperature, so Newton's
+  first step is `T + Q/C`, exact for constant cp. An **empty inlet passes through with the duty ignored**, because a
+  recycle's first pass feeds a heater downstream of a tear exactly that. The price of a duty spec: a large negative
+  duty on an early pass carrying a sliver of the flow can drive Newton below 0 K and panic, which is user input
+  surfacing as a panic mid-solve - the same hole as a Shomate fit that goes negative away from 298.15 K. There is no
+  `LoadError` for a non-finite duty because JSON cannot write one; `serde_json` rejects `NaN`, `Infinity` and `1e400`,
+  and a test pins that. `tests/heated_recycle.rs` asserts `T_product = T_feed + Q / C_feed` by hand, independent of
+  the recycle fraction.
 - `Stream::set_temperature` is **public** because `mix` lives in `unit.rs` and cannot reach the private field; the
   alternative was copying the flows into a new stream on every Newton step. `+=` on `Stream` stays **flows-only** by
   design - combining temperatures needs the registry, and that is `mix`.

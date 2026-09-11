@@ -77,6 +77,7 @@ impl Arity {
 
 mod feed;
 mod flotation;
+mod heater;
 mod mixer;
 mod product;
 mod splitter;
@@ -87,6 +88,7 @@ mod tank;
 // operation per file is the only thing they buy.
 pub use feed::Feed;
 pub use flotation::Flotation;
+pub use heater::Heater;
 pub use mixer::Mixer;
 pub use product::Product;
 pub use splitter::{Splitter, SplitterN};
@@ -186,6 +188,32 @@ pub fn solve_temperature(registry: &SpeciesRegistry, stream: &mut Stream, enthal
         }
     }
     panic!("no temperature converged after {MAX_NEWTON_STEPS} Newton steps");
+}
+
+/// Adds `duty` (MJ/h) to an inlet's enthalpy flow and returns the stream at the temperature that
+/// results. A positive duty heats, a negative one cools. Flows and pressure pass through unchanged.
+///
+/// An empty inlet is returned unchanged and the duty is ignored. Its heat capacity is zero, so no
+/// finite temperature would absorb the duty. A heater downstream of a tear stream sees an empty
+/// inlet on the first pass, while the tear still holds its all-zero guess, so this case returns
+/// the inlet instead of panicking.
+///
+/// # Panics
+/// If `duty` is not finite, or if it cools the stream to absolute zero or below (see
+/// [`solve_temperature`]). A duty sized for the converged loop can do that on an early pass that
+/// carries a fraction of the converged flow.
+pub fn heat(registry: &SpeciesRegistry, inlet: &Stream, duty: f64) -> Stream {
+    assert!(duty.is_finite(), "heater duty must be finite, got {duty}");
+
+    let mut outlet = inlet.clone();
+    if inlet.heat_capacity(registry) == 0.0 {
+        return outlet; // exact-zero guard: the inlet is empty
+    }
+
+    // Newton starts from the inlet temperature, so its first step lands on T + duty / C. That is
+    // exact when cp is constant, and within a step or two of the answer otherwise.
+    solve_temperature(registry, &mut outlet, inlet.enthalpy(registry) + duty);
+    outlet
 }
 
 /// Splits an inlet into a (`fraction`, `1.0 - fraction`) scaled [`Stream`] tuple.
@@ -384,6 +412,94 @@ mod tests {
         let r = demo_registry();
         let mut empty = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
         solve_temperature(&r, &mut empty, 1.0);
+    }
+
+    // ---- heat ----
+
+    #[test]
+    fn heating_adds_the_duty_to_the_enthalpy_flow() {
+        let r = demo_registry();
+        let inlet = feed(&r);
+
+        let out = heat(&r, &inlet, 50_000.0);
+
+        assert_relative_eq!(
+            out.enthalpy(&r),
+            inlet.enthalpy(&r) + 50_000.0,
+            max_relative = 1e-9
+        );
+        assert!(out.temperature() > inlet.temperature());
+    }
+
+    #[test]
+    fn a_negative_duty_cools() {
+        let r = demo_registry();
+        let inlet = feed(&r);
+
+        let out = heat(&r, &inlet, -50_000.0);
+
+        assert!(out.temperature() < inlet.temperature());
+    }
+
+    #[test]
+    fn a_constant_heat_capacity_rises_by_duty_over_heat_capacity() {
+        // Chalcopyrite alone, so cp is constant and the answer is linear:
+        // 100 t/h * 95.0 / 183.5 kJ/(kg·K) = 51.77 MJ/(h·K), so 5177 MJ/h raises it 100 K.
+        let r = demo_registry();
+        let inlet = Stream::from_flows(&r, vec![100.0, 0.0, 0.0], 300.0, AMBIENT_KPA);
+        let c = 100.0 * 95.0 / 183.5;
+
+        let out = heat(&r, &inlet, 100.0 * c);
+
+        assert_relative_eq!(out.temperature(), 400.0, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn heating_changes_neither_flows_nor_pressure() {
+        let r = demo_registry();
+        let inlet = feed(&r);
+
+        let out = heat(&r, &inlet, 50_000.0);
+
+        assert!(inlet.flows_approx_eq(&out, 0.0));
+        assert_relative_eq!(out.pressure(), inlet.pressure());
+    }
+
+    #[test]
+    fn zero_duty_keeps_the_inlet_temperature() {
+        let r = demo_registry();
+        let inlet = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 350.0, AMBIENT_KPA);
+
+        let out = heat(&r, &inlet, 0.0);
+
+        assert_relative_eq!(out.temperature(), 350.0, epsilon = TEMPERATURE_TOLERANCE_K);
+    }
+
+    #[test]
+    fn heating_an_empty_stream_passes_it_through() {
+        let r = demo_registry();
+        let empty = Stream::zeros(&r, 310.0, AMBIENT_KPA);
+
+        let out = heat(&r, &empty, 50_000.0);
+
+        assert_relative_eq!(out.total(), 0.0);
+        assert_relative_eq!(out.temperature(), 310.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "heater duty must be finite")]
+    fn heating_by_nan_panics() {
+        let r = demo_registry();
+        heat(&r, &feed(&r), f64::NAN);
+    }
+
+    #[test]
+    #[should_panic(expected = "left the physical range")]
+    fn cooling_past_absolute_zero_panics() {
+        // The feed's heat capacity flow is about 2800 MJ/(h·K), so at constant cp taking it from
+        // 298 K to 0 K removes roughly 830,000 MJ/h. A billion is over a thousand times that.
+        let r = demo_registry();
+        heat(&r, &feed(&r), -1e9);
     }
 
     // ---- split ----
@@ -591,7 +707,7 @@ mod tests {
     fn every_op_declares_the_arity_its_evaluate_assumes() {
         let r = demo_registry();
 
-        // `Box<dyn UnitOp>` is what lets one array hold seven different concrete types. The
+        // `Box<dyn UnitOp>` is what lets one array hold eight different concrete types. The
         // enum version of this test relied on them all being the same type instead.
         type Case = (
             Box<dyn UnitOp>,
@@ -607,6 +723,11 @@ mod tests {
             // The mixer is the only unbounded side in the model.
             (Box::new(Mixer), (1, None), (1, Some(1))),
             (Box::new(Tank), (1, Some(1)), (1, Some(1))),
+            (
+                Box::new(Heater { duty: 1000.0 }),
+                (1, Some(1)),
+                (1, Some(1)),
+            ),
             (
                 Box::new(Splitter { fraction: 0.3 }),
                 (1, Some(1)),
