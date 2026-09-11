@@ -206,7 +206,8 @@ struct PreviousPass {
     results: Vec<Stream>,
 }
 
-/// The Wegstein weight for one species, from the secant through two passes.
+/// The Wegstein weight for one tear component (a species' flow, or the temperature), from the
+/// secant through two passes.
 fn wegstein_q(dx: f64, dy: f64, q_min: f64, q_max: f64) -> f64 {
     if dx == 0.0 {
         return 0.0; // exact-zero guard on a division, not a float comparison
@@ -219,15 +220,20 @@ fn wegstein_q(dx: f64, dy: f64, q_min: f64, q_max: f64) -> f64 {
     (slope / denominator).clamp(q_min, q_max)
 }
 
-/// The next guess for one tear stream, extrapolated species by species.
+/// The next guess for one tear stream, extrapolated species by species and then in temperature.
 ///
 /// `previous_*` are the pass before last; `guess` and `result` are the pass just finished.
-/// Temperature and pressure come straight from `result`, so temperature always converges by
-/// direct substitution. Around an adiabatic loop of mixers and splitters, temperature contracts
-/// at roughly a heat-capacity-weighted average of the species' rates. Under direct substitution
-/// the slowest species therefore still sets the pass count. Under Wegstein the flows can converge
-/// faster than that, leaving temperature as the slowest part. Extend the acceleration to
-/// temperature if a hot recycle ever shows it setting the pass count.
+/// Pressure comes straight from `result`.
+///
+/// Temperature gets its own `q`, the same way each species does. Around a loop, temperature
+/// contracts at roughly a heat-capacity-weighted average of the species' rates, so under direct
+/// substitution it is never the slowest part. Wegstein converges the flows faster than that, and
+/// then temperature is the only part left. On the heated loop in `tests/heated_recycle.rs` at 90%
+/// recycle, the flows settle by pass 22. Without its own `q`, temperature holds the solve open
+/// until pass 142.
+///
+/// If the extrapolated temperature is not positive, `result`'s temperature is kept instead,
+/// because [`crate::unit::solve_temperature`] panics at or below 0 K.
 ///
 /// # Panics
 /// If `q_min > q_max`, or either is `NaN`.
@@ -239,12 +245,34 @@ fn wegstein_step(
     q_min: f64,
     q_max: f64,
 ) -> Stream {
+    let extrapolate = |previous_guess: f64, previous_result: f64, guess: f64, result: f64| {
+        let q = wegstein_q(
+            guess - previous_guess,
+            result - previous_result,
+            q_min,
+            q_max,
+        );
+        q * guess + (1.0 - q) * result
+    };
+
     let mut next = result.clone();
     for (k, flow) in next.flows_mut().iter_mut().enumerate() {
-        let dx = guess.flows()[k] - previous_guess.flows()[k];
-        let dy = result.flows()[k] - previous_result.flows()[k];
-        let q = wegstein_q(dx, dy, q_min, q_max);
-        *flow = q * guess.flows()[k] + (1.0 - q) * result.flows()[k];
+        *flow = extrapolate(
+            previous_guess.flows()[k],
+            previous_result.flows()[k],
+            guess.flows()[k],
+            result.flows()[k],
+        );
+    }
+
+    let temperature = extrapolate(
+        previous_guess.temperature(),
+        previous_result.temperature(),
+        guess.temperature(),
+        result.temperature(),
+    );
+    if temperature > 0.0 {
+        next.set_temperature(temperature);
     }
     next
 }
@@ -310,6 +338,37 @@ mod tests {
         // Identical passes give dx = dy = 0, hence q = 0, hence next guess == new.
         let next = wegstein_step(&old, &new, &old, &new, -5.0, 0.0);
         assert!(next.flows_approx_eq(&new, 1e-12));
+    }
+
+    #[test]
+    fn temperature_is_extrapolated_to_the_fixed_point_of_a_linear_loop() {
+        // A loop returning T' = 35 + 0.9 T has its fixed point at 350 K and slope 0.9, so
+        // q = 0.9 / (0.9 - 1) = -9, and one step from any two passes lands exactly on it.
+        let r = demo_registry();
+        let at = |t: f64| {
+            let mut s = feed(&r);
+            s.set_temperature(t);
+            s
+        };
+
+        let next = wegstein_step(&at(300.0), &at(305.0), &at(305.0), &at(309.5), -20.0, 0.0);
+
+        assert_relative_eq!(next.temperature(), 350.0, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn a_temperature_extrapolated_below_absolute_zero_falls_back_to_the_result() {
+        // Slope 0.75 gives q = -3: next = -3 * 200 + 4 * 100 = -200 K.
+        let r = demo_registry();
+        let at = |t: f64| {
+            let mut s = feed(&r);
+            s.set_temperature(t);
+            s
+        };
+
+        let next = wegstein_step(&at(400.0), &at(250.0), &at(200.0), &at(100.0), -5.0, 0.0);
+
+        assert_relative_eq!(next.temperature(), 100.0);
     }
 
     #[test]

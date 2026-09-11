@@ -131,6 +131,13 @@ Never mix severities in one unlabelled list.
   both are relative, and a relative temperature residual only means anything in Kelvin. `solver::nan_max` exists
   because `f64::max` drops a `NaN` and returns the number (C#'s `Math.Max` returns the `NaN`), which would let a
   garbage pass report itself converged.
+- **Wegstein extrapolates temperature too**, with its own `q`, the same as one more species. It went in once a
+  measurement showed temperature setting the pass count: on the heated loop in `tests/heated_recycle.rs` at 90%
+  recycle, flows-only Wegstein settled the flows by pass 22 and then waited on temperature until pass 142. With
+  temperature extrapolated it takes 22, the same as the loop with no duty. A non-positive extrapolated temperature
+  falls back to the pass's result, because `solve_temperature` panics at or below 0 K. Pressure is still copied from
+  the result. Isothermal loops are unaffected: the tear temperature never changes between passes, so `dx = 0` and
+  `q = 0`.
 - An adiabatic circuit with **one feed sits at the feed temperature everywhere**. With several, the recycle enters and
   leaves the mixer at the same temperature and cancels, so every internal stream sits at the feeds' own adiabatic mix.
   `tests/energy_balance.rs` asserts against that, the energy counterpart of `demo::balance`. The demo circuit is all at

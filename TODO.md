@@ -45,9 +45,6 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
 - [ ] Later: phase change. Latent heat needs `H2O` liquid and `H2O` gas in one flowsheet, and the name-keyed JSON flows
   map rejects that on both boundaries, so the key has to become composite first (e.g. `"H2O(g)"`). A flash also needs
   pressure - see the item above.
-- [ ] Later: Wegstein on temperature. The solver accelerates flows only; temperature converges by direct substitution.
-  Under direct substitution that is never the slow part of an adiabatic loop, but under Wegstein it can be. Wait until
-  a hot recycle actually shows temperature setting the pass count - `wegstein_step` documents the reasoning.
 - [ ] Later: more unit ops (heat exchanger, screen) and design constraints
 - [ ] Later: allow streaming solve events (e.g. `UnitEvaluated { id, iteration, residual }`) to subscribers during a run
 - [ ] Later: dynamic simulation — inventory/holdup, fixed-step integrator
