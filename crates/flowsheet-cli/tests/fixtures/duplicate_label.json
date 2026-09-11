@@ -1,8 +1,8 @@
 {
   "species": [
-    { "name": "CuFeS2", "phase": "Solid", "molar_mass": 183.5 },
-    { "name": "SiO2", "phase": "Solid", "molar_mass": 60.08 },
-    { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015 }
+    { "name": "CuFeS2", "phase": "Solid", "molar_mass": 183.5, "shomate": { "a": 95.0 } },
+    { "name": "SiO2", "phase": "Solid", "molar_mass": 60.08, "shomate": { "a": 44.6 } },
+    { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 } }
   ],
   "units": [
     {

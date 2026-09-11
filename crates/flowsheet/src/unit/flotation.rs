@@ -1,6 +1,7 @@
 //! [`Flotation`] - the first operation that changes a stream's composition.
 
 use super::{Arity, UnitOp, recover};
+use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
 /// One inlet, two outlets: concentrate first, tails second.
@@ -31,7 +32,7 @@ impl UnitOp for Flotation {
     /// # Panics
     /// If `recovery` does not match the inlet's species count, or holds a value outside
     /// `0.0..=1.0`. See [`recover`].
-    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
+    fn evaluate(&self, _registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
         let (concentrate, tails) = recover(inlets[0], &self.recovery);
         vec![concentrate, tails]
     }
@@ -55,7 +56,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = rougher().evaluate(&[&inlet]);
+        let outs = rougher().evaluate(&r, &[&inlet]);
 
         assert_eq!(outs.len(), 2);
         // 0.85 * 40.0 t/h of chalcopyrite reports to the concentrate.
@@ -68,7 +69,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = rougher().evaluate(&[&inlet]);
+        let outs = rougher().evaluate(&r, &[&inlet]);
 
         for id in all_ids(&r) {
             assert_relative_eq!(outs[0][id] + outs[1][id], inlet[id], max_relative = 1e-12);
@@ -80,7 +81,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = rougher().evaluate(&[&inlet]);
+        let outs = rougher().evaluate(&r, &[&inlet]);
 
         // Grade is the point: 4% chalcopyrite in, 34.0 / 232.0 = 14.7% in the concentrate.
         // The circuit reaches 12.33% instead - the recycle brings gangue back round with it.
@@ -97,7 +98,7 @@ mod tests {
         let outs = Flotation {
             recovery: vec![0.0; 3],
         }
-        .evaluate(&[&inlet]);
+        .evaluate(&r, &[&inlet]);
 
         assert_relative_eq!(outs[0].total(), 0.0);
         assert!(inlet.flows_approx_eq(&outs[1], 1e-12));
@@ -110,7 +111,7 @@ mod tests {
         Flotation {
             recovery: vec![0.85, 0.05],
         }
-        .evaluate(&[&feed(&r)]);
+        .evaluate(&r, &[&feed(&r)]);
     }
 
     #[test]
@@ -120,6 +121,6 @@ mod tests {
         Flotation {
             recovery: vec![1.5, 0.05, 0.30],
         }
-        .evaluate(&[&feed(&r)]);
+        .evaluate(&r, &[&feed(&r)]);
     }
 }

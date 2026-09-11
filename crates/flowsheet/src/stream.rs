@@ -1,6 +1,6 @@
 //! Stream data structures.
 
-use crate::species::{SpeciesId, SpeciesRegistry};
+use crate::species::{Species, SpeciesId, SpeciesRegistry};
 
 /// A moving flow of material or energy that enters, leaves, or connects different processing units in a system.
 #[derive(Debug, Clone)]
@@ -54,6 +54,11 @@ impl Stream {
         self.temperature
     }
 
+    /// Sets the temperature of the stream, in Kelvin.
+    pub fn set_temperature(&mut self, temperature: f64) {
+        self.temperature = temperature;
+    }
+
     /// The pressure of the stream, in kPa.
     pub fn pressure(&self) -> f64 {
         self.pressure
@@ -79,6 +84,45 @@ impl Stream {
         self.flows.iter().sum()
     }
 
+    /// Enthalpy flow relative to [`crate::thermo::REFERENCE_K`], in MJ/h.
+    ///
+    /// # Panics
+    /// If `registry` has a different species count than this stream.
+    pub fn enthalpy(&self, registry: &SpeciesRegistry) -> f64 {
+        // t/h times kJ/kg is 1000 kg/h times kJ/kg, which is MJ/h, so no factor is needed.
+        self.species_sum(registry, |species| species.enthalpy(self.temperature))
+    }
+
+    /// Heat capacity flow at the stream's temperature, in MJ/(h·K): the enthalpy it gains per
+    /// Kelvin of warming.
+    ///
+    /// # Panics
+    /// If `registry` has a different species count than this stream.
+    pub fn heat_capacity(&self, registry: &SpeciesRegistry) -> f64 {
+        // t/h times kJ/(kg·K) is MJ/(h·K), by the same arithmetic as `enthalpy`.
+        self.species_sum(registry, |species| species.heat_capacity(self.temperature))
+    }
+
+    /// Sums `flow * property(species)` over every species.
+    ///
+    /// # Panics
+    /// If `registry` has a different species count than this stream. Without the check `zip`
+    /// would stop at the shorter side and return a plausible, wrong number.
+    fn species_sum(&self, registry: &SpeciesRegistry, property: impl Fn(&Species) -> f64) -> f64 {
+        assert_eq!(
+            self.flows.len(),
+            registry.len(),
+            "stream has {} flows but registry has {} species",
+            self.flows.len(),
+            registry.len()
+        );
+        self.flows
+            .iter()
+            .zip(registry.all())
+            .map(|(flow, species)| flow * property(species))
+            .sum()
+    }
+
     /// Proportion of each species by mass, summing to 1.0.
     ///
     /// A stream with zero total flow returns a zero vector rather than NaN.
@@ -93,7 +137,8 @@ impl Stream {
     /// Largest per-species flow difference, normalised by the larger stream total.
     ///
     /// A result of 1e-6 means every species agrees to within 1 ppm of the stream's
-    /// total mass flow. Compares flows only, not temperature or pressure.
+    /// total mass flow. Compares flows only: [`Stream::temperature_residual`] covers temperature,
+    /// and nothing compares pressure.
     ///
     /// Returns `NaN` if either stream contains `NaN`.
     ///
@@ -131,6 +176,18 @@ impl Stream {
         self.max_flow_residual(other) <= tolerance
     }
 
+    /// Temperature difference, normalised by the hotter of the two streams.
+    ///
+    /// Relative, so that it can share a tolerance with [`Stream::max_flow_residual`]. That works
+    /// because Kelvin starts at absolute zero. In Celsius the same 1 degree would be a bigger or
+    /// smaller fraction depending on where zero happened to sit, and a stream at 0 °C would divide
+    /// by zero.
+    ///
+    /// Returns `NaN` if either temperature is `NaN`.
+    pub fn temperature_residual(&self, other: &Stream) -> f64 {
+        (self.temperature - other.temperature).abs() / self.temperature.max(other.temperature)
+    }
+
     /// Multiplies every flow by `factor`, returning a new stream.
     ///
     /// Composition, temperature and pressure are unchanged.
@@ -156,7 +213,9 @@ impl std::ops::IndexMut<SpeciesId> for Stream {
     }
 }
 
-// TODO: temperature and pressure are not considered yet
+/// Adds `other`'s flows to this stream's, and nothing else: temperature and pressure stay as they
+/// were. Combining temperatures is an energy balance, which needs the species registry, so it
+/// lives in [`crate::unit::mix`].
 impl std::ops::AddAssign<&Stream> for Stream {
     fn add_assign(&mut self, other: &Stream) {
         assert_eq!(
@@ -179,6 +238,7 @@ mod tests {
     use super::*;
     use crate::species::Phase;
     use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
+    use crate::thermo::REFERENCE_K;
     use approx::assert_relative_eq;
 
     #[test]
@@ -292,5 +352,79 @@ mod tests {
         assert_relative_eq!(a[r.find("SiO2", Phase::Solid).unwrap()], 380.0);
         assert_relative_eq!(a.total(), 1060.0);
         assert_relative_eq!(a.temperature(), AMBIENT_K); // b's temperature is ignored, by design
+    }
+
+    #[test]
+    fn a_stream_at_the_reference_temperature_carries_no_enthalpy() {
+        let r = demo_registry();
+        let s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], REFERENCE_K, AMBIENT_KPA);
+        assert_relative_eq!(s.enthalpy(&r), 0.0);
+    }
+
+    #[test]
+    fn enthalpy_is_additive_across_a_split() {
+        let r = demo_registry();
+        let hot = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 350.0, AMBIENT_KPA);
+        let parts = hot.scaled(0.3).enthalpy(&r) + hot.scaled(0.7).enthalpy(&r);
+        assert!(hot.enthalpy(&r) > 0.0);
+        assert_relative_eq!(parts, hot.enthalpy(&r), max_relative = 1e-12);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry has 0 species")]
+    fn enthalpy_rejects_a_registry_of_the_wrong_size() {
+        let r = demo_registry();
+        feed(&r).enthalpy(&SpeciesRegistry::default());
+    }
+
+    #[test]
+    fn heat_capacity_is_the_slope_of_enthalpy() {
+        let r = demo_registry();
+        let mut s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 350.0, AMBIENT_KPA);
+        let dt = 1e-3;
+
+        s.set_temperature(350.0 + dt);
+        let above = s.enthalpy(&r);
+        s.set_temperature(350.0 - dt);
+        let below = s.enthalpy(&r);
+        s.set_temperature(350.0);
+
+        assert_relative_eq!(
+            (above - below) / (2.0 * dt),
+            s.heat_capacity(&r),
+            max_relative = 1e-6
+        );
+    }
+
+    #[test]
+    fn temperature_residual_is_relative_to_the_hotter_stream() {
+        let r = demo_registry();
+        let mut a = feed(&r);
+        let mut b = feed(&r);
+        a.set_temperature(300.0);
+        b.set_temperature(303.0);
+
+        assert_relative_eq!(
+            a.temperature_residual(&b),
+            3.0 / 303.0,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            b.temperature_residual(&a),
+            3.0 / 303.0,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(a.temperature_residual(&a), 0.0);
+    }
+
+    #[test]
+    fn a_nan_temperature_never_reports_converged() {
+        let r = demo_registry();
+        let a = feed(&r);
+        let mut b = feed(&r);
+        b.set_temperature(f64::NAN);
+
+        assert!(a.temperature_residual(&b).is_nan());
+        assert!(b.temperature_residual(&a).is_nan());
     }
 }

@@ -98,13 +98,15 @@ fn describe_validation(errors: Vec<FlowsheetError>) -> String {
 //   1  SiO2(s)     gangue        — the worthless rock
 //   2  H2O(l)      water
 //
-// All flows are mass flow rates in t/h. Temperature and pressure are carried
-// on the stream but unused until the energy balance milestone.
+// All flows are mass flow rates in t/h. Temperature is solved by an adiabatic
+// energy balance, but every stream here enters at 25 °C, so every stream
+// leaves at 25 °C as well. Pressure is carried and ignored.
 //
 // Unit models
 // -----------
 //   U0 Feed        outlet = fixed vector [40.0, 360.0, 600.0]
 //   U1 Mixer       outlet[i] = sum of inlet[i] over all inlets
+//                  outlet T  = whatever makes H(outlet) = sum of H(inlets)
 //   U2 Flotation   param: recovery r = [0.85, 0.05, 0.30]
 //                  concentrate[i] = inlet[i] * r[i]
 //                  tails[i]       = inlet[i] * (1.0 - r[i])
@@ -114,7 +116,8 @@ fn describe_validation(errors: Vec<FlowsheetError>) -> String {
 //                  tailings_outlet[i] = inlet[i] * (1.0 - f)
 //   U5 Tailings    accumulates inlet, no outlets
 //
-// Every unit must satisfy: sum(inlets) == sum(outlets), per species.
+// Every unit must satisfy: sum(inlets) == sum(outlets), per species. With no
+// heat in or out, the same holds for enthalpy.
 //
 // The flotation cell is what makes this a plant rather than a plumbing
 // diagram. A splitter sends the same composition to both outlets, so no

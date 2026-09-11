@@ -2,6 +2,7 @@
 
 use crate::flowsheet::StreamId;
 use crate::serial::ToDocument;
+use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 use std::fmt::Debug;
 
@@ -32,7 +33,7 @@ pub trait UnitOp: Debug + Send + Sync + ToDocument {
     ///
     /// `inlets` is guaranteed to satisfy [`UnitOp::inlet_arity`] - [`crate::flowsheet::Flowsheet::check`]
     /// rejects anything else before a solve starts - so an implementation may index it directly.
-    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream>;
+    fn evaluate(&self, registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream>;
 }
 
 /// Boxes any operation, so [`crate::flowsheet::Flowsheet::add_unit`] accepts either a bare
@@ -101,13 +102,90 @@ pub struct Unit {
 }
 
 /// Mixes a number of inlets into a single combined [`Stream`].
-pub fn mix<'a>(inlets: impl IntoIterator<Item = &'a Stream>) -> Option<Stream> {
-    let mut inlets = inlets.into_iter();
-    let mut result = inlets.next()?.clone();
-    for s in inlets {
-        result += s;
+///
+/// Flows add. Mixing is adiabatic (no heat enters or leaves), so the outlet's enthalpy flow is
+/// the sum of the inlets', and [`solve_temperature`] finds the temperature that makes that true. The outlet takes the first inlet's pressure, because nothing solves
+/// pressure yet.
+///
+/// If every inlet is empty there is no mass to put a temperature on, so the first inlet's
+/// temperature is kept.
+///
+/// Returns `None` if `inlets` is empty.
+///
+/// # Panics
+/// If an inlet's species count does not match `registry`.
+pub fn mix<'a>(
+    registry: &SpeciesRegistry,
+    inlets: impl IntoIterator<Item = &'a Stream>,
+) -> Option<Stream> {
+    let mut inlets = inlets.into_iter().peekable();
+    let first = *inlets.peek()?;
+    let mut outlet = Stream::zeros(registry, first.temperature(), first.pressure());
+
+    let mut enthalpy = 0.0;
+    // The first guess for the temperature is sum(C * T) / sum(C), with C each inlet's heat
+    // capacity flow at its own temperature. When cp is constant that ratio *is* the answer, and
+    // when it varies it is close enough that Newton needs a step or two.
+    let mut heat_capacity = 0.0;
+    let mut weighted_temperature = 0.0;
+
+    for inlet in inlets {
+        outlet += inlet;
+        let c = inlet.heat_capacity(registry);
+        enthalpy += inlet.enthalpy(registry);
+        heat_capacity += c;
+        weighted_temperature += c * inlet.temperature();
     }
-    Some(result)
+
+    if heat_capacity == 0.0 {
+        return Some(outlet); // exact-zero guard: every inlet is empty
+    }
+
+    outlet.set_temperature(weighted_temperature / heat_capacity);
+    solve_temperature(registry, &mut outlet, enthalpy);
+    Some(outlet)
+}
+
+/// How close two Newton iterates must come, in Kelvin, before [`solve_temperature`] stops.
+///
+/// Far tighter than the solver's own tolerance, on purpose: an inner solve that stops early
+/// shows up as noise in the outer loop's residual, and the outer loop cannot converge past it.
+const TEMPERATURE_TOLERANCE_K: f64 = 1e-9;
+
+/// Newton needs two or three steps from a good guess. This bound only exists to catch a bug.
+const MAX_NEWTON_STEPS: usize = 50;
+
+/// Sets `stream`'s temperature to the one at which its enthalpy flow equals `enthalpy` (MJ/h),
+/// starting Newton's method from the temperature the stream already has.
+///
+/// The function being zeroed is `f(T) = H(T) - enthalpy`, and its slope `H'(T)` is the stream's
+/// heat capacity flow. Wherever cp is positive so is that slope, so `f` only ever rises and
+/// crosses zero exactly once. Newton has no second root to wander towards.
+///
+/// # Panics
+/// If the stream has no heat capacity (an empty stream has zero enthalpy at every temperature),
+/// if an iterate leaves the positive reals, or if 50 steps pass without converging.
+pub fn solve_temperature(registry: &SpeciesRegistry, stream: &mut Stream, enthalpy: f64) {
+    for _ in 0..MAX_NEWTON_STEPS {
+        let slope = stream.heat_capacity(registry);
+        assert!(
+            slope > 0.0,
+            "cannot solve the temperature of a stream with no heat capacity"
+        );
+
+        let step = (stream.enthalpy(registry) - enthalpy) / slope;
+        let next = stream.temperature() - step;
+        assert!(
+            next.is_finite() && next > 0.0,
+            "Newton's method left the physical range at {next} K"
+        );
+        stream.set_temperature(next);
+
+        if step.abs() <= TEMPERATURE_TOLERANCE_K {
+            return;
+        }
+    }
+    panic!("no temperature converged after {MAX_NEWTON_STEPS} Newton steps");
 }
 
 /// Splits an inlet into a (`fraction`, `1.0 - fraction`) scaled [`Stream`] tuple.
@@ -186,14 +264,15 @@ mod tests {
 
     #[test]
     fn mixing_nothing_gives_nothing() {
-        assert!(mix(&[]).is_none());
+        let r = demo_registry();
+        assert!(mix(&r, &[]).is_none());
     }
 
     #[test]
     fn mixing_one_inlet_reproduces_it() {
         let r = demo_registry();
         let s = feed(&r);
-        let out = mix(std::slice::from_ref(&s)).unwrap();
+        let out = mix(&r, std::slice::from_ref(&s)).unwrap();
         assert!(s.flows_approx_eq(&out, 1e-12));
     }
 
@@ -203,7 +282,7 @@ mod tests {
         let a = feed(&r);
         let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], AMBIENT_K, AMBIENT_KPA);
 
-        let out = mix(&[a.clone(), b.clone()]).unwrap();
+        let out = mix(&r, &[a.clone(), b.clone()]).unwrap();
 
         for id in all_ids(&r) {
             assert_relative_eq!(out[id], a[id] + b[id], max_relative = 1e-12);
@@ -212,17 +291,99 @@ mod tests {
     }
 
     #[test]
-    fn mixing_takes_the_first_inlets_temperature() {
-        // Documents a known limitation: the true mixed temperature needs an
-        // enthalpy balance, so `+=` leaves the accumulator's T and P alone.
+    fn mixing_conserves_enthalpy() {
         let r = demo_registry();
-        let cold = feed(&r);
-        let hot = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], 400.0, 500.0);
+        let cold = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 290.0, AMBIENT_KPA);
+        let hot = Stream::from_flows(&r, vec![10.0, 20.0, 300.0], 370.0, AMBIENT_KPA);
 
-        let out = mix(&[cold, hot]).unwrap();
+        let out = mix(&r, [&cold, &hot]).unwrap();
 
-        assert_relative_eq!(out.temperature(), AMBIENT_K);
+        assert_relative_eq!(
+            out.enthalpy(&r),
+            cold.enthalpy(&r) + hot.enthalpy(&r),
+            max_relative = 1e-9
+        );
+        assert!(290.0 < out.temperature() && out.temperature() < 370.0);
+    }
+
+    #[test]
+    fn a_constant_heat_capacity_mixes_to_the_mass_weighted_mean() {
+        // Chalcopyrite is the demo's one constant-cp species, and with a single species the heat
+        // capacity weights are just the masses: (100 * 300 + 300 * 400) / 400 = 375 K.
+        let r = demo_registry();
+        let a = Stream::from_flows(&r, vec![100.0, 0.0, 0.0], 300.0, AMBIENT_KPA);
+        let b = Stream::from_flows(&r, vec![300.0, 0.0, 0.0], 400.0, AMBIENT_KPA);
+
+        let out = mix(&r, [&a, &b]).unwrap();
+
+        assert_relative_eq!(out.temperature(), 375.0, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn inlets_at_one_temperature_mix_to_that_temperature() {
+        let r = demo_registry();
+        let a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 340.0, AMBIENT_KPA);
+        let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], 340.0, AMBIENT_KPA);
+
+        let out = mix(&r, [&a, &b]).unwrap();
+
+        assert_relative_eq!(out.temperature(), 340.0, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn an_empty_inlet_leaves_the_mixed_temperature_alone() {
+        // What a recycle's first pass looks like: the feed meets a tear stream with no flow yet.
+        // The empty one goes first, to prove its temperature is not simply kept.
+        let r = demo_registry();
+        let empty = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
+        let hot = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 350.0, AMBIENT_KPA);
+
+        let out = mix(&r, [&empty, &hot]).unwrap();
+
+        assert_relative_eq!(out.temperature(), 350.0, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn mixing_only_empty_inlets_keeps_the_first_temperature() {
+        let r = demo_registry();
+        let a = Stream::zeros(&r, 310.0, AMBIENT_KPA);
+        let b = Stream::zeros(&r, 290.0, AMBIENT_KPA);
+
+        let out = mix(&r, [&a, &b]).unwrap();
+
+        assert_relative_eq!(out.temperature(), 310.0);
+    }
+
+    #[test]
+    fn mixing_keeps_the_first_inlets_pressure() {
+        // Nothing solves pressure yet. See the pressure item in TODO.md.
+        let r = demo_registry();
+        let low = feed(&r);
+        let high = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], AMBIENT_K, 500.0);
+
+        let out = mix(&r, [&low, &high]).unwrap();
+
         assert_relative_eq!(out.pressure(), AMBIENT_KPA);
+    }
+
+    #[test]
+    fn solve_temperature_inverts_enthalpy() {
+        let r = demo_registry();
+        let mut s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 420.0, AMBIENT_KPA);
+        let enthalpy = s.enthalpy(&r);
+
+        s.set_temperature(300.0); // a deliberately poor first guess
+        solve_temperature(&r, &mut s, enthalpy);
+
+        assert_relative_eq!(s.temperature(), 420.0, epsilon = TEMPERATURE_TOLERANCE_K);
+    }
+
+    #[test]
+    #[should_panic(expected = "no heat capacity")]
+    fn an_empty_stream_has_no_temperature_to_solve_for() {
+        let r = demo_registry();
+        let mut empty = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
+        solve_temperature(&r, &mut empty, 1.0);
     }
 
     // ---- split ----
@@ -303,7 +464,7 @@ mod tests {
         let inlet = feed(&r);
 
         let outs = split_n(&inlet, &[0.7, 0.2, 0.1]);
-        let recombined = mix(&outs).unwrap();
+        let recombined = mix(&r, &outs).unwrap();
 
         assert_eq!(outs.len(), 3);
         assert!(inlet.flows_approx_eq(&recombined, 1e-12));
@@ -319,7 +480,7 @@ mod tests {
         for out in &outs {
             assert_relative_eq!(out.total(), 1000.0 / 3.0, max_relative = 1e-12);
         }
-        assert!(inlet.flows_approx_eq(&mix(&outs).unwrap(), 1e-12));
+        assert!(inlet.flows_approx_eq(&mix(&r, &outs).unwrap(), 1e-12));
     }
 
     #[test]
@@ -483,7 +644,7 @@ mod tests {
             let stream = feed(&r);
             let supplied: Vec<&Stream> = vec![&stream; op.inlet_arity().min];
             assert_eq!(
-                op.evaluate(&supplied).len(),
+                op.evaluate(&r, &supplied).len(),
                 op.outlet_arity().min,
                 "{op:?} returned an outlet count its arity does not declare"
             );

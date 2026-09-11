@@ -39,13 +39,13 @@ fn the_default_table_matches_the_worked_example() {
     assert_eq!(
         lines[..7],
         [
-            "  #  stream                 CuFeS2     SiO2      H2O     total",
-            "  0  feed.mixer             40.000  360.000  600.000  1000.000",
-            "  1  mixer.flotation        41.885  503.497  759.494  1304.875",
-            "  2  flotation.concentrate  35.602   25.175  227.848   288.625",
-            "  3  flotation.split         6.283  478.322  531.646  1016.250",
-            "  4  split.mixer             1.885  143.497  159.494   304.875",
-            "  5  split.tailings          4.398  334.825  372.152   711.375",
+            "  #  stream                 CuFeS2     SiO2      H2O     total   T (K)",
+            "  0  feed.mixer             40.000  360.000  600.000  1000.000  298.15",
+            "  1  mixer.flotation        41.885  503.497  759.494  1304.875  298.15",
+            "  2  flotation.concentrate  35.602   25.175  227.848   288.625  298.15",
+            "  3  flotation.split         6.283  478.322  531.646  1016.250  298.15",
+            "  4  split.mixer             1.885  143.497  159.494   304.875  298.15",
+            "  5  split.tailings          4.398  334.825  372.152   711.375  298.15",
         ]
     );
     // Direct substitution shrinks the error by f * (1 - r) a pass, worst for the gangue at
@@ -102,11 +102,11 @@ fn two_streams_between_the_same_units_get_distinct_labels() {
     assert_eq!(
         lines[..5],
         [
-            "  #  stream         CuFeS2     SiO2      H2O     total",
-            "  0  feed.split     40.000  360.000  600.000  1000.000",
-            "  1  split.mixer    12.000  108.000  180.000   300.000",
-            "  2  split.mixer#2  28.000  252.000  420.000   700.000",
-            "  3  mixer.product  40.000  360.000  600.000  1000.000",
+            "  #  stream         CuFeS2     SiO2      H2O     total   T (K)",
+            "  0  feed.split     40.000  360.000  600.000  1000.000  298.15",
+            "  1  split.mixer    12.000  108.000  180.000   300.000  298.15",
+            "  2  split.mixer#2  28.000  252.000  420.000   700.000  298.15",
+            "  3  mixer.product  40.000  360.000  600.000  1000.000  298.15",
         ]
     );
 }

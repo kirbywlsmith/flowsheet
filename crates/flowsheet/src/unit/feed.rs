@@ -1,6 +1,7 @@
 //! [`Feed`] - where material enters the flowsheet.
 
 use super::{Arity, UnitOp};
+use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
 /// No inlets, one outlet: emits a fixed [`Stream`] into the flowsheet.
@@ -19,7 +20,7 @@ impl UnitOp for Feed {
         Arity::exactly(1)
     }
 
-    fn evaluate(&self, _inlets: &[&Stream]) -> Vec<Stream> {
+    fn evaluate(&self, _registry: &SpeciesRegistry, _inlets: &[&Stream]) -> Vec<Stream> {
         vec![self.stream.clone()]
     }
 }
@@ -35,7 +36,7 @@ mod tests {
         let r = demo_registry();
         let op = Feed { stream: feed(&r) };
 
-        let outs = op.evaluate(&[]);
+        let outs = op.evaluate(&r, &[]);
 
         assert_eq!(outs.len(), 1);
         assert_relative_eq!(outs[0].total(), 1000.0);

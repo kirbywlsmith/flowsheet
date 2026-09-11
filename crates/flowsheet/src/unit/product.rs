@@ -1,6 +1,7 @@
 //! [`Product`] - where material leaves the flowsheet.
 
 use super::{Arity, UnitOp};
+use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
 /// One inlet, no outlets: where material leaves the flowsheet.
@@ -16,7 +17,7 @@ impl UnitOp for Product {
         Arity::exactly(0)
     }
 
-    fn evaluate(&self, _inlets: &[&Stream]) -> Vec<Stream> {
+    fn evaluate(&self, _registry: &SpeciesRegistry, _inlets: &[&Stream]) -> Vec<Stream> {
         vec![]
     }
 }
@@ -29,7 +30,7 @@ mod tests {
     #[test]
     fn product_consumes_its_inlet_and_emits_nothing() {
         let r = demo_registry();
-        let outs = Product.evaluate(&[&feed(&r)]);
+        let outs = Product.evaluate(&r, &[&feed(&r)]);
         assert!(outs.is_empty());
     }
 }

@@ -90,6 +90,42 @@ Never mix severities in one unlabelled list.
   independently, so `M = F / (1 - f(1 - r))` is the whole answer. The balance tests assert against that formula
   rather than against pasted numbers, so changing `f` or the recovery vector does not invalidate them. Convergence
   now varies by species too - the rate is `f(1 - r)`, and the slowest species sets it.
+- **The energy balance solves temperature and nothing else.** `pressure` is still a carried label (see TODO.md), and
+  there is no phase change.
+- `UnitOp::evaluate` takes **`&SpeciesRegistry`** as a plain second parameter. A `Stream` is a bare vector of flows and
+  enthalpy needs each species' heat capacity. Not a context struct - there is one thing to pass - and not a registry
+  reference inside `Stream`, whose lifetime would infect `Flowsheet`, `ValidFlowsheet`, `serial` and every test.
+  `&SpeciesRegistry` is `Sync`, so the `Send + Sync` bound survives.
+- Heat capacity is **Shomate, per mole, five coefficients `A`-`E`** (`thermo::Shomate`). NIST's `F` and `H` only fix the
+  absolute zero of enthalpy, and every enthalpy is taken relative to `thermo::REFERENCE_K` (298.15 K), so they cancel;
+  `G` is entropy. Reactions need an absolute reference and will bring `F` and `H` back; until then a document that
+  pastes them is rejected by `deny_unknown_fields`. Constant cp is `B = C = D = E = 0` (`Shomate::constant`), so there
+  is no `Thermo` enum, and zero terms are dropped on save for the same reason zero flows are.
+- `shomate` is **required** on the wire. A defaulted temperature is a guess at state; a defaulted cp would fabricate a
+  property and give plausible, wrong temperatures. Loading checks cp > 0 at 298.15 K - one point, not the whole fit.
+- Units are picked so **no conversion factor appears**: `Shomate` is per mole, `Species::heat_capacity` / `enthalpy`
+  divide by `molar_mass` to get per kg, and `Stream::heat_capacity` / `enthalpy` are MJ/(h·K) and MJ/h, because t/h
+  times kJ/kg is MJ/h.
+- Demo heat capacities: water and quartz are **NIST-JANAF Shomate fits**. Chalcopyrite has no published fit, so it is a
+  **Neumann-Kopp estimate** - Cu + Fe + 2 S at 298.15 K, 95.0 J/(mol·K) - held constant.
+- `Mixer` is the **only op with a temperature solve**. `Splitter`, `SplitterN` and `Flotation` partition flows at
+  constant temperature, which conserves enthalpy exactly. `unit::mix` sums inlet enthalpy and hands it to
+  `unit::solve_temperature`: Newton on `H(T) - target`, whose slope is the heat capacity flow and therefore positive,
+  so there is exactly one root. It is seeded with the heat-capacity-weighted mean temperature, exact for constant cp,
+  and takes 2-3 steps from there. Its 1e-9 K tolerance sits far inside the solver's, or the outer loop would converge
+  on inner-solve noise. All-empty inlets keep the first inlet's temperature; the outlet takes the first inlet's
+  pressure.
+- `Stream::set_temperature` is **public** because `mix` lives in `unit.rs` and cannot reach the private field; the
+  alternative was copying the flows into a new stream on every Newton step. `+=` on `Stream` stays **flows-only** by
+  design - combining temperatures needs the registry, and that is `mix`.
+- The solver stops on **max(flow residual, temperature residual)** per tear stream. One tolerance serves both because
+  both are relative, and a relative temperature residual only means anything in Kelvin. `solver::nan_max` exists
+  because `f64::max` drops a `NaN` and returns the number (C#'s `Math.Max` returns the `NaN`), which would let a
+  garbage pass report itself converged.
+- An adiabatic circuit with **one feed sits at the feed temperature everywhere**. With several, the recycle enters and
+  leaves the mixer at the same temperature and cancels, so every internal stream sits at the feeds' own adiabatic mix.
+  `tests/energy_balance.rs` asserts against that, the energy counterpart of `demo::balance`. The demo circuit is all at
+  25 °C, so its temperature column is uniform and none of its pass counts moved.
 - Outlet order is positional: the Nth `add_stream` from a unit matches the Nth stream from `UnitOp::evaluate`. Wiring a
   splitter backwards still balances mass, so it fails silently.
 - Flowsheets are built loosely then validated: `Flowsheet::validate` consumes `self` and hands back a `ValidFlowsheet`,
@@ -110,7 +146,8 @@ Never mix severities in one unlabelled list.
 - Document flows are a **species-name map**, so files don't depend on species order. Consequence: names must be unique
   across phases, so `H2O` liquid + `H2O` gas is currently rejected on **both** boundaries: `LoadError::DuplicateSpecies`
   on the way in, and `FlowsheetError::DuplicateSpeciesName` in `check` on the way out - otherwise saving would silently
-  drop one of the two flows. Revisit with a composite key (`"H2O(g)"`) when the energy balance lands.
+  drop one of the two flows. Revisit with a composite key (`"H2O(g)"`) when phase change lands -
+  the energy balance shipped without it, with every species staying in the phase it was registered with.
 - Units carry a **user-supplied `name`**. Uniqueness is checked in `Flowsheet::check`, not `add_unit`, so the builder
   stays infallible and `ValidFlowsheet` is what guarantees a saveable document.
 - `serde_json` needs the **`float_roundtrip` feature**. Its default parser is off by up to 1 ULP, which silently
@@ -121,7 +158,7 @@ Never mix severities in one unlabelled list.
   of flattening it, and `serial::UnitOp`'s variants are newtypes over per-op spec structs (`SplitterSpec`, and `NoSpec`
   for the parameterless ops) that each deny unknown fields themselves. A newtype variant is deserialised as a plain
   struct with the `type` key already stripped, so its own attribute fires. The JSON shape is unchanged by all of this.
-- `unit.rs` keeps the trait, `Arity`, `Unit` and the `mix`/`split`/`split_n`/`recover` free functions; each operation
+- `unit.rs` keeps the trait, `Arity`, `Unit` and the `mix`/`solve_temperature`/`split`/`split_n`/`recover` free functions; each operation
   gets **its own file under `unit/`**, re-exported flat (`pub use feed::Feed;`) so every call site still writes
   `unit::Mixer`. The submodules stay private - they are a file-layout detail and buy nothing else. Sibling-file module
   style (`unit.rs` next to `unit/`), not `unit/mod.rs`.
@@ -154,6 +191,12 @@ Never mix severities in one unlabelled list.
   12× on the bare call is a ceiling, not a per-call instruction cost: the enum loop auto-vectorises (>1 element per
   cycle), and a `dyn` call is an optimisation barrier, so it cannot vectorise at all. Re-measure only if `evaluate`
   ever stops allocating.
+- The **energy balance bench** (criterion, `master` at `5900c95` against `energy-balance`, same machine):
+  `solve/units` did not move at any size from 8 to 4096 tanks, so passing `&SpeciesRegistry` to `evaluate` is free.
+  `solve/tears` regressed **+9% to +21%**, about +17% typical: `tears/1` went from 6.16 to 6.60 µs and `tears/16` from
+  81.3 to 95.9 µs, roughly 25-50 ns per mixer evaluation. None of it is allocation. It is the arithmetic of summing
+  enthalpy and heat capacity over every inlet and taking one Newton step - which `mix` does even when every stream
+  is at 25 °C and the seed is already exact.
 - The CLI has **no `--output` flag**. `--json` writes a whole document to stdout and a test proves it reloads as a
   legal input, so `> solved.json` is the supported way to save one — the shell already owns that job. Column
   include/ignore flags were dropped from the original clap item for the same reason they were never missed: nothing
@@ -168,6 +211,7 @@ and `cargo clippy` at the root cover every member.
 crates/flowsheet/       the library: domain types, solver, serial, report. Depends on serde only.
   src/unit.rs           the `UnitOp` trait, `Arity`, `Unit`, and the free functions ops are built from.
   src/unit/             one file per operation, re-exported flat from `unit.rs`.
+  src/thermo.rs         Shomate heat capacity and enthalpy, per mole. `Species` converts to per kg.
   benches/solve.rs      criterion, `harness = false`. Solve time vs unit count and vs tear count.
 crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, error printing.
 ```

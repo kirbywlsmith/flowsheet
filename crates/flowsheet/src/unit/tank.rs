@@ -1,6 +1,7 @@
 //! [`Tank`] - a pass-through at steady state.
 
 use super::{Arity, UnitOp};
+use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
 /// One inlet, one outlet: passes its inlet straight through.
@@ -16,7 +17,7 @@ impl UnitOp for Tank {
         Arity::exactly(1)
     }
 
-    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
+    fn evaluate(&self, _registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
         vec![inlets[0].clone()]
     }
 }
@@ -31,7 +32,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = Tank.evaluate(&[&inlet]);
+        let outs = Tank.evaluate(&r, &[&inlet]);
 
         assert_eq!(outs.len(), 1);
         assert!(inlet.flows_approx_eq(&outs[0], 1e-12));

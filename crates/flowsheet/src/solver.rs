@@ -26,7 +26,9 @@ pub enum ConvergenceMethod {
 pub struct SolverConfig {
     /// The tolerance of what counts as convergence during [`Solver::solve`].
     ///
-    /// If the maximum residual is less than or equal to the configured tolerance, convergence is achieved.
+    /// Every tear stream's flow residual ([`Stream::max_flow_residual`]) and temperature residual
+    /// ([`Stream::temperature_residual`]) must be at or below it. Both are relative, so one
+    /// tolerance serves both.
     pub tolerance: f64,
     /// The maximum number of passes [`Solver::solve`] makes before giving up.
     ///
@@ -137,14 +139,11 @@ impl Solver {
             let pass_residual = tears
                 .iter()
                 .zip(&tears_snapshot)
-                .map(|(&s, old)| flowsheet[s].max_flow_residual(old))
-                .fold(0.0_f64, |acc, d| {
-                    if acc.is_nan() || d.is_nan() {
-                        f64::NAN
-                    } else {
-                        acc.max(d)
-                    }
-                });
+                .map(|(&s, old)| {
+                    let new = &flowsheet[s];
+                    nan_max(new.max_flow_residual(old), new.temperature_residual(old))
+                })
+                .fold(0.0, nan_max);
 
             if pass_residual <= self.config.tolerance {
                 residual = pass_residual;
@@ -188,6 +187,18 @@ impl Solver {
     }
 }
 
+/// The larger of `a` and `b`, or `NaN` if either is.
+///
+/// `f64::max` drops a `NaN` and returns the other number. Here that would let a pass that
+/// produced garbage report itself converged.
+fn nan_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
 /// What Wegstein remembers between passes: the guess that went into the previous pass
 /// and the result it produced, one entry per tear stream.
 struct PreviousPass {
@@ -211,7 +222,12 @@ fn wegstein_q(dx: f64, dy: f64, q_min: f64, q_max: f64) -> f64 {
 /// The next guess for one tear stream, extrapolated species by species.
 ///
 /// `previous_*` are the pass before last; `guess` and `result` are the pass just finished.
-/// Temperature and pressure come straight from `result` — only flows are torn on.
+/// Temperature and pressure come straight from `result`, so temperature always converges by
+/// direct substitution. Around an adiabatic loop of mixers and splitters, temperature contracts
+/// at roughly a heat-capacity-weighted average of the species' rates. Under direct substitution
+/// the slowest species therefore still sets the pass count. Under Wegstein the flows can converge
+/// faster than that, leaving temperature as the slowest part. Extend the acceleration to
+/// temperature if a hot recycle ever shows it setting the pass count.
 ///
 /// # Panics
 /// If `q_min > q_max`, or either is `NaN`.
@@ -238,7 +254,7 @@ mod tests {
     use super::*;
     use crate::flowsheet::Flowsheet;
     use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
-    use crate::unit::{Mixer, Product};
+    use crate::unit::{Feed, Mixer, Product, Splitter};
     use approx::assert_relative_eq;
 
     /// `UnitId`'s field is private outside `flowsheet`, so ids have to come from a real
@@ -294,6 +310,48 @@ mod tests {
         // Identical passes give dx = dy = 0, hence q = 0, hence next guess == new.
         let next = wegstein_step(&old, &new, &old, &new, -5.0, 0.0);
         assert!(next.flows_approx_eq(&new, 1e-12));
+    }
+
+    #[test]
+    fn nan_max_keeps_the_nan_that_f64_max_would_drop() {
+        assert_relative_eq!(f64::NAN.max(1.0), 1.0); // what std does
+        assert!(nan_max(f64::NAN, 1.0).is_nan());
+        assert!(nan_max(1.0, f64::NAN).is_nan());
+        assert_relative_eq!(nan_max(1.0, 2.0), 2.0);
+    }
+
+    #[test]
+    fn settled_flows_do_not_end_the_solve_while_temperature_is_still_moving() {
+        //   feed (350 K) --> mixer --> splitter --> product
+        //                      ^           |
+        //                      +-----------+  half recycles
+        //
+        // Half recycling doubles the circulating load: 2F leaves the mixer, and F both recycles
+        // and leaves as product. Every stream starts at exactly that, so the flow residual is zero
+        // from the first pass. Only temperature is wrong: the feed is hot and the loop starts at
+        // ambient. Judged on flows alone the solve would stop after one pass with the loop cold.
+        let r = demo_registry();
+        let mut hot = feed(&r);
+        hot.set_temperature(350.0);
+
+        let mut fs = Flowsheet::new(demo_registry());
+        let u_feed = fs.add_unit("feed", Feed { stream: hot });
+        let mixer = fs.add_unit("mixer", Mixer);
+        let split = fs.add_unit("split", Splitter { fraction: 0.5 });
+        let u_product = fs.add_unit("product", Product);
+        fs.add_stream(u_feed, feed(&r), mixer);
+        fs.add_stream(mixer, feed(&r).scaled(2.0), split);
+        fs.add_stream(split, feed(&r), mixer);
+        let product = fs.add_stream(split, feed(&r), u_product);
+
+        let mut fs = fs.validate().expect("the loop is well-formed");
+        let report = Solver::default()
+            .solve(&mut fs)
+            .expect("the loop converges");
+
+        assert!(report.iterations > 1, "{report:?}");
+        // One feed and no heat in or out, so at steady state the whole loop sits at 350 K.
+        assert_relative_eq!(fs[product].temperature(), 350.0, max_relative = 1e-6);
     }
 
     #[test]

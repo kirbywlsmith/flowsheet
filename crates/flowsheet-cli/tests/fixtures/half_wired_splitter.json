@@ -1,5 +1,5 @@
 {
-  "species": [{ "name": "H2O", "phase": "Liquid", "molar_mass": 18.015 }],
+  "species": [{ "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 } }],
   "units": [
     { "name": "feed", "op": { "type": "feed", "state": { "flows": { "H2O": 100.0 } } } },
     { "name": "split", "op": { "type": "splitter", "fraction": 0.3 } },

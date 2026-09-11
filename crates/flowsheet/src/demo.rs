@@ -6,6 +6,7 @@
 use crate::flowsheet::{Flowsheet, StreamId};
 use crate::species::{Phase, Species, SpeciesRegistry};
 use crate::stream::Stream;
+use crate::thermo::Shomate;
 use crate::unit::{Feed, Flotation, Mixer, Product, Splitter};
 
 /// 25 °C in Kelvin.
@@ -19,6 +20,33 @@ pub const AMBIENT_KPA: f64 = 101.325;
 /// in between - it is carried over mechanically rather than floated.
 pub const ROUGHER_RECOVERY: [f64; 3] = [0.85, 0.05, 0.30];
 
+/// Liquid water, fitted over 298-500 K. NIST-JANAF (Chase, 1998), via the NIST Chemistry WebBook.
+pub const WATER_CP: Shomate = Shomate {
+    a: -203.6060,
+    b: 1523.290,
+    c: -3196.413,
+    d: 2474.455,
+    e: 3.855326,
+};
+
+/// Alpha quartz, fitted over 298-847 K. NIST-JANAF (Chase, 1998), via the NIST Chemistry WebBook.
+pub const QUARTZ_CP: Shomate = Shomate {
+    a: -6.076591,
+    b: 251.6755,
+    c: -324.7964,
+    d: 168.5604,
+    e: 0.002548,
+};
+
+/// Chalcopyrite, as an estimated constant 95.0 J/(mol·K).
+///
+/// NIST publishes no Shomate fit for chalcopyrite, so this is the Neumann-Kopp rule: a solid's
+/// heat capacity is roughly the sum of its elements'. One Cu, one Fe and two S at 298.15 K, from
+/// their NIST-JANAF fits, give 24.47 + 25.10 + 2 × 22.70 = 94.97. It is held constant rather than
+/// summed term by term, because the rule is not precise enough to justify a polynomial. Sulfur's
+/// fit also stops at its melting point, 388 K.
+pub const CHALCOPYRITE_CP: Shomate = Shomate::constant(95.0);
+
 /// The three [`Species`] of the demo circuit: the valuable mineral, the gangue, and water.
 pub fn registry() -> SpeciesRegistry {
     let mut r = SpeciesRegistry::default();
@@ -26,16 +54,19 @@ pub fn registry() -> SpeciesRegistry {
         name: "CuFeS2".into(),
         phase: Phase::Solid,
         molar_mass: 183.5,
+        shomate: CHALCOPYRITE_CP,
     });
     r.insert(Species {
         name: "SiO2".into(),
         phase: Phase::Solid,
         molar_mass: 60.08,
+        shomate: QUARTZ_CP,
     });
     r.insert(Species {
         name: "H2O".into(),
         phase: Phase::Liquid,
         molar_mass: 18.015,
+        shomate: WATER_CP,
     });
     r
 }

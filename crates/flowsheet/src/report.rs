@@ -16,6 +16,8 @@ const INDENT: &str = "  ";
 const GAP: &str = "  ";
 /// Decimal places on every flow.
 const PRECISION: usize = 3;
+/// Decimal places on the temperature column.
+const TEMPERATURE_PRECISION: usize = 2;
 /// The one column holding text rather than a number, so the one that is left-aligned.
 const LABEL_COLUMN: usize = 1;
 
@@ -55,20 +57,24 @@ fn stream_labels(fs: &ValidFlowsheet) -> Vec<String> {
 
 /// Renders every stream of a solved flowsheet as one row, followed by a convergence footer.
 ///
+/// Flows are t/h and the last column is temperature in Kelvin. Pressure is not shown: nothing
+/// solves it yet.
+///
 /// The leading `#` column is the stream's position in the `streams` array, which is its real
 /// identity; the label beside it is for reading, and may be suffixed to break a tie.
 ///
 /// ```text
-///   #  stream                 CuFeS2     SiO2      H2O     total
-///   0  feed.mixer             40.000  360.000  600.000  1000.000
-///   1  mixer.flotation        41.885  503.497  759.494  1304.875
-///   2  flotation.concentrate  35.602   25.175  227.848   288.625
+///   #  stream                 CuFeS2     SiO2      H2O     total   T (K)
+///   0  feed.mixer             40.000  360.000  600.000  1000.000  298.15
+///   1  mixer.flotation        41.885  503.497  759.494  1304.875  298.15
+///   2  flotation.concentrate  35.602   25.175  227.848   288.625  298.15
 ///      converged in 17 iterations, residual 5.4e-10
 /// ```
 pub fn table(fs: &ValidFlowsheet, report: &SolveReport) -> String {
     let mut header: Vec<String> = vec!["#".to_string(), "stream".to_string()];
     header.extend(fs.registry().all().iter().map(|s| s.name.clone()));
     header.push("total".to_string());
+    header.push("T (K)".to_string());
 
     let rows: Vec<Vec<String>> = stream_labels(fs)
         .into_iter()
@@ -85,6 +91,7 @@ pub fn table(fs: &ValidFlowsheet, report: &SolveReport) -> String {
                     .chain(std::iter::once(s.total()))
                     .map(|v| format!("{v:.PRECISION$}")),
             );
+            row.push(format!("{:.TEMPERATURE_PRECISION$}", s.temperature()));
             row
         })
         .collect();
@@ -225,17 +232,17 @@ mod tests {
 
     #[test]
     fn every_column_is_padded_to_its_header_or_its_widest_value() {
-        // `CuFeS2` is wider than any of its flows; `total` is narrower than all of its.
+        // `CuFeS2` is wider than any of its flows; `total` and `T (K)` are narrower than theirs.
         assert_eq!(
             table(&solved_demo(), &report(18, 5.4e-10)),
             concat!(
-                "  #  stream                 CuFeS2     SiO2      H2O     total\n",
-                "  0  feed.mixer             40.000  360.000  600.000  1000.000\n",
-                "  1  mixer.flotation        41.885  503.497  759.494  1304.875\n",
-                "  2  flotation.concentrate  35.602   25.175  227.848   288.625\n",
-                "  3  flotation.split         6.283  478.322  531.646  1016.250\n",
-                "  4  split.mixer             1.885  143.497  159.494   304.875\n",
-                "  5  split.tailings          4.398  334.825  372.152   711.375\n",
+                "  #  stream                 CuFeS2     SiO2      H2O     total   T (K)\n",
+                "  0  feed.mixer             40.000  360.000  600.000  1000.000  298.15\n",
+                "  1  mixer.flotation        41.885  503.497  759.494  1304.875  298.15\n",
+                "  2  flotation.concentrate  35.602   25.175  227.848   288.625  298.15\n",
+                "  3  flotation.split         6.283  478.322  531.646  1016.250  298.15\n",
+                "  4  split.mixer             1.885  143.497  159.494   304.875  298.15\n",
+                "  5  split.tailings          4.398  334.825  372.152   711.375  298.15\n",
                 "     converged in 18 iterations, residual 5.4e-10\n",
             )
         );
@@ -271,7 +278,7 @@ mod tests {
         assert_eq!(
             table(&fs, &report(0, 0.0)),
             concat!(
-                "  #  stream  CuFeS2  SiO2  H2O  total\n",
+                "  #  stream  CuFeS2  SiO2  H2O  total  T (K)\n",
                 "     converged in 0 iterations, residual 0.0e0\n",
             )
         );

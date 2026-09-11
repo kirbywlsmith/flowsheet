@@ -5,6 +5,7 @@
 
 use crate::flowsheet::{self, UnitId};
 use crate::species::{Phase, Species, SpeciesId, SpeciesRegistry};
+use crate::thermo::REFERENCE_K;
 use crate::{stream, unit};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -454,6 +455,16 @@ impl TryFrom<Flowsheet> for flowsheet::Flowsheet {
                 s.molar_mass,
                 "greater than 0.0 g/mol",
             )?;
+            // Checked at one temperature only. That catches a typo, but a fit that turns
+            // negative somewhere else in its range still loads.
+            let cp = s.shomate.heat_capacity(REFERENCE_K);
+            require(
+                cp.is_finite() && cp > 0.0,
+                &at,
+                "shomate",
+                cp,
+                "a heat capacity at 298.15 K greater than 0.0 J/(mol·K)",
+            )?;
             if species_ids.contains_key(&s.name) {
                 return Err(LoadError::DuplicateSpecies {
                     name: s.name.clone(),
@@ -682,9 +693,9 @@ mod tests {
     fn recycle_json() -> &'static str {
         r#"{
           "species": [
-            { "name": "CuFeS2", "phase": "Solid",  "molar_mass": 183.5 },
-            { "name": "SiO2",   "phase": "Solid",  "molar_mass": 60.08 },
-            { "name": "H2O",    "phase": "Liquid", "molar_mass": 18.015 }
+            { "name": "CuFeS2", "phase": "Solid",  "molar_mass": 183.5,  "shomate": { "a": 95.0 } },
+            { "name": "SiO2",   "phase": "Solid",  "molar_mass": 60.08,  "shomate": { "a": 44.6 } },
+            { "name": "H2O",    "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 } }
           ],
           "units": [
             { "name": "feed", "op": { "type": "feed",
@@ -715,7 +726,8 @@ mod tests {
     /// A minimal document with one species and one unit, for poking at individual fields.
     fn minimal(units: &str, streams: &str) -> String {
         format!(
-            r#"{{ "species": [{{ "name": "H2O", "phase": "Liquid", "molar_mass": 18.015 }}],
+            r#"{{ "species": [{{ "name": "H2O", "phase": "Liquid", "molar_mass": 18.015,
+                   "shomate": {{ "a": 75.3 }} }}],
                   "units": [{units}], "streams": [{streams}] }}"#
         )
     }
@@ -830,7 +842,7 @@ mod tests {
     #[test]
     fn a_misspelt_species_field_is_rejected() {
         let json = r#"{ "species": [
-            { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "mm": 18.0 }
+            { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 }, "mm": 18.0 }
           ], "units": [], "streams": [] }"#;
         let e = serde_json::from_str::<Flowsheet>(json).unwrap_err();
         assert!(e.to_string().contains("mm"), "{e}");
@@ -839,8 +851,8 @@ mod tests {
     #[test]
     fn a_name_repeated_across_phases_is_rejected() {
         let json = r#"{ "species": [
-            { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015 },
-            { "name": "H2O", "phase": "Gas",    "molar_mass": 18.015 }
+            { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 } },
+            { "name": "H2O", "phase": "Gas",    "molar_mass": 18.015, "shomate": { "a": 33.6 } }
           ], "units": [], "streams": [] }"#;
         assert_eq!(
             load(json).unwrap_err(),
@@ -934,7 +946,8 @@ mod tests {
 
     #[test]
     fn a_non_positive_molar_mass_is_rejected() {
-        let json = r#"{ "species": [{ "name": "X", "phase": "Gas", "molar_mass": 0.0 }],
+        let json = r#"{ "species": [{ "name": "X", "phase": "Gas", "molar_mass": 0.0,
+                                      "shomate": { "a": 29.1 } }],
                         "units": [], "streams": [] }"#;
         assert!(matches!(
             load(json).unwrap_err(),
@@ -946,10 +959,30 @@ mod tests {
     }
 
     #[test]
+    fn a_species_without_heat_capacity_data_is_rejected() {
+        let json = r#"{ "species": [{ "name": "H2O", "phase": "Liquid", "molar_mass": 18.015 }],
+                        "units": [], "streams": [] }"#;
+        let e = serde_json::from_str::<Flowsheet>(json).unwrap_err();
+        assert!(e.to_string().contains("missing field `shomate`"), "{e}");
+    }
+
+    #[test]
+    fn a_non_positive_heat_capacity_is_rejected() {
+        let json = r#"{ "species": [{ "name": "X", "phase": "Gas", "molar_mass": 28.0,
+                                      "shomate": { "a": 0.0 } }],
+                        "units": [], "streams": [] }"#;
+        assert_eq!(
+            load(json).unwrap_err().to_string(),
+            "species `X`: `shomate` is 0, expected a heat capacity at 298.15 K greater than 0.0 \
+             J/(mol·K)"
+        );
+    }
+
+    #[test]
     fn saving_drops_only_the_species_whose_flow_is_zero() {
         let json = r#"{ "species": [
-            { "name": "H2O",  "phase": "Liquid", "molar_mass": 18.015 },
-            { "name": "SiO2", "phase": "Solid",  "molar_mass": 60.08 }
+            { "name": "H2O",  "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 } },
+            { "name": "SiO2", "phase": "Solid",  "molar_mass": 60.08,  "shomate": { "a": 44.6 } }
           ],
           "units": [
             { "name": "f", "op": { "type": "feed", "state": { "flows": { "SiO2": 5.0 } } } },
@@ -998,8 +1031,8 @@ mod tests {
     #[test]
     fn a_species_left_out_of_a_recovery_map_recovers_nothing() {
         let json = r#"{ "species": [
-            { "name": "H2O",  "phase": "Liquid", "molar_mass": 18.015 },
-            { "name": "SiO2", "phase": "Solid",  "molar_mass": 60.08 }
+            { "name": "H2O",  "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 } },
+            { "name": "SiO2", "phase": "Solid",  "molar_mass": 60.08,  "shomate": { "a": 44.6 } }
           ],
           "units": [
             { "name": "f", "op": { "type": "feed",

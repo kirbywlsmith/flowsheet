@@ -1,6 +1,7 @@
 //! [`Splitter`] and [`SplitterN`] - composition-preserving flow division.
 
 use super::{Arity, UnitOp, split, split_n};
+use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
 /// One inlet, two outlets: `fraction` and `1.0 - fraction`.
@@ -26,7 +27,7 @@ impl UnitOp for Splitter {
         Arity::exactly(2)
     }
 
-    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
+    fn evaluate(&self, _registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
         let (a, b) = split(inlets[0], self.fraction);
         vec![a, b]
     }
@@ -41,7 +42,7 @@ impl UnitOp for SplitterN {
         Arity::exactly(self.ratios.len())
     }
 
-    fn evaluate(&self, inlets: &[&Stream]) -> Vec<Stream> {
+    fn evaluate(&self, _registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
         split_n(inlets[0], &self.ratios)
     }
 }
@@ -57,7 +58,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = Splitter { fraction: 0.3 }.evaluate(&[&inlet]);
+        let outs = Splitter { fraction: 0.3 }.evaluate(&r, &[&inlet]);
 
         assert_eq!(outs.len(), 2);
         assert_relative_eq!(outs[0].total(), 300.0, max_relative = 1e-12);
@@ -72,7 +73,7 @@ mod tests {
             ratios: vec![1.0, 1.0, 2.0],
         };
 
-        let outs = op.evaluate(&[&inlet]);
+        let outs = op.evaluate(&r, &[&inlet]);
 
         assert_eq!(outs.len(), 3);
         assert_relative_eq!(outs[0].total(), 250.0, max_relative = 1e-12);

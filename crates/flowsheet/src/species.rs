@@ -1,5 +1,6 @@
 //! Species data structures.
 
+use crate::thermo::Shomate;
 use serde::{Deserialize, Serialize};
 
 /// A distinct form in which matter can exist.
@@ -46,6 +47,25 @@ pub struct Species {
     ///
     /// e.g. `18.015`
     pub molar_mass: f64,
+    /// Heat capacity coefficients, per mole.
+    ///
+    /// e.g. `Shomate::constant(75.3)` for liquid water near 25 °C
+    pub shomate: Shomate,
+}
+
+impl Species {
+    /// Specific heat capacity at `temperature` (K), in kJ/(kg·K).
+    pub fn heat_capacity(&self, temperature: f64) -> f64 {
+        // J/(mol·K) over g/mol is J/(g·K), which is already kJ/(kg·K).
+        self.shomate.heat_capacity(temperature) / self.molar_mass
+    }
+
+    /// Specific enthalpy at `temperature` (K) relative to [`crate::thermo::REFERENCE_K`], in
+    /// kJ/kg.
+    pub fn enthalpy(&self, temperature: f64) -> f64 {
+        // kJ/mol over g/mol is kJ/g, and a kilogram is a thousand grams.
+        1000.0 * self.shomate.enthalpy(temperature) / self.molar_mass
+    }
 }
 
 /// Contains a specific set of [`Species`].
@@ -106,12 +126,16 @@ impl std::ops::Index<SpeciesId> for SpeciesRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::demo::{QUARTZ_CP, WATER_CP};
+    use crate::thermo::REFERENCE_K;
+    use approx::assert_relative_eq;
 
     fn water() -> Species {
         Species {
             name: "H2O".into(),
             phase: Phase::Liquid,
             molar_mass: 18.015,
+            shomate: WATER_CP,
         }
     }
 
@@ -123,6 +147,7 @@ mod tests {
             name: "SiO2".into(),
             phase: Phase::Solid,
             molar_mass: 60.08,
+            shomate: QUARTZ_CP,
         });
         assert_eq!(a.as_usize(), 0);
         assert_eq!(b.as_usize(), 1);
@@ -157,5 +182,26 @@ mod tests {
         assert_eq!(reg.find("H2O", Phase::Liquid), Some(id));
         assert_eq!(reg.find("H2O", Phase::Gas), None);
         assert_eq!(reg[id].molar_mass, 18.015);
+    }
+
+    #[test]
+    fn the_mass_basis_divides_the_molar_properties_by_molar_mass() {
+        // 18.015 J/(mol·K) over 18.015 g/mol is exactly 1 J/(g·K), which is 1 kJ/(kg·K)...
+        let s = Species {
+            shomate: Shomate::constant(18.015),
+            ..water()
+        };
+        assert_relative_eq!(s.heat_capacity(350.0), 1.0, max_relative = 1e-12);
+        // ...so 10 K above the reference is 10 kJ/kg.
+        assert_relative_eq!(s.enthalpy(REFERENCE_K + 10.0), 10.0, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn liquid_water_takes_4_18_kilojoules_per_kilogram_kelvin() {
+        assert_relative_eq!(
+            water().heat_capacity(REFERENCE_K),
+            4.18,
+            max_relative = 2e-3
+        );
     }
 }

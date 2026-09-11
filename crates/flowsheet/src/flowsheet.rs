@@ -317,7 +317,11 @@ impl ValidFlowsheet {
 
     /// Evaluates one unit, writing its results into the unit's outlet streams.
     pub(crate) fn evaluate_unit(&mut self, id: UnitId) {
-        let Flowsheet { units, streams, .. } = &mut self.0;
+        let Flowsheet {
+            registry,
+            units,
+            streams,
+        } = &mut self.0;
         let unit = &units[id.as_usize()];
 
         let outputs = {
@@ -327,7 +331,7 @@ impl ValidFlowsheet {
                 .map(|&s| &streams[s.as_usize()])
                 .collect();
 
-            unit.op.evaluate(&inlets)
+            unit.op.evaluate(registry, &inlets)
         };
 
         debug_assert_eq!(
@@ -611,11 +615,13 @@ mod tests {
             name: "H2O".into(),
             phase: Phase::Liquid,
             molar_mass: 18.015,
+            shomate: crate::thermo::Shomate::constant(75.3),
         });
         let gas = r.insert(Species {
             name: "H2O".into(),
             phase: Phase::Gas,
             molar_mass: 18.015,
+            shomate: crate::thermo::Shomate::constant(33.6),
         });
 
         let errors = Flowsheet::new(r).check();
