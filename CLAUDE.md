@@ -232,6 +232,27 @@ Never mix severities in one unlabelled list.
 - Stream labels are `{from}.{to}`, deduped with a **single running counter**: the first occurrence
   stays bare, repeats become `#2`, `#3`. No counting pre-pass is needed, because only occurrences
   after the first are ever suffixed.
+- `report::imbalance` answers **whether the balance closes**: sources are units with no inlets,
+  sinks are units with no outlets, so the material that entered is the sum of every source's
+  outlets and the material that left is the sum of every sink's inlets. The footer prints it
+  beside the residual (`converged in 17 iterations, residual 6.4e-10, imbalance 1.9e-10`). It is
+  **per species, not per total** - a mis-wiring that moved gangue into the copper column leaves
+  both totals untouched - and normalised by the larger of the two totals, `NaN`-propagating,
+  which is `Stream::max_flow_residual`'s convention: the two numbers sit side by side, so they
+  have to mean the same thing. That is what promoted `solver::nan_max` to `pub(crate)`.
+- The TODO item said the demo circuit's `S2 + S5 == S0` **exactly**; it does not, and cannot.
+  A solve stops when the tear stream stops moving, so the tear still holds the error the next
+  pass would have removed, and that error is exactly what shows up at the plant's doors:
+  1.9e-10 against a residual of 5.4e-10, the same quantity seen from the other end. The
+  assertion is therefore against `SolverConfig::default().tolerance`, not against zero, and the
+  acyclic case gets its own test at 1e-15 to keep rounding and iteration error told apart.
+  Because the footer's imbalance is now a computed number rather than a supplied one, the
+  table-layout test pins the rows exactly and the footer by prefix, the same split
+  `crates/flowsheet-cli/tests/cli.rs` already used for the residual.
+- Nothing in the library can produce a flowsheet whose ends disagree - every op conserves mass -
+  so the `report::tests::leaking` fixture **writes the two streams by hand** and never solves.
+  `add_stream` takes the stream, so the numbers go in at construction and no `IndexMut` or
+  registry clone is needed.
 - `main` deliberately does **not** return `Result`. Rust prints a returned error with `Debug`, not
   `Display`, so every message these error types carefully write would surface as a struct literal.
   Instead `main` calls `run()`, prints `{e}` to stderr, and exits 1.

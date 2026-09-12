@@ -58,6 +58,9 @@ fn the_default_table_matches_the_worked_example() {
         "{}",
         lines[7]
     );
+    // And the balance closes: the concentrate and the tailings above add back up to the feed,
+    // to within whatever error the tear stream still carried when the solve stopped.
+    assert!(lines[7].contains(", imbalance "), "{}", lines[7]);
 }
 
 #[test]

@@ -232,8 +232,9 @@ impl Solver {
 /// The larger of `a` and `b`, or `NaN` if either is.
 ///
 /// `f64::max` drops a `NaN` and returns the other number. Here that would let a pass that
-/// produced garbage report itself converged.
-fn nan_max(a: f64, b: f64) -> f64 {
+/// produced garbage report itself converged, and in [`crate::report::imbalance`] it would let a
+/// flowsheet full of `NaN` flows report that its balance closes.
+pub(crate) fn nan_max(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::NAN
     } else {

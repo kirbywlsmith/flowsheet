@@ -30,12 +30,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Report whether the balance closes. `report::table` prints per-stream totals and a convergence line, but never
-  says that what entered also left. Sum the outlets of every unit with no inlets and the inlets of every unit with no
-  outlets, per species, and print the worst relative discrepancy beside the residual. It is the first thing anyone
-  from the domain checks, and the numbers are already in hand - `Unit::inlets`/`outlets` are `pub(crate)` and
-  `report` is inside the library, which is the reason the formatter lives there in the first place. Assert it on the
-  demo circuit, where S2 + S5 == S0 per species exactly.
 - [ ] Decide whether `UnitOp::evaluate` can fail, and act on the answer. Today a large negative `Heater` duty on an
   early pass - and a recycle's first pass carries a sliver of the eventual flow - drives Newton below 0 K and panics,
   which is user input surfacing as a panic in the middle of a solve. A Shomate fit that goes negative far from
