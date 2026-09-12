@@ -8,7 +8,6 @@ edition = "2024"
 # `#[cfg(test)]` module, so the format lives with the caller.
 [dependencies]
 serde = { workspace = true }
-time = "0.3.55"
 
 [dev-dependencies]
 approx = { workspace = true }
