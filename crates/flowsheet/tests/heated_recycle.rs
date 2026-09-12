@@ -21,7 +21,9 @@ use approx::assert_relative_eq;
 use flowsheet::ConvergenceMethod::{self, DirectSubstitution, Wegstein};
 use flowsheet::demo::{self, AMBIENT_K, AMBIENT_KPA};
 use flowsheet::unit::{Feed, Heater, Mixer, Product, Splitter};
-use flowsheet::{Flowsheet, SolveReport, Solver, SolverConfig, Stream, StreamId, ValidFlowsheet};
+use flowsheet::{
+    Flowsheet, SolveError, SolveReport, Solver, SolverConfig, Stream, StreamId, ValidFlowsheet,
+};
 
 /// The fraction of the heater outlet sent back round to the mixer.
 const RECYCLE: f64 = 0.3;
@@ -44,6 +46,15 @@ struct Solved {
 }
 
 fn solve(feed: &Stream, duty: f64, recycle_fraction: f64, method: ConvergenceMethod) -> Solved {
+    try_solve(feed, duty, recycle_fraction, method).expect("the loop converges")
+}
+
+fn try_solve(
+    feed: &Stream,
+    duty: f64,
+    recycle_fraction: f64,
+    method: ConvergenceMethod,
+) -> Result<Solved, SolveError> {
     let r = demo::registry();
     let blank = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
 
@@ -65,11 +76,11 @@ fn solve(feed: &Stream, duty: f64, recycle_fraction: f64, method: ConvergenceMet
     let u_product = fs.add_unit("product", Product);
 
     fs.add_stream(u_feed, blank.clone(), u_mixer);
-    // The lowest-id stream inside the loop, so it is the tear: on the first pass the heater sees
-    // its all-zero initial guess, which is the empty-inlet case `unit::heat` passes through.
     let mixer_out = fs.add_stream(u_mixer, blank.clone(), u_heater);
     let heater_out = fs.add_stream(u_heater, blank.clone(), u_split);
-    // Outlet order is positional: the splitter's first outlet takes the recycle fraction.
+    // Outlet order is positional: the splitter's first outlet takes the recycle fraction. This
+    // is the loop's back edge, so it is the stream the solver tears; the mixer therefore runs
+    // before the heater on every pass, with the tear's all-zero guess on the first.
     let recycle = fs.add_stream(u_split, blank.clone(), u_mixer);
     let product = fs.add_stream(u_split, blank, u_product);
 
@@ -79,17 +90,16 @@ fn solve(feed: &Stream, duty: f64, recycle_fraction: f64, method: ConvergenceMet
         method,
         ..SolverConfig::default()
     })
-    .solve(&mut flowsheet)
-    .expect("the loop converges");
+    .solve(&mut flowsheet)?;
 
-    Solved {
+    Ok(Solved {
         flowsheet,
         report,
         mixer_out,
         heater_out,
         recycle,
         product,
-    }
+    })
 }
 
 #[test]
@@ -170,4 +180,61 @@ fn under_wegstein_the_duty_adds_no_passes_to_the_flows_alone() {
     let isothermal = solve(&feed, 0.0, HIGH_RECYCLE, WEGSTEIN);
 
     assert_eq!(heated.report.iterations, isothermal.report.iterations);
+}
+
+#[test]
+fn an_impossible_duty_fails_the_solve_and_names_the_unit() {
+    // The reason `UnitOp::evaluate` returns a `Result`. Until it did, a duty out of a document
+    // that no positive temperature could absorb panicked in the middle of a solve.
+    //
+    // -1e9 MJ/h is over a thousand times what it takes to bring this feed to 0 K, so the loop
+    // has no steady state to converge to and no pass can get partway there.
+    let r = demo::registry();
+
+    // `let Err(e) = .. else` rather than `expect_err`, which would need `Solved: Debug`.
+    let Err(e) = try_solve(&demo::feed_stream(&r), -1e9, RECYCLE, DirectSubstitution) else {
+        panic!("no positive temperature absorbs -1e9 MJ/h");
+    };
+
+    let SolveError::Evaluation {
+        name, iteration, ..
+    } = &e
+    else {
+        panic!("expected an evaluation failure, got {e}");
+    };
+    assert_eq!(name, "heater");
+    // Pass 1: the tear is the recycle (the back edge), so the mixer still runs before the
+    // heater on every pass and the heater has the feed's flow to fail on immediately.
+    assert_eq!(*iteration, 1);
+    assert!(
+        e.to_string()
+            .starts_with("unit 'heater' failed on pass 1: "),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_duty_that_barely_works_still_solves() {
+    // The other side of the line above: this duty takes the product to within 10 K of absolute
+    // zero and still converges, so the error is not a conservative guard that rejects hard but
+    // legal problems.
+    //
+    // Chalcopyrite alone, so cp is constant: C_feed = 100 * 95.0 / 183.5 MJ/(h·K), and cooling
+    // the feed from 298.15 K to 10 K takes that times 288.15.
+    let r = demo::registry();
+    let feed = Stream::from_flows(&r, vec![100.0, 0.0, 0.0], AMBIENT_K, AMBIENT_KPA);
+    let c_feed = 100.0 * 95.0 / 183.5;
+
+    let s = solve(
+        &feed,
+        -(AMBIENT_K - 10.0) * c_feed,
+        RECYCLE,
+        DirectSubstitution,
+    );
+
+    assert_relative_eq!(
+        s.flowsheet[s.product].temperature(),
+        10.0,
+        max_relative = 1e-6
+    );
 }

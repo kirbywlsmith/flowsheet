@@ -1,6 +1,6 @@
 //! [`Heater`] - the only operation that exchanges heat with its surroundings.
 
-use super::{Arity, UnitOp, heat};
+use super::{Arity, EvalError, UnitOp, heat};
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
@@ -28,10 +28,17 @@ impl UnitOp for Heater {
         Arity::exactly(1)
     }
 
+    /// # Errors
+    /// If `duty` cools the inlet to absolute zero or below. See [`heat`].
+    ///
     /// # Panics
-    /// If `duty` is not finite, or cools the inlet to absolute zero or below. See [`heat`].
-    fn evaluate(&self, registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
-        vec![heat(registry, inlets[0], self.duty)]
+    /// If `duty` is not finite. See [`heat`].
+    fn evaluate(
+        &self,
+        registry: &SpeciesRegistry,
+        inlets: &[&Stream],
+    ) -> Result<Vec<Stream>, EvalError> {
+        Ok(vec![heat(registry, inlets[0], self.duty)?])
     }
 }
 
@@ -46,7 +53,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = Heater { duty: 20_000.0 }.evaluate(&r, &[&inlet]);
+        let outs = Heater { duty: 20_000.0 }.evaluate(&r, &[&inlet]).unwrap();
 
         assert_eq!(outs.len(), 1);
         assert_relative_eq!(
@@ -61,8 +68,23 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = Heater { duty: -20_000.0 }.evaluate(&r, &[&inlet]);
+        let outs = Heater { duty: -20_000.0 }.evaluate(&r, &[&inlet]).unwrap();
 
         assert!(outs[0].temperature() < inlet.temperature());
+    }
+
+    #[test]
+    fn an_impossible_duty_is_an_error_not_a_panic() {
+        let r = demo_registry();
+        let inlet = feed(&r);
+
+        let e = Heater { duty: -1e9 }
+            .evaluate(&r, &[&inlet])
+            .expect_err("1e9 MJ/h is a thousand times what it takes to reach 0 K");
+
+        assert!(
+            e.to_string().contains("no positive temperature holds"),
+            "{e}"
+        );
     }
 }

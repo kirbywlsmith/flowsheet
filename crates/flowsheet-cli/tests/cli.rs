@@ -219,3 +219,24 @@ fn loosening_the_tolerance_lets_direct_substitution_finish_inside_the_default_ca
         last
     );
 }
+
+/// `impossible_duty.json` is a three-unit chain whose cooler asks for a thousand times the heat
+/// the feed holds above absolute zero. Nothing on the JSON boundary can reject it: the duty is a
+/// finite number and the flowsheet is wired correctly, so the contradiction only shows up once a
+/// stream reaches the unit. Before `UnitOp::evaluate` returned a `Result` that was a panic in the
+/// middle of the solve - a number out of a document taking the process down with a backtrace.
+#[test]
+fn a_duty_with_no_physical_answer_names_the_unit_and_the_pass() {
+    let run = flowsheet(&["tests/fixtures/impossible_duty.json"]);
+    assert!(
+        !run.ok,
+        "a solve that could not evaluate must not exit zero"
+    );
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(
+        run.stderr
+            .starts_with("unit 'cooler' failed on pass 1: no positive temperature holds"),
+        "{}",
+        run.stderr
+    );
+}

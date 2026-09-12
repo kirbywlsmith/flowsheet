@@ -443,7 +443,7 @@ type Constructor = Box<dyn Fn(Spec<'_>) -> Result<Box<dyn unit::UnitOp>, LoadErr
 ///
 /// ```
 /// use flowsheet::serial::{OpRegistry, Spec, ToDocument};
-/// use flowsheet::{SpeciesRegistry, Stream, UnitOp, unit::Arity};
+/// use flowsheet::{EvalError, SpeciesRegistry, Stream, UnitOp, unit::Arity};
 ///
 /// /// A vent: one inlet, one outlet, discarding `rate` of every species.
 /// #[derive(Debug)]
@@ -463,8 +463,9 @@ type Constructor = Box<dyn Fn(Spec<'_>) -> Result<Box<dyn unit::UnitOp>, LoadErr
 /// # impl UnitOp for Bleed {
 /// #     fn inlet_arity(&self) -> Arity { Arity::exactly(1) }
 /// #     fn outlet_arity(&self) -> Arity { Arity::exactly(1) }
-/// #     fn evaluate(&self, _: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
-/// #         vec![flowsheet::unit::split(inlets[0], 1.0 - self.rate).0]
+/// #     fn evaluate(&self, _: &SpeciesRegistry, inlets: &[&Stream])
+/// #         -> Result<Vec<Stream>, EvalError> {
+/// #         Ok(vec![flowsheet::unit::split(inlets[0], 1.0 - self.rate).0])
 /// #     }
 /// # }
 ///

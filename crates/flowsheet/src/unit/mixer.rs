@@ -1,6 +1,6 @@
 //! [`Mixer`] - the only operation with an unbounded side.
 
-use super::{Arity, UnitOp, mix};
+use super::{Arity, EvalError, UnitOp, mix};
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
@@ -18,8 +18,18 @@ impl UnitOp for Mixer {
         Arity::exactly(1)
     }
 
-    fn evaluate(&self, registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
-        vec![mix(registry, inlets.iter().copied()).expect("mixer needs at least one inlet")]
+    /// # Errors
+    /// If no positive temperature carries the combined enthalpy. See [`mix`].
+    fn evaluate(
+        &self,
+        registry: &SpeciesRegistry,
+        inlets: &[&Stream],
+    ) -> Result<Vec<Stream>, EvalError> {
+        // Two layers, and they mean different things: `?` forwards a real failure to the
+        // solver, while `expect` asserts the arity the caller already guaranteed.
+        let outlet =
+            mix(registry, inlets.iter().copied())?.expect("mixer needs at least one inlet");
+        Ok(vec![outlet])
     }
 }
 
@@ -35,7 +45,7 @@ mod tests {
         let a = feed(&r);
         let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], AMBIENT_K, AMBIENT_KPA);
 
-        let outs = Mixer.evaluate(&r, &[&a, &b]);
+        let outs = Mixer.evaluate(&r, &[&a, &b]).unwrap();
 
         assert_eq!(outs.len(), 1);
         assert_relative_eq!(outs[0].total(), 1060.0, max_relative = 1e-12);

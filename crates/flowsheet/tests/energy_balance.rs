@@ -155,6 +155,7 @@ fn the_recycle_does_not_shift_the_temperature_the_feeds_mix_to() {
     // The Shomate fits have no closed form, but the recycle cancels out of the balance, so the
     // loop has to settle wherever the two feeds would mix with nothing else in the mixer.
     let expected = unit::mix(r, [&s.hot, &s.cold])
+        .expect("both feeds are at a solvable temperature")
         .expect("two inlets")
         .temperature();
     assert!(AMBIENT_K < expected && expected < HOT_K, "{expected}");

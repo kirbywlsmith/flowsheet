@@ -2,6 +2,7 @@
 
 use crate::flowsheet::{UnitId, ValidFlowsheet};
 use crate::stream::Stream;
+use crate::unit::EvalError;
 use std::fmt;
 
 /// The convergence method used by the [`Solver`].
@@ -67,6 +68,23 @@ pub enum SolveError {
         /// The max residual on the final pass.
         residual: f64,
     },
+    /// A [`crate::unit::UnitOp`] could not be evaluated. The flowsheet's streams hold whatever
+    /// the failed pass had written before it stopped.
+    ///
+    /// Both the id and the name are carried: the id so a caller can look the unit up, and the
+    /// name because this is the one `SolveError` a *user* caused, and "unit 41" is no help in a
+    /// 300-cell circuit. [`SolveError::Untearable`] carries ids alone because it is about the
+    /// shape of the graph, which no single name explains.
+    Evaluation {
+        /// The unit that failed.
+        unit: UnitId,
+        /// Its name, as given to [`crate::flowsheet::Flowsheet::add_unit`].
+        name: String,
+        /// The pass it failed on, counting from 1.
+        iteration: usize,
+        /// Why it failed.
+        source: EvalError,
+    },
 }
 
 impl fmt::Display for SolveError {
@@ -84,11 +102,26 @@ impl fmt::Display for SolveError {
                 f,
                 "no convergence after {iterations} passes (residual {residual:e})"
             ),
+            SolveError::Evaluation {
+                name,
+                iteration,
+                source,
+                ..
+            } => write!(f, "unit '{name}' failed on pass {iteration}: {source}"),
         }
     }
 }
 
-impl std::error::Error for SolveError {}
+impl std::error::Error for SolveError {
+    /// The [`EvalError`] behind a [`SolveError::Evaluation`], so a caller that wants the
+    /// operation's own error type can walk down to it and downcast.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            SolveError::Evaluation { source, .. } => Some(source),
+            SolveError::Untearable(_) | SolveError::NotConverged { .. } => None,
+        }
+    }
+}
 
 /// The result of a converged [`Solver::solve`].
 #[derive(Debug)]
@@ -129,7 +162,8 @@ impl Solver {
     ///
     /// # Errors
     ///
-    /// Returns [`SolveError::Untearable`] before any evaluation, and [`SolveError::NotConverged`] if
+    /// Returns [`SolveError::Untearable`] before any evaluation, [`SolveError::Evaluation`] if a
+    /// unit cannot answer for the inlets a pass hands it, and [`SolveError::NotConverged`] if
     /// the residual is still above tolerance after [`SolverConfig::max_iterations`] passes.
     pub fn solve(&self, flowsheet: &mut ValidFlowsheet) -> Result<SolveReport, SolveError> {
         self.solve_with(flowsheet, |_| {})
@@ -165,7 +199,18 @@ impl Solver {
             for wave in &waves {
                 // TODO: make this parallel
                 for &unit in wave {
-                    flowsheet.evaluate_unit(unit);
+                    // Not `evaluate_unit(unit).map_err(|source| ... flowsheet ...)?`: that
+                    // closure would want `flowsheet` shared while the `&mut` borrow for
+                    // `evaluate_unit` is still in the same expression. Splitting the call out
+                    // ends the mutable borrow before the name is read.
+                    if let Err(source) = flowsheet.evaluate_unit(unit) {
+                        return Err(SolveError::Evaluation {
+                            unit,
+                            name: flowsheet.unit_name(unit).to_string(),
+                            iteration: iterations,
+                            source,
+                        });
+                    }
                     on_event(SolveEvent::UnitEvaluated {
                         unit,
                         iteration: iterations,

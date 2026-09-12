@@ -1,6 +1,6 @@
 //! [`Splitter`] and [`SplitterN`] - composition-preserving flow division.
 
-use super::{Arity, UnitOp, split, split_n};
+use super::{Arity, EvalError, UnitOp, split, split_n};
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
@@ -27,9 +27,17 @@ impl UnitOp for Splitter {
         Arity::exactly(2)
     }
 
-    fn evaluate(&self, _registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
+    /// # Panics
+    /// If `fraction` is outside `0.0..=1.0`. That is caught at the JSON boundary by
+    /// [`crate::serial::LoadError`], so reaching it is a bug rather than bad input - see
+    /// [`split`].
+    fn evaluate(
+        &self,
+        _registry: &SpeciesRegistry,
+        inlets: &[&Stream],
+    ) -> Result<Vec<Stream>, EvalError> {
         let (a, b) = split(inlets[0], self.fraction);
-        vec![a, b]
+        Ok(vec![a, b])
     }
 }
 
@@ -42,8 +50,14 @@ impl UnitOp for SplitterN {
         Arity::exactly(self.ratios.len())
     }
 
-    fn evaluate(&self, _registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
-        split_n(inlets[0], &self.ratios)
+    /// # Panics
+    /// If `ratios` is empty, holds a negative or NaN value, or sums to zero. See [`split_n`].
+    fn evaluate(
+        &self,
+        _registry: &SpeciesRegistry,
+        inlets: &[&Stream],
+    ) -> Result<Vec<Stream>, EvalError> {
+        Ok(split_n(inlets[0], &self.ratios))
     }
 }
 
@@ -58,7 +72,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = Splitter { fraction: 0.3 }.evaluate(&r, &[&inlet]);
+        let outs = Splitter { fraction: 0.3 }.evaluate(&r, &[&inlet]).unwrap();
 
         assert_eq!(outs.len(), 2);
         assert_relative_eq!(outs[0].total(), 300.0, max_relative = 1e-12);
@@ -73,7 +87,7 @@ mod tests {
             ratios: vec![1.0, 1.0, 2.0],
         };
 
-        let outs = op.evaluate(&r, &[&inlet]);
+        let outs = op.evaluate(&r, &[&inlet]).unwrap();
 
         assert_eq!(outs.len(), 3);
         assert_relative_eq!(outs[0].total(), 250.0, max_relative = 1e-12);

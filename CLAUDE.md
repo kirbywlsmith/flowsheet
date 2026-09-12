@@ -149,11 +149,45 @@ Never mix severities in one unlabelled list.
   spec yet. `unit::heat` hands `H_in + duty` to `solve_temperature` starting from the inlet temperature, so Newton's
   first step is `T + Q/C`, exact for constant cp. An **empty inlet passes through with the duty ignored**, because a
   recycle's first pass feeds a heater downstream of a tear exactly that. The price of a duty spec: a large negative
-  duty on an early pass carrying a sliver of the flow can drive Newton below 0 K and panic, which is user input
-  surfacing as a panic mid-solve - the same hole as a Shomate fit that goes negative away from 298.15 K. There is no
-  `LoadError` for a non-finite duty because JSON cannot write one; `serde_json` rejects `NaN`, `Infinity` and `1e400`,
-  and a test pins that. `tests/heated_recycle.rs` asserts `T_product = T_feed + Q / C_feed` by hand, independent of
-  the recycle fraction.
+  duty can ask for a temperature below 0 K, which is now a `SolveError::Evaluation` rather than a panic - see the
+  `EvalError` entry below. There is no `LoadError` for a non-finite duty because JSON cannot write one; `serde_json`
+  rejects `NaN`, `Infinity` and `1e400`, and a test pins that. `tests/heated_recycle.rs` asserts
+  `T_product = T_feed + Q / C_feed` by hand, independent of the recycle fraction.
+- **`UnitOp::evaluate` returns `Result<Vec<Stream>, EvalError>`.** The alternative was clamping and letting an early
+  pass be wrong on its way to being right; clamping loses, because it cannot tell a transient apart from a genuine
+  contradiction. A duty that over-cools the *converged* flow would clamp, converge, and report success at the clamp
+  temperature - a wrong number and exit 0, which is worse than the panic it replaced. The flash forces the same
+  answer anyway: Rachford-Rice on a single-phase composition has no root, so there is no value to clamp *to*.
+  Six of the eight ops became `Ok(..)` and nothing else; the real changes are `solve_temperature`, `mix`, `heat`,
+  `evaluate_unit` and the wave loop in `solve_with`. Benched against `master`, every group moved between -4.7% and
+  +4.2% in both directions and mostly not significantly: no cost, the same finding as the `solve_with` closure.
+- `EvalError` is **opaque, wrapping a `Box<dyn Error + Send + Sync>`**, not an enum of failure reasons. Same argument
+  that made saving a `ToDocument` supertrait rather than a `match` in `serial.rs`: the op set is open, and a
+  library-owned enum puts the closed list back. A downstream op keeps its own error type and `Error::source` hands it
+  back to downcast. `Send + Sync` on the inner box or the error would not cross a thread and `SolveError` would stop
+  being `Send`.
+- The **line between a panic and an `EvalError`** is whose mistake it is. `EvalError`: user input the numerics cannot
+  answer - a duty no positive temperature absorbs, Newton not converging because a Shomate fit extrapolates cp
+  negative, later a flash with no two-phase split. Still a panic: a split fraction outside `0.0..=1.0`, empty or
+  all-zero `split_n` ratios, a `recovery` of the wrong length, a non-finite duty, and `solve_temperature` on a stream
+  with no heat capacity. Every one of those is either caught by a `LoadError` at the JSON boundary or guarded by the
+  caller, so reaching it is a bug in the crate.
+- `SolveError::Evaluation` carries **both `UnitId` and `name`**: the id so a caller can look the unit up, the name
+  because this is the one `SolveError` a *user* caused and "unit 41" is no help in a 300-cell circuit.
+  `SolveError::Untearable` keeps ids alone because it is about the shape of the graph, which no single name explains.
+  The message is `unit 'cooler' failed on pass 1: no positive temperature holds an enthalpy flow of -1e9 MJ/h
+  (Newton reached -1.93e7 K)` - the user-facing half first, the iterate as a parenthetical diagnostic.
+  `tests/fixtures/impossible_duty.json` is that case end to end: a legal document, a correctly wired flowsheet, and a
+  contradiction that only shows up once a stream reaches the unit.
+- The solver writes `if let Err(source) = flowsheet.evaluate_unit(unit)` rather than `.map_err(|source| ..)?`,
+  because the closure would want `flowsheet` shared while the `&mut` borrow for `evaluate_unit` is still live in the
+  same expression. (C# has no equivalent problem, which is exactly why it is worth a note.)
+- Threading `Result` through does **not** fix the early-pass transient it was partly motivated by, and on the
+  `tests/heated_recycle.rs` shape there is nothing to fix: all the feed passes through the heater and out to the
+  product, so the boundary balance pins the heater outlet at `T_feed + Q / C_feed` whatever the recycle fraction, and
+  a duty the converged loop can absorb is one every pass can absorb too. A heater on a recycle-only branch would not
+  have that property. Seeding tear streams from feeds instead of zeros is the general mitigation, and it is not an
+  item yet.
 - `Stream::set_temperature` is **public** because `mix` lives in `unit.rs` and cannot reach the private field; the
   alternative was copying the flows into a new stream on every Newton step. `+=` on `Stream` stays **flows-only** by
   design - combining temperatures needs the registry, and that is `mix`.

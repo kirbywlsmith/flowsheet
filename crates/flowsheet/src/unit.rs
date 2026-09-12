@@ -4,7 +4,51 @@ use crate::flowsheet::StreamId;
 use crate::serial::ToDocument;
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
-use std::fmt::Debug;
+use std::fmt::{self, Debug};
+
+/// Why a [`UnitOp`] could not produce an answer for the inlets it was given.
+///
+/// Opaque, wrapping a boxed error rather than enumerating the reasons, for the same reason
+/// saving is a [`ToDocument`] supertrait rather than a `match`: the set of operations is open,
+/// and a closed enum of failure reasons here would put back exactly the fixed list that
+/// `Box<dyn UnitOp>` exists to avoid. A downstream operation keeps its own error type and hands
+/// it over with [`EvalError::new`]; [`std::error::Error::source`] gives it back.
+///
+/// The inner box is `Send + Sync` so that returning one costs [`UnitOp`] nothing: without those
+/// bounds the error would not be `Send`, and a `SolveError` carrying it would stop crossing a
+/// thread boundary.
+///
+/// This is for **user input the numerics cannot answer** - a heater duty that cools a stream
+/// past absolute zero, later a flash on a composition with no two-phase split. Bad ids,
+/// mismatched arities and a split fraction outside `0.0..=1.0` stay panics: those are bugs in
+/// the calling code, and the JSON boundary already rejects them with a
+/// [`crate::serial::LoadError`].
+#[derive(Debug)]
+pub struct EvalError(Box<dyn std::error::Error + Send + Sync>);
+
+impl EvalError {
+    /// Wraps the reason an evaluation failed.
+    ///
+    /// A `String` or a `&str` works, because the standard library already converts both into
+    /// the boxed error this holds; so does any concrete `Error + Send + Sync + 'static`.
+    pub fn new(source: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self(source.into())
+    }
+}
+
+impl fmt::Display for EvalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Spelled out, not `self.0.fmt(f)`: `Box` implements both `Debug` and `Display`, so
+        // method syntax cannot tell which `fmt` is meant.
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for EvalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.0)
+    }
+}
 
 /// What a unit does: how many streams it connects, and how it turns inlets into outlets.
 ///
@@ -39,7 +83,21 @@ pub trait UnitOp: Debug + Send + Sync + ToDocument {
     ///
     /// `inlets` is guaranteed to satisfy [`UnitOp::inlet_arity`] - [`crate::flowsheet::Flowsheet::check`]
     /// rejects anything else before a solve starts - so an implementation may index it directly.
-    fn evaluate(&self, registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream>;
+    ///
+    /// # Errors
+    ///
+    /// Return an [`EvalError`] when the inlets and this operation's parameters have no physical
+    /// answer between them - the case the solver turns into
+    /// [`crate::solver::SolveError::Evaluation`] and reports to the user. Keep panicking for
+    /// what is a bug in the calling code; see [`EvalError`] for where the line falls.
+    ///
+    /// An operation that cannot fail returns `Ok`, and most do: only [`Mixer`] and [`Heater`]
+    /// solve anything.
+    fn evaluate(
+        &self,
+        registry: &SpeciesRegistry,
+        inlets: &[&Stream],
+    ) -> Result<Vec<Stream>, EvalError>;
 }
 
 /// Boxes any operation, so [`crate::flowsheet::Flowsheet::add_unit`] accepts either a bare
@@ -118,16 +176,23 @@ pub struct Unit {
 /// If every inlet is empty there is no mass to put a temperature on, so the first inlet's
 /// temperature is kept.
 ///
-/// Returns `None` if `inlets` is empty.
+/// Returns `Ok(None)` if `inlets` is empty.
+///
+/// # Errors
+/// If no positive temperature carries the combined enthalpy. See [`solve_temperature`].
 ///
 /// # Panics
 /// If an inlet's species count does not match `registry`.
 pub fn mix<'a>(
     registry: &SpeciesRegistry,
     inlets: impl IntoIterator<Item = &'a Stream>,
-) -> Option<Stream> {
+) -> Result<Option<Stream>, EvalError> {
     let mut inlets = inlets.into_iter().peekable();
-    let first = *inlets.peek()?;
+    // `?` on the `Option` would return from a `Result` function, so the early exit is spelled
+    // out. `peek` hands back `&&Stream`, hence the deref.
+    let Some(&first) = inlets.peek() else {
+        return Ok(None);
+    };
     let mut outlet = Stream::zeros(registry, first.temperature(), first.pressure());
 
     let mut enthalpy = 0.0;
@@ -146,12 +211,12 @@ pub fn mix<'a>(
     }
 
     if heat_capacity == 0.0 {
-        return Some(outlet); // exact-zero guard: every inlet is empty
+        return Ok(Some(outlet)); // exact-zero guard: every inlet is empty
     }
 
     outlet.set_temperature(weighted_temperature / heat_capacity);
-    solve_temperature(registry, &mut outlet, enthalpy);
-    Some(outlet)
+    solve_temperature(registry, &mut outlet, enthalpy)?;
+    Ok(Some(outlet))
 }
 
 /// How close two Newton iterates must come, in Kelvin, before [`solve_temperature`] stops.
@@ -160,7 +225,10 @@ pub fn mix<'a>(
 /// shows up as noise in the outer loop's residual, and the outer loop cannot converge past it.
 const TEMPERATURE_TOLERANCE_K: f64 = 1e-9;
 
-/// Newton needs two or three steps from a good guess. This bound only exists to catch a bug.
+/// Newton needs two or three steps from a good guess. Exhausting this is a failure rather than a
+/// bug: with cp positive everywhere the function is monotonic and Newton cannot miss, but a
+/// [`crate::thermo::Shomate`] fit extrapolated far from its range can put cp negative for one
+/// species while the stream's total stays positive, and then the iteration can wander.
 const MAX_NEWTON_STEPS: usize = 50;
 
 /// Sets `stream`'s temperature to the one at which its enthalpy flow equals `enthalpy` (MJ/h),
@@ -170,10 +238,21 @@ const MAX_NEWTON_STEPS: usize = 50;
 /// heat capacity flow. Wherever cp is positive so is that slope, so `f` only ever rises and
 /// crosses zero exactly once. Newton has no second root to wander towards.
 ///
+/// On failure `stream` keeps whatever temperature the last good iterate left on it. Nothing
+/// reads it: both callers propagate the error and drop the stream.
+///
+/// # Errors
+/// If an iterate leaves the positive reals - the target enthalpy is below what this stream holds
+/// at 0 K, so no temperature answers it - or if 50 Newton steps pass without converging.
+///
 /// # Panics
-/// If the stream has no heat capacity (an empty stream has zero enthalpy at every temperature),
-/// if an iterate leaves the positive reals, or if 50 steps pass without converging.
-pub fn solve_temperature(registry: &SpeciesRegistry, stream: &mut Stream, enthalpy: f64) {
+/// If the stream has no heat capacity: an empty stream has zero enthalpy at every temperature,
+/// so asking for its temperature is a bug rather than bad input. Both callers guard it.
+pub fn solve_temperature(
+    registry: &SpeciesRegistry,
+    stream: &mut Stream,
+    enthalpy: f64,
+) -> Result<(), EvalError> {
     for _ in 0..MAX_NEWTON_STEPS {
         let slope = stream.heat_capacity(registry);
         assert!(
@@ -183,17 +262,23 @@ pub fn solve_temperature(registry: &SpeciesRegistry, stream: &mut Stream, enthal
 
         let step = (stream.enthalpy(registry) - enthalpy) / slope;
         let next = stream.temperature() - step;
-        assert!(
-            next.is_finite() && next > 0.0,
-            "Newton's method left the physical range at {next} K"
-        );
+        if !next.is_finite() || next <= 0.0 {
+            // The user-facing half first; the iterate is a diagnostic and reads as noise if it
+            // leads. `{:e}` so a huge or tiny value stays short.
+            return Err(EvalError::new(format!(
+                "no positive temperature holds an enthalpy flow of {enthalpy:e} MJ/h \
+                 (Newton reached {next:e} K)"
+            )));
+        }
         stream.set_temperature(next);
 
         if step.abs() <= TEMPERATURE_TOLERANCE_K {
-            return;
+            return Ok(());
         }
     }
-    panic!("no temperature converged after {MAX_NEWTON_STEPS} Newton steps");
+    Err(EvalError::new(format!(
+        "no temperature converged after {MAX_NEWTON_STEPS} Newton steps"
+    )))
 }
 
 /// Adds `duty` (MJ/h) to an inlet's enthalpy flow and returns the stream at the temperature that
@@ -204,22 +289,26 @@ pub fn solve_temperature(registry: &SpeciesRegistry, stream: &mut Stream, enthal
 /// inlet on the first pass, while the tear still holds its all-zero guess, so this case returns
 /// the inlet instead of panicking.
 ///
+/// # Errors
+/// If `duty` cools the stream to absolute zero or below (see [`solve_temperature`]). A duty
+/// sized for the converged loop can do that on an early pass that carries a fraction of the
+/// converged flow, which is why this is an error the solver reports and not a panic.
+///
 /// # Panics
-/// If `duty` is not finite, or if it cools the stream to absolute zero or below (see
-/// [`solve_temperature`]). A duty sized for the converged loop can do that on an early pass that
-/// carries a fraction of the converged flow.
-pub fn heat(registry: &SpeciesRegistry, inlet: &Stream, duty: f64) -> Stream {
+/// If `duty` is not finite. `serde_json` rejects `NaN`, `Infinity` and `1e400`, so no document
+/// can put one here; reaching this is a bug in the calling code.
+pub fn heat(registry: &SpeciesRegistry, inlet: &Stream, duty: f64) -> Result<Stream, EvalError> {
     assert!(duty.is_finite(), "heater duty must be finite, got {duty}");
 
     let mut outlet = inlet.clone();
     if inlet.heat_capacity(registry) == 0.0 {
-        return outlet; // exact-zero guard: the inlet is empty
+        return Ok(outlet); // exact-zero guard: the inlet is empty
     }
 
     // Newton starts from the inlet temperature, so its first step lands on T + duty / C. That is
     // exact when cp is constant, and within a step or two of the answer otherwise.
-    solve_temperature(registry, &mut outlet, inlet.enthalpy(registry) + duty);
-    outlet
+    solve_temperature(registry, &mut outlet, inlet.enthalpy(registry) + duty)?;
+    Ok(outlet)
 }
 
 /// Splits an inlet into a (`fraction`, `1.0 - fraction`) scaled [`Stream`] tuple.
@@ -294,19 +383,32 @@ mod tests {
     use crate::test_support::{AMBIENT_K, AMBIENT_KPA, all_ids, demo_registry, feed};
     use approx::assert_relative_eq;
 
+    /// [`mix`] for the tests that expect both a successful solve and at least one inlet.
+    ///
+    /// `Result<Option<Stream>, _>` needs two unwraps and they mean different things, so the
+    /// tests below say which one they are making by calling this instead.
+    fn mixed<'a>(
+        registry: &SpeciesRegistry,
+        inlets: impl IntoIterator<Item = &'a Stream>,
+    ) -> Stream {
+        mix(registry, inlets)
+            .expect("mix should not fail here")
+            .expect("mix should have at least one inlet here")
+    }
+
     // ---- mix ----
 
     #[test]
     fn mixing_nothing_gives_nothing() {
         let r = demo_registry();
-        assert!(mix(&r, &[]).is_none());
+        assert!(mix(&r, &[]).unwrap().is_none());
     }
 
     #[test]
     fn mixing_one_inlet_reproduces_it() {
         let r = demo_registry();
         let s = feed(&r);
-        let out = mix(&r, std::slice::from_ref(&s)).unwrap();
+        let out = mixed(&r, std::slice::from_ref(&s));
         assert!(s.flows_approx_eq(&out, 1e-12));
     }
 
@@ -316,7 +418,7 @@ mod tests {
         let a = feed(&r);
         let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], AMBIENT_K, AMBIENT_KPA);
 
-        let out = mix(&r, &[a.clone(), b.clone()]).unwrap();
+        let out = mixed(&r, &[a.clone(), b.clone()]);
 
         for id in all_ids(&r) {
             assert_relative_eq!(out[id], a[id] + b[id], max_relative = 1e-12);
@@ -330,7 +432,7 @@ mod tests {
         let cold = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 290.0, AMBIENT_KPA);
         let hot = Stream::from_flows(&r, vec![10.0, 20.0, 300.0], 370.0, AMBIENT_KPA);
 
-        let out = mix(&r, [&cold, &hot]).unwrap();
+        let out = mixed(&r, [&cold, &hot]);
 
         assert_relative_eq!(
             out.enthalpy(&r),
@@ -348,7 +450,7 @@ mod tests {
         let a = Stream::from_flows(&r, vec![100.0, 0.0, 0.0], 300.0, AMBIENT_KPA);
         let b = Stream::from_flows(&r, vec![300.0, 0.0, 0.0], 400.0, AMBIENT_KPA);
 
-        let out = mix(&r, [&a, &b]).unwrap();
+        let out = mixed(&r, [&a, &b]);
 
         assert_relative_eq!(out.temperature(), 375.0, max_relative = 1e-12);
     }
@@ -359,7 +461,7 @@ mod tests {
         let a = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 340.0, AMBIENT_KPA);
         let b = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], 340.0, AMBIENT_KPA);
 
-        let out = mix(&r, [&a, &b]).unwrap();
+        let out = mixed(&r, [&a, &b]);
 
         assert_relative_eq!(out.temperature(), 340.0, max_relative = 1e-12);
     }
@@ -372,7 +474,7 @@ mod tests {
         let empty = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
         let hot = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 350.0, AMBIENT_KPA);
 
-        let out = mix(&r, [&empty, &hot]).unwrap();
+        let out = mixed(&r, [&empty, &hot]);
 
         assert_relative_eq!(out.temperature(), 350.0, max_relative = 1e-12);
     }
@@ -383,7 +485,7 @@ mod tests {
         let a = Stream::zeros(&r, 310.0, AMBIENT_KPA);
         let b = Stream::zeros(&r, 290.0, AMBIENT_KPA);
 
-        let out = mix(&r, [&a, &b]).unwrap();
+        let out = mixed(&r, [&a, &b]);
 
         assert_relative_eq!(out.temperature(), 310.0);
     }
@@ -395,7 +497,7 @@ mod tests {
         let low = feed(&r);
         let high = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], AMBIENT_K, 500.0);
 
-        let out = mix(&r, [&low, &high]).unwrap();
+        let out = mixed(&r, [&low, &high]);
 
         assert_relative_eq!(out.pressure(), AMBIENT_KPA);
     }
@@ -407,7 +509,7 @@ mod tests {
         let enthalpy = s.enthalpy(&r);
 
         s.set_temperature(300.0); // a deliberately poor first guess
-        solve_temperature(&r, &mut s, enthalpy);
+        solve_temperature(&r, &mut s, enthalpy).unwrap();
 
         assert_relative_eq!(s.temperature(), 420.0, epsilon = TEMPERATURE_TOLERANCE_K);
     }
@@ -417,7 +519,9 @@ mod tests {
     fn an_empty_stream_has_no_temperature_to_solve_for() {
         let r = demo_registry();
         let mut empty = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
-        solve_temperature(&r, &mut empty, 1.0);
+        // Still a panic, not an `EvalError`: both callers guard the empty case, so getting here
+        // is a bug in the crate rather than something a document can ask for.
+        let _ = solve_temperature(&r, &mut empty, 1.0);
     }
 
     // ---- heat ----
@@ -427,7 +531,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let out = heat(&r, &inlet, 50_000.0);
+        let out = heat(&r, &inlet, 50_000.0).unwrap();
 
         assert_relative_eq!(
             out.enthalpy(&r),
@@ -442,7 +546,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let out = heat(&r, &inlet, -50_000.0);
+        let out = heat(&r, &inlet, -50_000.0).unwrap();
 
         assert!(out.temperature() < inlet.temperature());
     }
@@ -455,7 +559,7 @@ mod tests {
         let inlet = Stream::from_flows(&r, vec![100.0, 0.0, 0.0], 300.0, AMBIENT_KPA);
         let c = 100.0 * 95.0 / 183.5;
 
-        let out = heat(&r, &inlet, 100.0 * c);
+        let out = heat(&r, &inlet, 100.0 * c).unwrap();
 
         assert_relative_eq!(out.temperature(), 400.0, max_relative = 1e-12);
     }
@@ -465,7 +569,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let out = heat(&r, &inlet, 50_000.0);
+        let out = heat(&r, &inlet, 50_000.0).unwrap();
 
         assert!(inlet.flows_approx_eq(&out, 0.0));
         assert_relative_eq!(out.pressure(), inlet.pressure());
@@ -476,7 +580,7 @@ mod tests {
         let r = demo_registry();
         let inlet = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 350.0, AMBIENT_KPA);
 
-        let out = heat(&r, &inlet, 0.0);
+        let out = heat(&r, &inlet, 0.0).unwrap();
 
         assert_relative_eq!(out.temperature(), 350.0, epsilon = TEMPERATURE_TOLERANCE_K);
     }
@@ -486,7 +590,7 @@ mod tests {
         let r = demo_registry();
         let empty = Stream::zeros(&r, 310.0, AMBIENT_KPA);
 
-        let out = heat(&r, &empty, 50_000.0);
+        let out = heat(&r, &empty, 50_000.0).unwrap();
 
         assert_relative_eq!(out.total(), 0.0);
         assert_relative_eq!(out.temperature(), 310.0);
@@ -496,16 +600,40 @@ mod tests {
     #[should_panic(expected = "heater duty must be finite")]
     fn heating_by_nan_panics() {
         let r = demo_registry();
-        heat(&r, &feed(&r), f64::NAN);
+        // Still a panic: `serde_json` rejects `NaN`, `Infinity` and `1e400`, so no document can
+        // put one here and reaching it is a bug. `let _` only silences the unused-`Result` lint.
+        let _ = heat(&r, &feed(&r), f64::NAN);
     }
 
     #[test]
-    #[should_panic(expected = "left the physical range")]
-    fn cooling_past_absolute_zero_panics() {
+    fn cooling_past_absolute_zero_is_an_error() {
         // The feed's heat capacity flow is about 2800 MJ/(h·K), so at constant cp taking it from
         // 298 K to 0 K removes roughly 830,000 MJ/h. A billion is over a thousand times that.
+        // This *is* user input - a duty in a document - so it is an error, not a panic.
         let r = demo_registry();
-        heat(&r, &feed(&r), -1e9);
+
+        let e = heat(&r, &feed(&r), -1e9).expect_err("no positive temperature answers -1e9 MJ/h");
+
+        assert!(
+            e.to_string().contains("no positive temperature holds"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn an_eval_error_hands_back_the_error_it_wraps() {
+        // The point of boxing rather than an enum: a downstream operation keeps its own error
+        // type, and `source` gives it back to anyone who wants to downcast to it.
+        let e = EvalError::new(std::io::Error::other(
+            "rachford-rice did not bracket a root",
+        ));
+
+        assert_eq!(e.to_string(), "rachford-rice did not bracket a root");
+        assert!(
+            std::error::Error::source(&e)
+                .and_then(|s| s.downcast_ref::<std::io::Error>())
+                .is_some()
+        );
     }
 
     // ---- split ----
@@ -586,7 +714,7 @@ mod tests {
         let inlet = feed(&r);
 
         let outs = split_n(&inlet, &[0.7, 0.2, 0.1]);
-        let recombined = mix(&r, &outs).unwrap();
+        let recombined = mixed(&r, &outs);
 
         assert_eq!(outs.len(), 3);
         assert!(inlet.flows_approx_eq(&recombined, 1e-12));
@@ -602,7 +730,7 @@ mod tests {
         for out in &outs {
             assert_relative_eq!(out.total(), 1000.0 / 3.0, max_relative = 1e-12);
         }
-        assert!(inlet.flows_approx_eq(&mix(&r, &outs).unwrap(), 1e-12));
+        assert!(inlet.flows_approx_eq(&mixed(&r, &outs), 1e-12));
     }
 
     #[test]
@@ -771,7 +899,7 @@ mod tests {
             let stream = feed(&r);
             let supplied: Vec<&Stream> = vec![&stream; op.inlet_arity().min];
             assert_eq!(
-                op.evaluate(&r, &supplied).len(),
+                op.evaluate(&r, &supplied).unwrap().len(),
                 op.outlet_arity().min,
                 "{op:?} returned an outlet count its arity does not declare"
             );

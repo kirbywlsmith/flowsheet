@@ -1,0 +1,60 @@
+{
+  "species": [
+    {
+      "name": "CuFeS2",
+      "phase": "Solid",
+      "molar_mass": 183.5,
+      "shomate": {
+        "a": 95.0
+      }
+    }
+  ],
+  "units": [
+    {
+      "name": "feed",
+      "op": {
+        "type": "feed",
+        "state": {
+          "flows": {
+            "CuFeS2": 100.0
+          },
+          "pressure": 101.325,
+          "temperature": 298.15
+        }
+      }
+    },
+    {
+      "name": "cooler",
+      "op": {
+        "type": "heater",
+        "duty": -1000000000.0
+      }
+    },
+    {
+      "name": "product",
+      "op": {
+        "type": "product"
+      }
+    }
+  ],
+  "streams": [
+    {
+      "from": "feed",
+      "to": "cooler",
+      "state": {
+        "flows": {},
+        "pressure": 101.325,
+        "temperature": 298.15
+      }
+    },
+    {
+      "from": "cooler",
+      "to": "product",
+      "state": {
+        "flows": {},
+        "pressure": 101.325,
+        "temperature": 298.15
+      }
+    }
+  ]
+}

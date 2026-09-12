@@ -1,6 +1,6 @@
 //! [`Feed`] - where material enters the flowsheet.
 
-use super::{Arity, UnitOp};
+use super::{Arity, EvalError, UnitOp};
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
@@ -20,8 +20,12 @@ impl UnitOp for Feed {
         Arity::exactly(1)
     }
 
-    fn evaluate(&self, _registry: &SpeciesRegistry, _inlets: &[&Stream]) -> Vec<Stream> {
-        vec![self.stream.clone()]
+    fn evaluate(
+        &self,
+        _registry: &SpeciesRegistry,
+        _inlets: &[&Stream],
+    ) -> Result<Vec<Stream>, EvalError> {
+        Ok(vec![self.stream.clone()])
     }
 }
 
@@ -36,7 +40,7 @@ mod tests {
         let r = demo_registry();
         let op = Feed { stream: feed(&r) };
 
-        let outs = op.evaluate(&r, &[]);
+        let outs = op.evaluate(&r, &[]).unwrap();
 
         assert_eq!(outs.len(), 1);
         assert_relative_eq!(outs[0].total(), 1000.0);

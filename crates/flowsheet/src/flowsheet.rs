@@ -5,7 +5,7 @@ mod topology;
 use crate::assert_id_space;
 use crate::species::{SpeciesId, SpeciesRegistry};
 use crate::stream::Stream;
-use crate::unit::{Unit, UnitOp};
+use crate::unit::{EvalError, Unit, UnitOp};
 use std::fmt;
 
 /// Used to index a [`Flowsheet`]'s units.
@@ -328,7 +328,10 @@ impl ValidFlowsheet {
     }
 
     /// Evaluates one unit, writing its results into the unit's outlet streams.
-    pub(crate) fn evaluate_unit(&mut self, id: UnitId) {
+    ///
+    /// On an [`EvalError`] the outlet streams are left exactly as they were: the write loop is
+    /// past the `?`, so a failed pass cannot leave a unit half-updated.
+    pub(crate) fn evaluate_unit(&mut self, id: UnitId) -> Result<(), EvalError> {
         let Flowsheet {
             registry,
             units,
@@ -343,7 +346,7 @@ impl ValidFlowsheet {
                 .map(|&s| &streams[s.as_usize()])
                 .collect();
 
-            unit.op.evaluate(registry, &inlets)
+            unit.op.evaluate(registry, &inlets)?
         };
 
         debug_assert_eq!(
@@ -354,6 +357,7 @@ impl ValidFlowsheet {
         for (&s, out) in unit.outlets.iter().zip(outputs) {
             streams[s.as_usize()] = out;
         }
+        Ok(())
     }
 }
 
@@ -717,7 +721,7 @@ mod tests {
         let outlet = fs.units[0].outlets[0];
         assert_relative_eq!(fs[outlet].total(), 0.0); // still the blank placeholder
 
-        fs.evaluate_unit(UnitId(0));
+        fs.evaluate_unit(UnitId(0)).expect("a feed cannot fail");
 
         assert!(fs[outlet].flows_approx_eq(&feed(&r), 1e-12));
     }
@@ -731,7 +735,7 @@ mod tests {
 
         // Drive the feed down to the splitter's inlet by hand, one unit at a time.
         for i in 0..4 {
-            fs.evaluate_unit(UnitId(i));
+            fs.evaluate_unit(UnitId(i)).expect("none of these can fail");
         }
 
         let split = &fs.units[3];
@@ -748,7 +752,7 @@ mod tests {
             .validate()
             .expect("the chain is correctly wired");
 
-        fs.evaluate_unit(UnitId(0));
+        fs.evaluate_unit(UnitId(0)).expect("a feed cannot fail");
 
         // Only U0's outlet has been written; the rest are still blank.
         for i in 1..5u16 {

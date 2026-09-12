@@ -12,7 +12,7 @@
 use approx::assert_relative_eq;
 use flowsheet::serial::{self, LoadError, Location, OpRegistry, Spec, ToDocument};
 use flowsheet::unit::Arity;
-use flowsheet::{Flowsheet, Phase, Shomate, Species, SpeciesRegistry, Stream, UnitOp};
+use flowsheet::{EvalError, Flowsheet, Phase, Shomate, Species, SpeciesRegistry, Stream, UnitOp};
 use serde::{Deserialize, Serialize};
 
 /// A vent: one inlet, one outlet, discarding `rate` of every species.
@@ -59,11 +59,16 @@ impl UnitOp for Bleed {
         Arity::exactly(1)
     }
 
-    fn evaluate(&self, _registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
-        // `split` gives the kept side first and the discarded side second; only the first is
-        // wired to anything.
+    fn evaluate(
+        &self,
+        _registry: &SpeciesRegistry,
+        inlets: &[&Stream],
+    ) -> Result<Vec<Stream>, EvalError> {
+        // A downstream op that cannot fail still returns `Ok`: the `Result` is the trait's, not
+        // this operation's. `split` gives the kept side first and the discarded side second;
+        // only the first is wired to anything.
         let (kept, _vented) = flowsheet::unit::split(inlets[0], 1.0 - self.rate);
-        vec![kept]
+        Ok(vec![kept])
     }
 }
 

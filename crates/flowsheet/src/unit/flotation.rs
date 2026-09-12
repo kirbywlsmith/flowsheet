@@ -1,6 +1,6 @@
 //! [`Flotation`] - the first operation that changes a stream's composition.
 
-use super::{Arity, UnitOp, recover};
+use super::{Arity, EvalError, UnitOp, recover};
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
@@ -32,9 +32,13 @@ impl UnitOp for Flotation {
     /// # Panics
     /// If `recovery` does not match the inlet's species count, or holds a value outside
     /// `0.0..=1.0`. See [`recover`].
-    fn evaluate(&self, _registry: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
+    fn evaluate(
+        &self,
+        _registry: &SpeciesRegistry,
+        inlets: &[&Stream],
+    ) -> Result<Vec<Stream>, EvalError> {
         let (concentrate, tails) = recover(inlets[0], &self.recovery);
-        vec![concentrate, tails]
+        Ok(vec![concentrate, tails])
     }
 }
 
@@ -56,7 +60,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = rougher().evaluate(&r, &[&inlet]);
+        let outs = rougher().evaluate(&r, &[&inlet]).unwrap();
 
         assert_eq!(outs.len(), 2);
         // 0.85 * 40.0 t/h of chalcopyrite reports to the concentrate.
@@ -69,7 +73,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = rougher().evaluate(&r, &[&inlet]);
+        let outs = rougher().evaluate(&r, &[&inlet]).unwrap();
 
         for id in all_ids(&r) {
             assert_relative_eq!(outs[0][id] + outs[1][id], inlet[id], max_relative = 1e-12);
@@ -81,7 +85,7 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = rougher().evaluate(&r, &[&inlet]);
+        let outs = rougher().evaluate(&r, &[&inlet]).unwrap();
 
         // Grade is the point: 4% chalcopyrite in, 34.0 / 232.0 = 14.7% in the concentrate.
         // The circuit reaches 12.33% instead - the recycle brings gangue back round with it.
@@ -98,7 +102,8 @@ mod tests {
         let outs = Flotation {
             recovery: vec![0.0; 3],
         }
-        .evaluate(&r, &[&inlet]);
+        .evaluate(&r, &[&inlet])
+        .unwrap();
 
         assert_relative_eq!(outs[0].total(), 0.0);
         assert!(inlet.flows_approx_eq(&outs[1], 1e-12));
@@ -108,7 +113,9 @@ mod tests {
     #[should_panic(expected = "one recovery per species")]
     fn flotation_rejects_a_recovery_of_the_wrong_length() {
         let r = demo_registry();
-        Flotation {
+        // `let _` because `evaluate` now returns a `#[must_use]` Result; the panic fires before
+        // it ever produces one, but the unused-result lint is a static check.
+        let _ = Flotation {
             recovery: vec![0.85, 0.05],
         }
         .evaluate(&r, &[&feed(&r)]);
@@ -118,7 +125,7 @@ mod tests {
     #[should_panic(expected = "recovery must be between 0.0 and 1.0")]
     fn flotation_rejects_a_recovery_above_one() {
         let r = demo_registry();
-        Flotation {
+        let _ = Flotation {
             recovery: vec![1.5, 0.05, 0.30],
         }
         .evaluate(&r, &[&feed(&r)]);

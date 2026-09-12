@@ -30,13 +30,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Decide whether `UnitOp::evaluate` can fail, and act on the answer. Today a large negative `Heater` duty on an
-  early pass - and a recycle's first pass carries a sliver of the eventual flow - drives Newton below 0 K and panics,
-  which is user input surfacing as a panic in the middle of a solve. A Shomate fit that goes negative far from
-  298.15 K does the same. The two options are a `Result` return threaded through `evaluate_unit` and `solve_with`
-  into a new `SolveError` variant, or clamping and letting an early pass be wrong on its way to being right. Settle
-  it before the flash, whose inner Rachford-Rice solve can fail outright on a composition with no two-phase split -
-  at which point the question is forced anyway, and forced from inside a much larger item.
 - [ ] Make `Flowsheet::components` iterative. Tarjan recurses one frame per unit, so a single chain of roughly 16,000
   units overflows the stack before the solver runs - a panic on a legal flowsheet, found while
   sizing the rayon item. The doc comment warns about it; the fix is an explicit stack of (unit, next-edge) pairs,
