@@ -17,6 +17,12 @@ use std::fmt::Debug;
 /// supertrait for the opposite reason: saving needs to know *which* operation this is, and a
 /// trait object has erased that, so the operation has to say so itself.
 ///
+/// To make a downstream operation round-trip through a document, not just solve: implement
+/// [`ToDocument`] for the tag and parameters it writes, register a matching constructor under
+/// that tag with [`crate::serial::OpRegistry::register`], and load through
+/// [`crate::serial::Flowsheet::into_domain`]. Saving needs no registration - [`ToDocument`] is a
+/// supertrait, so the operation already carries everything a document needs.
+///
 /// [`Send`] and [`Sync`] are supertraits so that boxing an operation does not cost
 /// [`crate::flowsheet::Flowsheet`] its own auto-derived `Send`/`Sync`. The enum had them for
 /// free; a bare `Box<dyn UnitOp>` has neither, and a `Flowsheet` that is not `Sync` cannot be

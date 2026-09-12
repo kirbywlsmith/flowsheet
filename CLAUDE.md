@@ -59,14 +59,29 @@ Never mix severities in one unlabelled list.
   Mixer)` and the box is an implementation detail. `impl<T: UnitOp + 'static> From<T> for Box<dyn UnitOp>` supplies one
   direction; the reflexive `impl From<T> for T` lets an already-boxed op (what `serial` builds when loading) through
   unchanged. Same shape as std's `impl<E: Error> From<E> for Box<dyn Error>`.
-- Saving is a **`serial::ToDocument` supertrait on `UnitOp`**, not a `match` in `serial.rs`. Loading can stay a match —
-  a document names its op with a string, and something must own the name-to-constructor table — but saving cannot,
-  because `Box<dyn UnitOp>` has erased the concrete type. The alternative, downcasting through `Any`, would put a closed
-  list of types back in `serial.rs` and give up exactly the open set the trait object was adopted for. The `impl` blocks
-  still live in `serial.rs`, so the wire format remains one module; only the trait's declaration leaks into `unit.rs`.
-  The open set stops at the wire format, though: `serial::UnitOp` is a closed enum, so a downstream op can be *solved*
-  but not *round-tripped* — it has no variant of its own to return. Widening that means a name-keyed constructor
-  registry, and nothing needs one yet.
+- Saving is a **`serial::ToDocument` supertrait on `UnitOp`**, not a `match` in `serial.rs`, because
+  `Box<dyn UnitOp>` has erased the concrete type and only the op still knows what it is. The alternative, downcasting
+  through `Any`, would put a closed list of types back in `serial.rs` and give up exactly the open set the trait object
+  was adopted for. The `impl` blocks still live in `serial.rs`, so the wire format remains one module; only the trait's
+  declaration leaks into `unit.rs`. It returns a **`&'static str` tag plus a `serde_json::Value`**, not an enum
+  variant — one per type, and the same string the constructor is registered under, so the two sides cannot drift.
+- Loading is a **`serial::OpRegistry`**, a `BTreeMap<&'static str, Box<dyn Fn(Spec) -> Result<Box<dyn UnitOp>>>>`.
+  A document names its op with a string and something must own the name-to-constructor table; making that something a
+  *value* rather than a `match` is what makes the wire format as open as the solver. `OpRegistry::builtin()` holds the
+  eight shipped ops, `register` adds or replaces one, and `serial::Flowsheet::into_domain(&ops)` is the real entry
+  point — `TryFrom` stays, delegating to `builtin()`. Two costs, both paid deliberately: `serde_json` stops being a
+  dev-dependency of the library (`Value` is now in its public API), and `deny_unknown_fields` no longer fires during
+  parsing. It still fires, one step later, when `Spec::parse` deserialises into the op's own spec struct — so a stray
+  `fraction` on a `mixer` is a `LoadError::BadOp` naming the field, not a `serde_json` parse error. `tests/downstream_op.rs`
+  is the proof: a `Bleed` op defined in an integration test (a genuinely separate crate) solves, saves under its own
+  tag, and loads back with its parameter intact — and `OpRegistry::builtin()` rejects it by name instead of silently
+  handing back a `Tank`, which was the only outcome available before.
+- `serial::State`'s fields are declared **alphabetically** (`flows`, `pressure`, `temperature`). A stream's state
+  serialises straight from the struct, in declaration order; a feed's state is nested inside a spec that
+  `ToDocument::spec` turns into a `Value` first, and that pass rewrites every struct as a map, which sorts. Declaring
+  them in the order the map would produce anyway is what keeps the two paths writing the same bytes. The alternative
+  was `serde_json`'s `preserve_order` feature — an `indexmap` dependency, workspace-wide, to preserve a cosmetic
+  ordering.
 - `UnitOp` requires **`Send + Sync`**. The enum had them automatically; a bare `Box<dyn UnitOp>` has neither, and
   without them `Flowsheet` and `ValidFlowsheet` stop being `Sync` — which would quietly cost the parallelism the
   wave-emitting topological sort exists to enable. The price is that an op may not hold an `Rc` or a `Cell`.
@@ -186,11 +201,10 @@ Never mix severities in one unlabelled list.
 - `serde_json` needs the **`float_roundtrip` feature**. Its default parser is off by up to 1 ULP, which silently
   perturbs flows on every save/load cycle and breaks byte-identical round-trip tests.
 - Every document type carries **`deny_unknown_fields`** — the format is hand-edited, so a typo must be an error, not
-  a silently dropped key. Two serde traps make that harder than one attribute: `deny_unknown_fields` is illegal with
-  `#[serde(flatten)]`, and it is silently *ignored* on an internally tagged enum. So `serial::Unit` nests `op` instead
-  of flattening it, and `serial::UnitOp`'s variants are newtypes over per-op spec structs (`SplitterSpec`, and `NoSpec`
-  for the parameterless ops) that each deny unknown fields themselves. A newtype variant is deserialised as a plain
-  struct with the `type` key already stripped, so its own attribute fires. The JSON shape is unchanged by all of this.
+  a silently dropped key. `serial::Unit` nests `op` rather than flattening it, so `Unit` keeps the attribute; `serial::Op`
+  cannot, because it flattens the op's parameters and serde forbids the two together. The per-op spec structs
+  (`SplitterSpec`, `NoSpec` for the parameterless ops) still carry it, and `Spec::parse` is where it fires — so the
+  check moved from parse time to load time and nothing else changed. The JSON shape is unchanged by all of this.
 - `unit.rs` keeps the trait, `Arity`, `Unit` and the `mix`/`solve_temperature`/`split`/`split_n`/`recover` free functions; each operation
   gets **its own file under `unit/`**, re-exported flat (`pub use feed::Feed;`) so every call site still writes
   `unit::Mixer`. The submodules stay private - they are a file-layout detail and buy nothing else. Sibling-file module
@@ -278,9 +292,9 @@ crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, progress,
 
 - The split exists so **`clap` stays out of the library's dependency graph**. Cargo has no per-target dependencies,
   so in a single crate the binary's deps are also the library's, for everyone downstream.
-- `serde_json` is a **dev-dependency** of `flowsheet`, not a dependency. Every `serde_json` call in the library
-  is inside a `#[cfg(test)]` module — the wire types carry the derives, and turning them into bytes is the caller's
-  job. The CLI depends on it for real.
+- `serde_json` **is a dependency** of `flowsheet`, not just of the CLI. It was a dev-dependency until `serial::Op`
+  started carrying an op's parameters as a `serde_json::Map`, which puts `Value` in the library's public API. Turning
+  a *whole document* into bytes is still the caller's job — the library never writes a file.
 - **The library gets the plain name**, the CLI package is `flowsheet-cli`. `-core` earns its keep only when a facade
   crate re-exports it, and there is no facade here; the library is what people `use`, so `_core` would be noise on
   every import. Same shape as `wasmtime` / `wasmtime-cli`. The cost is that `cargo install flowsheet` fetches the

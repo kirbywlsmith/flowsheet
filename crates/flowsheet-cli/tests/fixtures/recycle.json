@@ -44,8 +44,8 @@
             "H2O": 600.0,
             "SiO2": 360.0
           },
-          "temperature": 298.15,
-          "pressure": 101.325
+          "pressure": 101.325,
+          "temperature": 298.15
         }
       }
     },
@@ -92,8 +92,8 @@
       "to": "mixer",
       "state": {
         "flows": {},
-        "temperature": 298.15,
-        "pressure": 101.325
+        "pressure": 101.325,
+        "temperature": 298.15
       }
     },
     {
@@ -101,8 +101,8 @@
       "to": "flotation",
       "state": {
         "flows": {},
-        "temperature": 298.15,
-        "pressure": 101.325
+        "pressure": 101.325,
+        "temperature": 298.15
       }
     },
     {
@@ -110,8 +110,8 @@
       "to": "concentrate",
       "state": {
         "flows": {},
-        "temperature": 298.15,
-        "pressure": 101.325
+        "pressure": 101.325,
+        "temperature": 298.15
       }
     },
     {
@@ -119,8 +119,8 @@
       "to": "split",
       "state": {
         "flows": {},
-        "temperature": 298.15,
-        "pressure": 101.325
+        "pressure": 101.325,
+        "temperature": 298.15
       }
     },
     {
@@ -128,8 +128,8 @@
       "to": "mixer",
       "state": {
         "flows": {},
-        "temperature": 298.15,
-        "pressure": 101.325
+        "pressure": 101.325,
+        "temperature": 298.15
       }
     },
     {
@@ -137,8 +137,8 @@
       "to": "tailings",
       "state": {
         "flows": {},
-        "temperature": 298.15,
-        "pressure": 101.325
+        "pressure": 101.325,
+        "temperature": 298.15
       }
     }
   ]

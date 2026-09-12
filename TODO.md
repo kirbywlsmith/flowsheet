@@ -2,15 +2,6 @@
 
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `crates/flowsheet-cli/src/main.rs`.
 
-- [ ] Let a downstream unit op round-trip through a document. `Box<dyn UnitOp>` opened the set of ops the
-  solver accepts, but not the set the wire format can carry: `serial::UnitOp` is a closed enum, so a third-party op
-  has no variant of its own and `ToDocument` forces it to describe itself as one of the six built-ins — which
-  `to_domain` then loads back as that built-in, silently, with no error at either boundary. The fix is a name-keyed
-  registry: `ToDocument` returns a `&'static str` tag plus a `serde_json::Value` payload rather than an enum variant,
-  and loading looks the tag up in a table the caller can extend. Two costs to weigh first — `serde_json` stops being a
-  dev-dependency of the library, and `deny_unknown_fields` no longer fires for free on an op's own parameters, so each
-  op has to opt back in. Not worth doing until something outside this crate actually implements `UnitOp`; until then
-  the honest position is documented on `serial::ToDocument`.
 - [ ] Chemical reactions. Carved out of the unit-op item below, because a reactor is not one more op like
   a screen: it needs reaction stoichiometry, a conversion or extent-of-reaction spec, and enthalpies of formation
   for the energy balance - `thermo` drops the Shomate `F` and `H` terms that carry them, and they have to come back.

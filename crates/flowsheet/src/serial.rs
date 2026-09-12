@@ -29,23 +29,29 @@ pub struct Flowsheet {
 }
 
 /// The composition and thermodynamic state of a stream.
+///
+/// The fields are declared in alphabetical order, which reads oddly and is deliberate. A stream's
+/// state is serialised straight from this struct, in declaration order, but a feed's state is
+/// nested inside a spec that [`ToDocument::spec`] turns into a `serde_json::Value` first - and
+/// that pass rewrites every struct as a map, which sorts. Declaring the fields in the order the
+/// map produces keeps both paths writing the same bytes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct State {
     /// Absolute mass flow per species (t/h), keyed by species name. Absent species are zero.
     pub flows: BTreeMap<String, f64>,
-    /// Temperature, in Kelvin.
-    pub temperature: f64,
     /// Pressure, in kPa.
     pub pressure: f64,
+    /// Temperature, in Kelvin.
+    pub temperature: f64,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
             flows: BTreeMap::new(),
-            temperature: AMBIENT_K,
             pressure: AMBIENT_KPA,
+            temperature: AMBIENT_K,
         }
     }
 }
@@ -61,38 +67,51 @@ pub struct Unit {
     /// Unique within the document. Referenced by [`Stream::from`] and [`Stream::to`].
     pub name: String,
     /// What the unit does.
-    pub op: UnitOp,
+    pub op: Op,
 }
 
-/// What a unit does, mirroring [`crate::unit::UnitOp`].
+/// What a unit does: a name, and whatever parameters that name implies.
 ///
-/// Each variant wraps its own struct rather than declaring fields inline. `serde` silently ignores
-/// `deny_unknown_fields` on an internally tagged enum, so inline struct variants would accept a
-/// `fraction` typed onto a mixer; a newtype variant is deserialised as a plain struct with the
-/// `type` key already removed, and that struct's `deny_unknown_fields` does fire. The JSON shape is
-/// identical either way - `{ "type": "splitter", "fraction": 0.3 }`.
+/// An enum with one variant per built-in operation is the obvious shape, and it closes the wire
+/// format while [`crate::unit::UnitOp`] stays open: a downstream operation has no variant of its
+/// own, so it can only describe itself as one of the built-ins, and loading hands that built-in
+/// back with nothing wrong at either boundary. A string tag and an uninterpreted JSON object put
+/// the name-to-constructor table in [`OpRegistry`] instead, where a caller can add to it. The JSON
+/// shape is the same either way: `{ "type": "splitter", "fraction": 0.3 }`.
+///
+/// That costs two things. `serde_json` is a dependency of this crate rather than a dev-dependency,
+/// and `deny_unknown_fields` cannot fire while parsing, because `flatten` forbids it here. A stray
+/// `fraction` on a mixer lands in `spec` and is caught one step later, when [`OpRegistry`] hands it
+/// to the mixer's constructor: still an error, still naming the field, but a
+/// [`LoadError::BadOp`] rather than a parse error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum UnitOp {
-    /// One outlet, emitting a fixed state.
-    Feed(FeedSpec),
-    /// Combines all inlets into one outlet.
-    Mixer(NoSpec),
-    /// One inlet, two outlets: `fraction` and `1.0 - fraction`.
-    Splitter(SplitterSpec),
-    /// One inlet, one outlet per ratio.
-    SplitterN(SplitterNSpec),
-    /// One inlet, two outlets: concentrate and tails, at a recovery per species.
-    Flotation(FlotationSpec),
-    /// One inlet, one outlet, with `duty` added to its enthalpy flow.
-    Heater(HeaterSpec),
-    /// One inlet, one outlet.
-    Tank(NoSpec),
-    /// One inlet.
-    Product(NoSpec),
+pub struct Op {
+    /// Which operation this is. The key its constructor is registered under in [`OpRegistry`].
+    #[serde(rename = "type")]
+    pub tag: String,
+    /// Everything else in the object - the operation's own parameters, uninterpreted.
+    #[serde(flatten)]
+    pub spec: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The parameters of a [`UnitOp::Feed`].
+impl Op {
+    /// Builds an `Op` from a tag and an already-serialised spec.
+    ///
+    /// # Panics
+    /// If `spec` is not a JSON object. It is flattened beside `type`, so nothing else can be
+    /// written there - a spec type must serialise to a map.
+    fn new(tag: &'static str, spec: serde_json::Value) -> Self {
+        match spec {
+            serde_json::Value::Object(spec) => Self {
+                tag: tag.to_string(),
+                spec,
+            },
+            other => panic!("`{tag}` produced {other}, but an op spec must be a JSON object"),
+        }
+    }
+}
+
+/// The parameters of a `feed`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FeedSpec {
@@ -100,7 +119,7 @@ pub struct FeedSpec {
     pub state: State,
 }
 
-/// The parameters of a [`UnitOp::Splitter`].
+/// The parameters of a `splitter`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SplitterSpec {
@@ -108,7 +127,7 @@ pub struct SplitterSpec {
     pub fraction: f64,
 }
 
-/// The parameters of a [`UnitOp::SplitterN`].
+/// The parameters of a `splitter_n`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SplitterNSpec {
@@ -116,7 +135,7 @@ pub struct SplitterNSpec {
     pub ratios: Vec<f64>,
 }
 
-/// The parameters of a [`UnitOp::Flotation`].
+/// The parameters of a `flotation`.
 ///
 /// `recovery` is keyed by species name, for the same reason [`State::flows`] is: a document
 /// should not depend on the order of the `species` list. A species the map omits recovers
@@ -128,7 +147,7 @@ pub struct FlotationSpec {
     pub recovery: BTreeMap<String, f64>,
 }
 
-/// The parameters of a [`UnitOp::Heater`].
+/// The parameters of a `heater`.
 ///
 /// `duty` has no load-time check. The domain rejects only a non-finite duty, and a document
 /// cannot contain one: `serde_json` refuses `NaN`, `Infinity` and out-of-range literals such as
@@ -232,6 +251,26 @@ pub enum LoadError {
         /// What was required.
         expected: String,
     },
+    /// A unit's `type` is not a tag the [`OpRegistry`] knows.
+    UnknownOp {
+        /// The unit the tag appeared on.
+        at: Location,
+        /// The tag that could not be resolved.
+        tag: String,
+    },
+    /// A unit's parameters did not match the shape its operation expects.
+    ///
+    /// Where `deny_unknown_fields` lands: [`Op`] flattens the parameters, so a stray `fraction`
+    /// on a `mixer` parses fine and fails here.
+    BadOp {
+        /// The unit the parameters appeared on.
+        at: Location,
+        /// The operation that rejected them.
+        tag: String,
+        /// What `serde` said. Held as text because [`serde_json::Error`] is neither [`Clone`]
+        /// nor [`PartialEq`], and this type is both.
+        message: String,
+    },
     /// The document has more units or streams than a `u16` id can address.
     TooMany {
         /// Either `"species"`, `"units"` or `"streams"`.
@@ -267,6 +306,12 @@ impl fmt::Display for LoadError {
                 value,
                 expected,
             } => write!(f, "{at}: `{field}` is {value}, expected {expected}"),
+            LoadError::UnknownOp { at, tag } => {
+                write!(f, "{at}: `{tag}` is not a registered unit operation")
+            }
+            LoadError::BadOp { at, tag, message } => {
+                write!(f, "{at}: `{tag}` parameters are invalid: {message}")
+            }
             LoadError::TooMany { what, count } => {
                 write!(
                     f,
@@ -350,80 +395,251 @@ impl State {
     }
 }
 
-impl UnitOp {
-    /// Converts into a domain [`unit::UnitOp`], rejecting the values its constructors panic on.
+/// Everything a constructor needs to turn one [`Op`] into a domain operation.
+///
+/// A struct rather than four parameters, because a constructor is stored behind a `dyn Fn` and
+/// every added argument would be a breaking change to the [`OpRegistry`] table's type.
+#[derive(Debug, Clone, Copy)]
+pub struct Spec<'a> {
+    /// The operation's parameters, exactly as the document wrote them.
+    pub params: &'a serde_json::Map<String, serde_json::Value>,
+    /// Every species, in [`SpeciesId`] order.
+    pub registry: &'a SpeciesRegistry,
+    /// Species by name, for resolving a name-keyed map into a dense vector.
+    pub species_ids: &'a BTreeMap<String, SpeciesId>,
+    /// The unit being loaded, for error messages.
+    pub at: &'a Location,
+}
+
+impl<'a> Spec<'a> {
+    /// Deserialises the parameters into an operation's own spec type.
     ///
-    /// This is the half of the round trip a trait object cannot do for itself: a document names
-    /// its operation with a string, and something has to own the name-to-constructor table. The
-    /// other half is [`ToDocument`], which each operation implements.
+    /// Where a spec type's `deny_unknown_fields` fires - see [`Op`] for why it cannot fire at
+    /// parse time.
     ///
-    /// Each arm builds a different concrete type; they unify because the return type is
-    /// `Box<dyn unit::UnitOp>`, so every arm unsize-coerces to it.
-    fn to_domain(
+    /// # Errors
+    ///
+    /// Returns [`LoadError::BadOp`] if the parameters do not match `T`.
+    pub fn parse<T: serde::de::DeserializeOwned>(&self, tag: &str) -> Result<T, LoadError> {
+        // Cloning the map is the price of `from_value` taking ownership. A spec is a handful of
+        // keys and this runs once per unit per load, not once per solver pass.
+        serde_json::from_value(serde_json::Value::Object(self.params.clone())).map_err(|e| {
+            LoadError::BadOp {
+                at: self.at.clone(),
+                tag: tag.to_string(),
+                message: e.to_string(),
+            }
+        })
+    }
+}
+
+/// A constructor: one [`Op`] in, one domain operation out.
+type Constructor = Box<dyn Fn(Spec<'_>) -> Result<Box<dyn unit::UnitOp>, LoadError> + Send + Sync>;
+
+/// The name-to-constructor table loading resolves a unit's `type` against.
+///
+/// This is the half of the round trip a trait object cannot do for itself. Saving can be a
+/// method on the operation ([`ToDocument`]) because the operation still knows what it is;
+/// loading has only a string, so something has to own the mapping. Making that something a value
+/// rather than a `match` is what lets a downstream crate add to it:
+///
+/// ```
+/// use flowsheet::serial::{OpRegistry, Spec, ToDocument};
+/// use flowsheet::{SpeciesRegistry, Stream, UnitOp, unit::Arity};
+///
+/// /// A vent: one inlet, one outlet, discarding `rate` of every species.
+/// #[derive(Debug)]
+/// struct Bleed { rate: f64 }
+///
+/// /// Its document form. `deny_unknown_fields` fires here, in `Spec::parse`.
+/// #[derive(serde::Serialize, serde::Deserialize)]
+/// #[serde(deny_unknown_fields)]
+/// struct BleedSpec { rate: f64 }
+///
+/// impl ToDocument for Bleed {
+///     fn tag(&self) -> &'static str { "bleed" }
+///     fn spec(&self, _: &SpeciesRegistry) -> serde_json::Value {
+///         serde_json::to_value(BleedSpec { rate: self.rate }).unwrap()
+///     }
+/// }
+/// # impl UnitOp for Bleed {
+/// #     fn inlet_arity(&self) -> Arity { Arity::exactly(1) }
+/// #     fn outlet_arity(&self) -> Arity { Arity::exactly(1) }
+/// #     fn evaluate(&self, _: &SpeciesRegistry, inlets: &[&Stream]) -> Vec<Stream> {
+/// #         vec![flowsheet::unit::split(inlets[0], 1.0 - self.rate).0]
+/// #     }
+/// # }
+///
+/// let mut ops = OpRegistry::builtin();
+/// ops.register("bleed", |s: Spec<'_>| {
+///     let BleedSpec { rate } = s.parse("bleed")?;
+///     Ok(Box::new(Bleed { rate }))
+/// });
+/// ```
+///
+/// The tag has to be the same string on both sides, which is why the built-ins keep theirs in
+/// one place - `unit::Splitter::TAG` and friends - rather than spelling it twice.
+///
+/// Registering over an existing tag replaces it, so a caller can also override a built-in.
+pub struct OpRegistry {
+    table: BTreeMap<&'static str, Constructor>,
+}
+
+impl fmt::Debug for OpRegistry {
+    /// A constructor is a closure and has no `Debug`, so only the tags are shown.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("OpRegistry")
+            .field(&self.table.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl Default for OpRegistry {
+    fn default() -> Self {
+        Self::builtin()
+    }
+}
+
+impl OpRegistry {
+    /// An empty table. Nothing loads until something is registered.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            table: BTreeMap::new(),
+        }
+    }
+
+    /// The eight operations this crate ships, under the tags they save themselves as.
+    #[must_use]
+    pub fn builtin() -> Self {
+        let mut ops = Self::new();
+
+        ops.register(unit::Feed::TAG, |s| {
+            let spec: FeedSpec = s.parse(unit::Feed::TAG)?;
+            Ok(Box::new(unit::Feed {
+                stream: spec.state.to_stream(s.registry, s.species_ids, s.at)?,
+            }))
+        });
+
+        ops.register(unit::Mixer::TAG, |s| {
+            s.parse::<NoSpec>(unit::Mixer::TAG)?;
+            Ok(Box::new(unit::Mixer))
+        });
+
+        ops.register(unit::Splitter::TAG, |s| {
+            let SplitterSpec { fraction } = s.parse(unit::Splitter::TAG)?;
+            require(
+                (0.0..=1.0).contains(&fraction),
+                s.at,
+                "fraction",
+                fraction,
+                "between 0.0 and 1.0",
+            )?;
+            Ok(Box::new(unit::Splitter { fraction }))
+        });
+
+        ops.register(unit::SplitterN::TAG, |s| {
+            let SplitterNSpec { ratios } = s.parse(unit::SplitterN::TAG)?;
+            for &r in &ratios {
+                require(
+                    r.is_finite() && r >= 0.0,
+                    s.at,
+                    "ratios",
+                    r,
+                    "0.0 or greater",
+                )?;
+            }
+            // An empty `ratios` sums to zero, so this catches that case too.
+            let sum: f64 = ratios.iter().sum();
+            require(sum > 0.0, s.at, "ratios", sum, "a sum greater than 0.0")?;
+            Ok(Box::new(unit::SplitterN { ratios }))
+        });
+
+        ops.register(unit::Flotation::TAG, |s| {
+            let FlotationSpec { recovery } = s.parse(unit::Flotation::TAG)?;
+            // Resolved into a dense `SpeciesId`-ordered vector, the same shape as a stream's
+            // flows. A species the map leaves out recovers nothing.
+            let mut dense = vec![0.0; s.registry.len()];
+            for (name, &value) in &recovery {
+                let id = s
+                    .species_ids
+                    .get(name)
+                    .ok_or_else(|| LoadError::UnknownSpecies {
+                        at: s.at.clone(),
+                        name: name.clone(),
+                    })?;
+                require(
+                    (0.0..=1.0).contains(&value),
+                    s.at,
+                    name,
+                    value,
+                    "between 0.0 and 1.0",
+                )?;
+                dense[id.as_usize()] = value;
+            }
+            Ok(Box::new(unit::Flotation { recovery: dense }))
+        });
+
+        ops.register(unit::Heater::TAG, |s| {
+            let HeaterSpec { duty } = s.parse(unit::Heater::TAG)?;
+            Ok(Box::new(unit::Heater { duty }))
+        });
+
+        ops.register(unit::Tank::TAG, |s| {
+            s.parse::<NoSpec>(unit::Tank::TAG)?;
+            Ok(Box::new(unit::Tank))
+        });
+
+        ops.register(unit::Product::TAG, |s| {
+            s.parse::<NoSpec>(unit::Product::TAG)?;
+            Ok(Box::new(unit::Product))
+        });
+
+        ops
+    }
+
+    /// Registers `constructor` under `tag`, replacing whatever was there.
+    ///
+    /// `tag` is `&'static str` to match [`ToDocument::tag`]; taking a `String` here would invite
+    /// the two to drift.
+    pub fn register<F>(&mut self, tag: &'static str, constructor: F)
+    where
+        F: Fn(Spec<'_>) -> Result<Box<dyn unit::UnitOp>, LoadError> + Send + Sync + 'static,
+    {
+        self.table.insert(tag, Box::new(constructor));
+    }
+
+    /// Every registered tag, in order. Useful for an error message that lists what *is* known.
+    pub fn tags(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.table.keys().copied()
+    }
+
+    /// Builds the domain operation `op` names.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::UnknownOp`] if the tag is not registered, or whatever the constructor
+    /// returns.
+    fn build(
         &self,
+        op: &Op,
         registry: &SpeciesRegistry,
         species_ids: &BTreeMap<String, SpeciesId>,
         at: &Location,
     ) -> Result<Box<dyn unit::UnitOp>, LoadError> {
-        Ok(match self {
-            UnitOp::Feed(spec) => Box::new(unit::Feed {
-                stream: spec.state.to_stream(registry, species_ids, at)?,
-            }),
-            UnitOp::Mixer(_) => Box::new(unit::Mixer),
-            UnitOp::Splitter(SplitterSpec { fraction }) => {
-                require(
-                    (0.0..=1.0).contains(fraction),
-                    at,
-                    "fraction",
-                    *fraction,
-                    "between 0.0 and 1.0",
-                )?;
-                Box::new(unit::Splitter {
-                    fraction: *fraction,
-                })
-            }
-            UnitOp::SplitterN(SplitterNSpec { ratios }) => {
-                for r in ratios {
-                    require(
-                        r.is_finite() && *r >= 0.0,
-                        at,
-                        "ratios",
-                        *r,
-                        "0.0 or greater",
-                    )?;
-                }
-                // An empty `ratios` sums to zero, so this catches that case too.
-                let sum: f64 = ratios.iter().sum();
-                require(sum > 0.0, at, "ratios", sum, "a sum greater than 0.0")?;
-                Box::new(unit::SplitterN {
-                    ratios: ratios.clone(),
-                })
-            }
-            UnitOp::Flotation(FlotationSpec { recovery }) => {
-                // Resolved into a dense `SpeciesId`-ordered vector, the same shape as a
-                // stream's flows. A species the map leaves out recovers nothing.
-                let mut dense = vec![0.0; registry.len()];
-                for (name, &value) in recovery {
-                    let id = species_ids
-                        .get(name)
-                        .ok_or_else(|| LoadError::UnknownSpecies {
-                            at: at.clone(),
-                            name: name.clone(),
-                        })?;
-                    require(
-                        (0.0..=1.0).contains(&value),
-                        at,
-                        name,
-                        value,
-                        "between 0.0 and 1.0",
-                    )?;
-                    dense[id.as_usize()] = value;
-                }
-                Box::new(unit::Flotation { recovery: dense })
-            }
-            UnitOp::Heater(HeaterSpec { duty }) => Box::new(unit::Heater { duty: *duty }),
-            UnitOp::Tank(_) => Box::new(unit::Tank),
-            UnitOp::Product(_) => Box::new(unit::Product),
+        let constructor = self
+            .table
+            .get(op.tag.as_str())
+            .ok_or_else(|| LoadError::UnknownOp {
+                at: at.clone(),
+                tag: op.tag.clone(),
+            })?;
+
+        constructor(Spec {
+            params: &op.spec,
+            registry,
+            species_ids,
+            at,
         })
     }
 }
@@ -431,6 +647,20 @@ impl UnitOp {
 impl TryFrom<Flowsheet> for flowsheet::Flowsheet {
     type Error = LoadError;
 
+    /// Replays the document through the builder using [`OpRegistry::builtin`].
+    ///
+    /// Call [`Flowsheet::into_domain`] instead to load a document naming an operation this crate
+    /// does not ship.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`LoadError`] found.
+    fn try_from(doc: Flowsheet) -> Result<Self, Self::Error> {
+        doc.into_domain(&OpRegistry::builtin())
+    }
+}
+
+impl Flowsheet {
     /// Replays the document through the [`crate::flowsheet::Flowsheet`] builder, so every
     /// invariant those methods maintain still holds.
     ///
@@ -439,7 +669,8 @@ impl TryFrom<Flowsheet> for flowsheet::Flowsheet {
     /// # Errors
     ///
     /// Returns the first [`LoadError`] found.
-    fn try_from(doc: Flowsheet) -> Result<Self, Self::Error> {
+    pub fn into_domain(self, ops: &OpRegistry) -> Result<flowsheet::Flowsheet, LoadError> {
+        let doc = self;
         if doc.species.len() > MAX_IDS {
             return Err(LoadError::TooMany {
                 what: "species",
@@ -501,7 +732,7 @@ impl TryFrom<Flowsheet> for flowsheet::Flowsheet {
                 });
             }
             let at = Location::Unit(u.name.clone());
-            let op = u.op.to_domain(fs.registry(), &species_ids, &at)?;
+            let op = ops.build(&u.op, fs.registry(), &species_ids, &at)?;
             unit_ids.insert(&u.name, fs.add_unit(u.name.clone(), op));
         }
 
@@ -553,7 +784,8 @@ impl State {
     }
 }
 
-/// Captures a domain unit operation as its document form.
+/// Captures a domain unit operation as its document form: the `type` tag it writes, and the
+/// parameters that sit beside it.
 ///
 /// This is a supertrait of [`unit::UnitOp`] rather than a `match` inside this module, because
 /// there is nothing left to match on: `Box<dyn unit::UnitOp>` has erased the concrete type, and
@@ -561,56 +793,112 @@ impl State {
 /// [`std::any::Any`] - would put a closed list of concrete types back in this file and give up
 /// the open set the trait object was adopted for.
 ///
-/// The `impl` blocks live here, next to the private `UnitOp::to_domain` that loads them back,
-/// so the wire format stays one module.
+/// [`ToDocument::tag`] returns `&'static str` rather than a `String` because the same string is
+/// the key the operation's constructor is registered under in [`OpRegistry`]. Saving and loading
+/// have to agree on it, and there is one per type, not one per instance.
 ///
-/// The open set stops at this boundary, and deliberately so: [`UnitOp`] is a closed enum, so a
-/// third-party operation has no variant of its own to return and can only describe itself as one
-/// of the built-in ones - which `to_domain` would then load back as that built-in operation, not
-/// as the original. So the set of operations a flowsheet can *solve* is open; the set it can
-/// *round-trip through a document* is not. Widening it means a name-keyed registry of
-/// constructors, which is the next move here if a downstream operation ever needs saving.
+/// The `impl` blocks live here, next to the [`OpRegistry::builtin`] entries that load them back,
+/// so the wire format stays one module. A downstream operation implements this trait and
+/// registers a matching constructor; nothing in this file has to know about it.
 pub trait ToDocument {
-    /// Captures this operation as its document form, resolving flows against `registry`.
-    fn to_document(&self, registry: &SpeciesRegistry) -> UnitOp;
+    /// What this operation writes as its `type`.
+    fn tag(&self) -> &'static str;
+
+    /// This operation's parameters, resolved against `registry`.
+    ///
+    /// Must serialise to a JSON object: the result is flattened beside `type`, so there is
+    /// nowhere for a bare number or string to go. An operation with no parameters returns
+    /// `serde_json::json!({})`, or serialises a [`NoSpec`].
+    fn spec(&self, registry: &SpeciesRegistry) -> serde_json::Value;
+}
+
+/// Serialises an operation's spec struct. This cannot fail: every spec type here is plain data,
+/// with string map keys and finite floats, so there is nothing `serde_json` would refuse.
+fn spec_of<T: Serialize>(spec: &T) -> serde_json::Value {
+    serde_json::to_value(spec).expect("a unit operation's spec always serialises")
+}
+
+impl unit::Feed {
+    /// The `type` a feed writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "feed";
 }
 
 impl ToDocument for unit::Feed {
-    fn to_document(&self, registry: &SpeciesRegistry) -> UnitOp {
-        UnitOp::Feed(FeedSpec {
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
+    fn spec(&self, registry: &SpeciesRegistry) -> serde_json::Value {
+        spec_of(&FeedSpec {
             state: State::from_stream(&self.stream, registry),
         })
     }
 }
 
+impl unit::Mixer {
+    /// The `type` a mixer writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "mixer";
+}
+
 impl ToDocument for unit::Mixer {
-    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
-        UnitOp::Mixer(NoSpec {})
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
+    fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
+        spec_of(&NoSpec {})
     }
 }
 
+impl unit::Splitter {
+    /// The `type` a splitter writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "splitter";
+}
+
 impl ToDocument for unit::Splitter {
-    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
-        UnitOp::Splitter(SplitterSpec {
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
+    fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
+        spec_of(&SplitterSpec {
             fraction: self.fraction,
         })
     }
 }
 
+impl unit::SplitterN {
+    /// The `type` an n-way splitter writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "splitter_n";
+}
+
 impl ToDocument for unit::SplitterN {
-    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
-        UnitOp::SplitterN(SplitterNSpec {
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
+    fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
+        spec_of(&SplitterNSpec {
             ratios: self.ratios.clone(),
         })
     }
 }
 
+impl unit::Flotation {
+    /// The `type` a flotation cell writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "flotation";
+}
+
 impl ToDocument for unit::Flotation {
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
     /// # Panics
     /// If `recovery` does not hold exactly one entry per species. `zip` would otherwise
     /// truncate to the shorter side and write a document that reloads as a *different* cell -
     /// silently, and with nothing for the reload to complain about.
-    fn to_document(&self, registry: &SpeciesRegistry) -> UnitOp {
+    fn spec(&self, registry: &SpeciesRegistry) -> serde_json::Value {
         assert_eq!(
             self.recovery.len(),
             registry.len(),
@@ -627,25 +915,52 @@ impl ToDocument for unit::Flotation {
             .map(|(&r, species)| (species.name.clone(), r))
             .collect();
 
-        UnitOp::Flotation(FlotationSpec { recovery })
+        spec_of(&FlotationSpec { recovery })
     }
+}
+
+impl unit::Heater {
+    /// The `type` a heater writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "heater";
 }
 
 impl ToDocument for unit::Heater {
-    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
-        UnitOp::Heater(HeaterSpec { duty: self.duty })
+    fn tag(&self) -> &'static str {
+        Self::TAG
     }
+
+    fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
+        spec_of(&HeaterSpec { duty: self.duty })
+    }
+}
+
+impl unit::Tank {
+    /// The `type` a tank writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "tank";
 }
 
 impl ToDocument for unit::Tank {
-    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
-        UnitOp::Tank(NoSpec {})
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
+    fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
+        spec_of(&NoSpec {})
     }
 }
 
+impl unit::Product {
+    /// The `type` a product writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "product";
+}
+
 impl ToDocument for unit::Product {
-    fn to_document(&self, _registry: &SpeciesRegistry) -> UnitOp {
-        UnitOp::Product(NoSpec {})
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
+    fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
+        spec_of(&NoSpec {})
     }
 }
 
@@ -666,7 +981,7 @@ impl From<&flowsheet::ValidFlowsheet> for Flowsheet {
             .iter()
             .map(|u| Unit {
                 name: u.name.clone(),
-                op: u.op.to_document(registry),
+                op: Op::new(u.op.tag(), u.op.spec(registry)),
             })
             .collect();
 
@@ -742,6 +1057,17 @@ mod tests {
 
     fn load(json: &str) -> Result<DomainFlowsheet, LoadError> {
         DomainFlowsheet::try_from(doc(json))
+    }
+
+    /// Reads a saved unit's parameters back into its spec type, checking the tag on the way.
+    ///
+    /// An [`Op`] holds its parameters as an uninterpreted map, so a test that wants to see
+    /// inside one has to parse it.
+    fn spec<T: serde::de::DeserializeOwned>(doc: &Flowsheet, unit: usize, tag: &str) -> T {
+        let op = &doc.units[unit].op;
+        assert_eq!(op.tag, tag, "units[{unit}] should be a {tag}");
+        serde_json::from_value(serde_json::Value::Object(op.spec.clone()))
+            .expect("a saved spec parses back")
     }
 
     /// A minimal document with one species and one unit, for poking at individual fields.
@@ -827,16 +1153,20 @@ mod tests {
         );
     }
 
-    /// `deny_unknown_fields` fires during parsing, before any [`LoadError`] can be raised, so
-    /// these are `serde_json` errors rather than load errors.
+    /// A stray field parses, then fails when the registry hands the parameters to the op's own
+    /// spec type - so the error names the field but is a [`LoadError`], not a parse error.
     #[test]
     fn a_field_that_belongs_to_another_unit_op_is_rejected() {
-        // `fraction` is a splitter's field. Flattening `op` into `Unit` would have swallowed it.
+        // `fraction` is a splitter's field, not a mixer's.
         let json = minimal(
             r#"{ "name": "m", "op": { "type": "mixer", "fraction": 0.9 } }"#,
             "",
         );
-        let e = serde_json::from_str::<Flowsheet>(&json).unwrap_err();
+        let e = load(&json).unwrap_err();
+        assert!(
+            matches!(e, LoadError::BadOp { ref tag, .. } if tag == "mixer"),
+            "{e:?}"
+        );
         assert!(e.to_string().contains("fraction"), "{e}");
     }
 
@@ -846,8 +1176,50 @@ mod tests {
             r#"{ "name": "s", "op": { "type": "splitter", "fraction": 0.3, "junk": 1 } }"#,
             "",
         );
-        let e = serde_json::from_str::<Flowsheet>(&json).unwrap_err();
+        let e = load(&json).unwrap_err();
         assert!(e.to_string().contains("junk"), "{e}");
+    }
+
+    #[test]
+    fn an_unregistered_op_names_the_tag_and_the_unit() {
+        let json = minimal(r#"{ "name": "x", "op": { "type": "screen" } }"#, "");
+        let e = load(&json).unwrap_err();
+        assert_eq!(
+            e,
+            LoadError::UnknownOp {
+                at: Location::Unit("x".into()),
+                tag: "screen".into()
+            }
+        );
+        assert_eq!(
+            e.to_string(),
+            "unit `x`: `screen` is not a registered unit operation"
+        );
+    }
+
+    #[test]
+    fn a_missing_required_parameter_is_rejected() {
+        let json = minimal(r#"{ "name": "s", "op": { "type": "splitter" } }"#, "");
+        let e = load(&json).unwrap_err();
+        assert!(e.to_string().contains("fraction"), "{e}");
+    }
+
+    #[test]
+    fn the_builtin_registry_holds_every_shipped_op() {
+        let tags: Vec<_> = OpRegistry::builtin().tags().collect();
+        assert_eq!(
+            tags,
+            [
+                "feed",
+                "flotation",
+                "heater",
+                "mixer",
+                "product",
+                "splitter",
+                "splitter_n",
+                "tank"
+            ]
+        );
     }
 
     #[test]
@@ -1013,10 +1385,8 @@ mod tests {
         let fs = load(json).unwrap().validate().unwrap();
         let doc = Flowsheet::from(&fs);
 
-        let UnitOp::Feed(spec) = &doc.units[0].op else {
-            panic!("unit 0 is the feed")
-        };
-        let state = &spec.state;
+        let feed: FeedSpec = spec(&doc, 0, unit::Feed::TAG);
+        let state = &feed.state;
         assert_eq!(state.flows.len(), 1, "the zero H2O should be dropped");
         assert!(state.flows.contains_key("SiO2"));
     }
@@ -1072,12 +1442,10 @@ mod tests {
 
         // Saving writes the omitted species back explicitly, as a zero.
         let doc = Flowsheet::from(&fs);
-        let UnitOp::Flotation(spec) = &doc.units[1].op else {
-            panic!("unit 1 is the flotation cell")
-        };
-        assert_eq!(spec.recovery.len(), 2, "a zero recovery is not dropped");
-        assert_eq!(spec.recovery["H2O"], 0.0);
-        assert_eq!(spec.recovery["SiO2"], 0.4);
+        let cell: FlotationSpec = spec(&doc, 1, unit::Flotation::TAG);
+        assert_eq!(cell.recovery.len(), 2, "a zero recovery is not dropped");
+        assert_eq!(cell.recovery["H2O"], 0.0);
+        assert_eq!(cell.recovery["SiO2"], 0.4);
     }
 
     #[test]
@@ -1131,10 +1499,8 @@ mod tests {
             "a negative duty should cool"
         );
         let doc = Flowsheet::from(&fs);
-        let UnitOp::Heater(spec) = &doc.units[1].op else {
-            panic!("unit 1 is the heater")
-        };
-        assert_eq!(spec.duty, -500.0);
+        let heater: HeaterSpec = spec(&doc, 1, unit::Heater::TAG);
+        assert_eq!(heater.duty, -500.0);
     }
 
     /// Why `to_domain` has no `require` for a heater: JSON cannot express the only duty the domain

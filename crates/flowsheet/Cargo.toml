@@ -3,18 +3,20 @@ name = "flowsheet"
 version = "0.1.0"
 edition = "2024"
 
-# `serde` alone, for the derives on the `serial` wire types. The library never turns a
-# document into bytes itself - every `serde_json` call in this crate is inside a
-# `#[cfg(test)]` module, so the format lives with the caller.
+# `serde` for the derives on the `serial` wire types, and `serde_json` for the one thing the
+# format cannot express in a closed type: a unit operation's parameters. `serial::Op` carries
+# them as a `serde_json::Map` so the set of operations a document can name stays open, which
+# means `Value` appears in this crate's public API and `serde_json` stops being a
+# dev-dependency. Turning a whole document into bytes is still the caller's job.
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
 criterion = { version = "0.8.2", default-features = false, features = [
     "cargo_bench_support",
 ] }
-serde_json = { workspace = true }
 
 [[bench]]
 name = "solve"
