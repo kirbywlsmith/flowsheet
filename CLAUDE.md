@@ -243,6 +243,24 @@ Never mix severities in one unlabelled list.
 - The CLI shows an **indicatif spinner on stderr**: pass number and residual. indicatif hides it when stderr is not a
   terminal, so pipes and `tests/cli.rs` never see it. The demo circuit solves before the first redraw, so in practice
   it only appears on large flowsheets.
+- The **rayon item is gated on a unit op with an inner solve**, which is why it sits behind the unit-op items in
+  TODO.md rather than first. A unit evaluation costs ~90 ns (total solve time over unit evaluations, release, this
+  machine), so a solve is `units × passes × 90 ns`: the demo circuit is 23 µs, and the smallest *converging* flowsheet
+  that reaches 100 ms is ~18,000 units at 81 passes - 3,000 independent flotation loops at recycle 0.9 with the slowest
+  species recovering 0.12, which is the most a single tear can cost inside the default 100-pass cap. Spawning and
+  joining a rayon wave costs a microsecond or two against the 9 µs of work in a hundred of today's ops, so on this
+  workload the bench can only measure overhead - matching the earlier finding that the allocator dominated and that
+  making allocation cheaper made parallelism worse, not better. Conversion reactions and pressure do not move it:
+  both are straight arithmetic over the flows vector, ~1× a mixer. What moves it is an op that iterates on every
+  evaluation - a flash is ~20× a mixer ideal and ~200× with a cubic EOS, and a 40-stage distillation column ~5,000×,
+  enough for 100 ms on its own inside a recycle. There is no realistic mass-and-energy-only flowsheet that takes
+  100 ms; a plant-scale flotation circuit of 300 cells is single-digit milliseconds. So "the demo feels substantial"
+  and "parallelism pays" are one blocker, not two.
+- Three limits found while measuring that: `Flowsheet::components` recurses, so a 16,000-unit single chain overflows
+  the stack - the doc comment's warning, with a number on it; cascading tears in series costs O(N) passes, and 128
+  flotation stages in series took 239, past the default 100; and `add_unit` / `add_stream` cast with `as u16`, so the
+  65,536th unit or stream wraps silently rather than failing. Independent loops dodge the first two - short paths,
+  one tear each, and a pass count that does not grow with the loop count.
 
 ## Layout
 

@@ -2,16 +2,6 @@
 
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `crates/flowsheet-cli/src/main.rs`.
 
-- [ ] Rayon parallel solve of independent branches; bench against serial and record where it stops paying off
-- [ ] README: what it is, quickstart, JSON format, one worked example.
-    - Show `flowsheet --json circuit.json > solved.json` in the quickstart. There is deliberately no `--output` flag:
-      the shell already does it, and `--json` output is tested to reload as a legal input. Saying so keeps the
-      omission reading as a decision rather than a gap.
-- [ ] MIT/Apache-2.0 dual licence, then publish to crates.io. The name `flowsheet` was unclaimed as of 2026-09-06.
-    - Both manifests need `description`, `license` and `repository` first, and `flowsheet-cli`'s path dependency needs
-      a `version` next to the `path`. Cargo ignores that field for local builds — the path always wins inside a
-      workspace — and only writes it into the uploaded manifest, so it looks redundant right up until
-      `cargo publish` refuses the crate without it. `cargo publish -p <crate> --dry-run` lists every missing piece.
 - [ ] Later: let a downstream unit op round-trip through a document. `Box<dyn UnitOp>` opened the set of ops the
   solver accepts, but not the set the wire format can carry: `serial::UnitOp` is a closed enum, so a third-party op
   has no variant of its own and `ToDocument` forces it to describe itself as one of the six built-ins — which
@@ -41,6 +31,16 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
   map rejects that on both boundaries, so the key has to become composite first (e.g. `"H2O(g)"`). A flash also needs
   pressure - see the item above.
 - [ ] Later: more unit ops (heat exchanger, screen) and design constraints
-- [ ] Later: dynamic simulation — inventory/holdup, fixed-step integrator
 - [ ] Later: scenario runs and Monte Carlo over feed uncertainty
+- [ ] Rayon parallel solve of independent branches; bench against serial and record where it stops paying off
+- [ ] README, then MIT/Apache-2.0 dual licence and publish to crates.io. The README covers what it is, quickstart,
+  JSON format, one worked example.
+    - Show `flowsheet --json circuit.json > solved.json` in the quickstart. There is deliberately no `--output` flag:
+      the shell already does it, and `--json` output is tested to reload as a legal input. Saying so keeps the
+      omission reading as a decision rather than a gap.
+    - Both manifests need `description`, `license` and `repository` first, and `flowsheet-cli`'s path dependency needs
+      a `version` next to the `path`. Cargo ignores that field for local builds — the path always wins inside a
+      workspace — and only writes it into the uploaded manifest, so it looks redundant right up until
+      `cargo publish` refuses the crate without it. `cargo publish -p <crate> --dry-run` lists every missing piece.
+- [ ] Later: dynamic simulation — inventory/holdup, fixed-step integrator
 - [ ] Later: C ABI (`extern "C"` + `cbindgen`) so .NET can P/Invoke it; UI on top of that - WinUI 3? Ratatui? indicatif
