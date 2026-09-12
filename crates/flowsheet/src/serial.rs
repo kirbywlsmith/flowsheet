@@ -3,6 +3,7 @@
 //! These types mirror the domain types but hold no invariants - they are whatever the file said.
 //! Validation happens on the way out, in the conversion into [`crate::flowsheet::Flowsheet`].
 
+use crate::MAX_IDS;
 use crate::flowsheet::{self, UnitId};
 use crate::species::{Phase, Species, SpeciesId, SpeciesRegistry};
 use crate::thermo::REFERENCE_K;
@@ -181,9 +182,6 @@ pub struct Stream {
 // ---------------------------------------------------------------------------
 // Loading: serial -> domain
 // ---------------------------------------------------------------------------
-
-/// The most units or streams a `u16` id can address.
-const MAX_IDS: usize = u16::MAX as usize + 1;
 
 /// Where in the document a problem was found.
 #[derive(Debug, Clone, PartialEq, Eq)]

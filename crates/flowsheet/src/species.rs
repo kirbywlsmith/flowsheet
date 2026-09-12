@@ -76,10 +76,17 @@ pub struct SpeciesRegistry {
 
 impl SpeciesRegistry {
     /// Inserts `s` into the registry if it doesn't already exist.
+    ///
+    /// # Panics
+    /// If `s` is new and the registry already holds every species a [`SpeciesId`] can address
+    /// (65,536 of them), since the cast below would otherwise wrap the new id round to 0. The
+    /// check sits in the `None` arm on purpose: a duplicate hands back an id that already exists
+    /// and allocates nothing, so a full registry can still answer for what it already has.
     pub fn insert(&mut self, s: Species) -> SpeciesId {
         // TODO: should handle duplicate insert with differing molar masses
         match self.find(&s.name, s.phase) {
             None => {
+                crate::assert_id_space(self.species.len(), "species");
                 self.species.push(s);
                 SpeciesId((self.species.len() - 1) as u16)
             }
@@ -203,5 +210,46 @@ mod tests {
             4.18,
             max_relative = 2e-3
         );
+    }
+
+    /// A registry holding `n` distinct species, filled by pushing rather than by `insert`.
+    ///
+    /// `insert` runs `find` first, and `find` is a linear scan, so filling 65,536 species through
+    /// the public path would be O(n^2) - roughly two billion comparisons. Pushing straight into
+    /// the vector reaches the same state, and the names stay distinct so that the one `insert`
+    /// each test does still takes the branch it is meant to.
+    fn filled_to(n: usize) -> SpeciesRegistry {
+        SpeciesRegistry {
+            species: (0..n)
+                .map(|i| Species {
+                    name: format!("s{i}"),
+                    phase: Phase::Solid,
+                    molar_mass: 1.0,
+                    shomate: Shomate::constant(1.0),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "65537 species exceeds the 65536 a u16 id can address")]
+    fn one_species_past_the_u16_id_space_panics() {
+        // `water` is liquid H2O and every filler species is a solid, so `find` misses and the
+        // insert takes the `None` arm where the new id would be allocated.
+        filled_to(crate::MAX_IDS).insert(water());
+    }
+
+    #[test]
+    fn a_full_registry_still_answers_for_a_species_it_already_holds() {
+        // The guard sits in the `None` arm, so a duplicate costs no id and must not panic even
+        // when there is no id left to hand out.
+        let mut registry = filled_to(crate::MAX_IDS);
+        let duplicate = Species {
+            name: "s0".into(),
+            phase: Phase::Solid,
+            molar_mass: 1.0,
+            shomate: Shomate::constant(1.0),
+        };
+        assert_eq!(registry.insert(duplicate).as_usize(), 0);
     }
 }

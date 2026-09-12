@@ -30,18 +30,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] `assert!` on the id space in `add_unit` and `add_stream`. Both cast `(len - 1) as u16`, so the 65,537th unit
-  silently becomes `UnitId(0)` and corrupts the graph. `serial` already guards this on the way in - `MAX_IDS`,
-  with a `LoadError` naming the count - but a caller building a flowsheet programmatically gets nothing.
-  `assert!` rather than `debug_assert!`, because release is exactly where someone generates 70,000 units. Panicking
-  rather than returning a `Result` is consistent with the existing stance that a bad id is a bug in our code. Move
-  `MAX_IDS` into `flowsheet.rs` and have `serial` use it from there, so the two limits cannot drift apart.
-- [ ] Solver flags on the CLI: `--tolerance`, `--max-iterations`, and `--method direct|wegstein`. `main` hardcodes
-  `Solver::default()`, so `SolverConfig` is fully configurable from the library and not from the binary - and
-  the default is direct substitution. A 90% recycle takes 119 passes against a default cap of 100, so the tool
-  reports `no convergence after 100 passes` on a flowsheet the Wegstein code sitting next to it settles in 11.
-  Wegstein's `q_min`/`q_max` stay library-only until something needs them. Test both halves: the `NotConverged`
-  message on the stiff document, and the same document converging under `--method wegstein`.
 - [ ] Report whether the balance closes. `report::table` prints per-stream totals and a convergence line, but never
   says that what entered also left. Sum the outlets of every unit with no inlets and the inlets of every unit with no
   outlets, per species, and print the worst relative discrepancy beside the residual. It is the first thing anyone

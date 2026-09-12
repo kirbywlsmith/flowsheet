@@ -2,6 +2,7 @@
 
 mod topology;
 
+use crate::assert_id_space;
 use crate::species::{SpeciesId, SpeciesRegistry};
 use crate::stream::Stream;
 use crate::unit::{Unit, UnitOp};
@@ -189,7 +190,13 @@ impl Flowsheet {
     /// caller writes `add_unit("mixer", Mixer)` and the box stays an implementation detail.
     /// An already-boxed operation - what [`crate::serial`] produces when loading a document -
     /// still works, through the reflexive `impl From<T> for T`.
+    ///
+    /// # Panics
+    /// If the flowsheet already holds every unit a [`UnitId`] can address (65,536 of them). The
+    /// check is here and not only in [`crate::serial`] because the cast below would otherwise
+    /// wrap the 65,537th unit's id round to 0, aliasing the first unit instead of failing.
     pub fn add_unit(&mut self, name: impl Into<String>, op: impl Into<Box<dyn UnitOp>>) -> UnitId {
+        assert_id_space(self.units.len(), "units");
         self.units.push(Unit {
             name: name.into(),
             op: op.into(),
@@ -202,7 +209,12 @@ impl Flowsheet {
     /// Connects `start` to `end` with the given [`Stream`].
     ///
     /// Note that order of a unit's inlets and outlets is determined by the way this is called.
+    ///
+    /// # Panics
+    /// If the flowsheet already holds every stream a [`StreamId`] can address (65,536 of them),
+    /// for the same reason as [`Flowsheet::add_unit`].
     pub fn add_stream(&mut self, start: UnitId, stream: Stream, end: UnitId) -> StreamId {
+        assert_id_space(self.streams.len(), "streams");
         self.streams.push(stream);
         let stream_id = StreamId((self.streams.len() - 1) as u16);
         self.units[start.as_usize()].outlets.push(stream_id);
@@ -863,5 +875,50 @@ mod tests {
             found: 0,
         };
         assert_eq!(e.to_string(), "unit 0 has 0 inlets, expected at least 1");
+    }
+
+    /// A flowsheet filled to exactly the id space, as cheaply as possible.
+    ///
+    /// An empty name and a ZST operation cost nothing per unit - `String::new` does not allocate
+    /// and neither does a `Box` of a zero-sized type - so this is one vector growth, not 65,536
+    /// heap allocations.
+    fn units_filled_to_the_id_space() -> Flowsheet {
+        let mut fs = Flowsheet::new(SpeciesRegistry::default());
+        for _ in 0..crate::MAX_IDS {
+            fs.add_unit("", Mixer);
+        }
+        fs
+    }
+
+    #[test]
+    fn the_last_unit_a_u16_can_address_gets_the_last_id() {
+        let mut fs = Flowsheet::new(SpeciesRegistry::default());
+        let mut last = None;
+        for _ in 0..crate::MAX_IDS {
+            last = Some(fs.add_unit("", Mixer));
+        }
+        assert_eq!(last.expect("the loop ran").as_usize(), u16::MAX as usize);
+    }
+
+    #[test]
+    #[should_panic(expected = "65537 units exceeds the 65536 a u16 id can address")]
+    fn one_unit_past_the_u16_id_space_panics() {
+        units_filled_to_the_id_space().add_unit("", Mixer);
+    }
+
+    #[test]
+    #[should_panic(expected = "65537 streams exceeds the 65536 a u16 id can address")]
+    fn one_stream_past_the_u16_id_space_panics() {
+        // A separate empty registry, because `fs` owns the one it was built with and borrowing it
+        // back would clash with `add_stream`'s `&mut self`. With no species every `Stream::zeros`
+        // holds a zero-length flows vector and allocates nothing.
+        let empty = SpeciesRegistry::default();
+        let mut fs = Flowsheet::new(SpeciesRegistry::default());
+        let a = fs.add_unit("a", Mixer);
+        let b = fs.add_unit("b", Mixer);
+        for _ in 0..crate::MAX_IDS {
+            fs.add_stream(a, Stream::zeros(&empty, AMBIENT_K, AMBIENT_KPA), b);
+        }
+        fs.add_stream(a, Stream::zeros(&empty, AMBIENT_K, AMBIENT_KPA), b);
     }
 }

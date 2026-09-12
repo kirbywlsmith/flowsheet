@@ -154,3 +154,65 @@ fn the_recycle_fixture_is_the_demo_circuit_saved() {
     // The file ends with a newline that `to_string_pretty` does not write.
     assert_eq!(generated, on_disk.trim_end_matches('\n'));
 }
+
+/// `stiff_recycle.json` is `recycle.json` with the splitter fraction at 0.9 and nothing else
+/// changed. Direct substitution shrinks the error by `f * (1 - r)` a pass - 0.855 for the gangue -
+/// so it needs 119 passes against a default cap of 100. That is the whole reason the solver flags
+/// exist, and the four tests below are the two halves of it plus the two numeric flags.
+#[test]
+fn a_stiff_recycle_runs_out_of_passes_under_the_defaults() {
+    let run = flowsheet(&["tests/fixtures/stiff_recycle.json"]);
+    assert!(!run.ok, "a solve that gave up must not exit zero");
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(
+        run.stderr.starts_with("no convergence after 100 passes"),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn wegstein_settles_the_stiff_recycle_the_defaults_give_up_on() {
+    let run = flowsheet(&["--method", "wegstein", "tests/fixtures/stiff_recycle.json"]);
+    assert!(run.ok, "{}", run.stderr);
+
+    let last = run.stdout.lines().last().expect("the table has a footer");
+    assert!(
+        last.trim()
+            .starts_with("converged in 11 iterations, residual "),
+        "{}",
+        last
+    );
+}
+
+#[test]
+fn raising_the_cap_lets_direct_substitution_finish() {
+    let run = flowsheet(&[
+        "--max-iterations",
+        "200",
+        "tests/fixtures/stiff_recycle.json",
+    ]);
+    assert!(run.ok, "{}", run.stderr);
+
+    let last = run.stdout.lines().last().expect("the table has a footer");
+    assert!(
+        last.trim()
+            .starts_with("converged in 119 iterations, residual "),
+        "{}",
+        last
+    );
+}
+
+#[test]
+fn loosening_the_tolerance_lets_direct_substitution_finish_inside_the_default_cap() {
+    let run = flowsheet(&["--tolerance", "1e-6", "tests/fixtures/stiff_recycle.json"]);
+    assert!(run.ok, "{}", run.stderr);
+
+    let last = run.stdout.lines().last().expect("the table has a footer");
+    assert!(
+        last.trim()
+            .starts_with("converged in 75 iterations, residual "),
+        "{}",
+        last
+    );
+}

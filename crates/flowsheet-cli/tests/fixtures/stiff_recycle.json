@@ -1,0 +1,145 @@
+{
+  "species": [
+    {
+      "name": "CuFeS2",
+      "phase": "Solid",
+      "molar_mass": 183.5,
+      "shomate": {
+        "a": 95.0
+      }
+    },
+    {
+      "name": "SiO2",
+      "phase": "Solid",
+      "molar_mass": 60.08,
+      "shomate": {
+        "a": -6.076591,
+        "b": 251.6755,
+        "c": -324.7964,
+        "d": 168.5604,
+        "e": 0.002548
+      }
+    },
+    {
+      "name": "H2O",
+      "phase": "Liquid",
+      "molar_mass": 18.015,
+      "shomate": {
+        "a": -203.606,
+        "b": 1523.29,
+        "c": -3196.413,
+        "d": 2474.455,
+        "e": 3.855326
+      }
+    }
+  ],
+  "units": [
+    {
+      "name": "feed",
+      "op": {
+        "type": "feed",
+        "state": {
+          "flows": {
+            "CuFeS2": 40.0,
+            "H2O": 600.0,
+            "SiO2": 360.0
+          },
+          "pressure": 101.325,
+          "temperature": 298.15
+        }
+      }
+    },
+    {
+      "name": "mixer",
+      "op": {
+        "type": "mixer"
+      }
+    },
+    {
+      "name": "flotation",
+      "op": {
+        "type": "flotation",
+        "recovery": {
+          "CuFeS2": 0.85,
+          "H2O": 0.3,
+          "SiO2": 0.05
+        }
+      }
+    },
+    {
+      "name": "concentrate",
+      "op": {
+        "type": "product"
+      }
+    },
+    {
+      "name": "split",
+      "op": {
+        "type": "splitter",
+        "fraction": 0.9
+      }
+    },
+    {
+      "name": "tailings",
+      "op": {
+        "type": "product"
+      }
+    }
+  ],
+  "streams": [
+    {
+      "from": "feed",
+      "to": "mixer",
+      "state": {
+        "flows": {},
+        "pressure": 101.325,
+        "temperature": 298.15
+      }
+    },
+    {
+      "from": "mixer",
+      "to": "flotation",
+      "state": {
+        "flows": {},
+        "pressure": 101.325,
+        "temperature": 298.15
+      }
+    },
+    {
+      "from": "flotation",
+      "to": "concentrate",
+      "state": {
+        "flows": {},
+        "pressure": 101.325,
+        "temperature": 298.15
+      }
+    },
+    {
+      "from": "flotation",
+      "to": "split",
+      "state": {
+        "flows": {},
+        "pressure": 101.325,
+        "temperature": 298.15
+      }
+    },
+    {
+      "from": "split",
+      "to": "mixer",
+      "state": {
+        "flows": {},
+        "pressure": 101.325,
+        "temperature": 298.15
+      }
+    },
+    {
+      "from": "split",
+      "to": "tailings",
+      "state": {
+        "flows": {},
+        "pressure": 101.325,
+        "temperature": 298.15
+      }
+    }
+  ]
+}

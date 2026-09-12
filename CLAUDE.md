@@ -49,6 +49,21 @@ Never mix severities in one unlabelled list.
 - `SpeciesId` / `UnitId` / `StreamId` are new types with **private fields**, so an invalid id can't be constructed.
 - Indexing (`registry[id]`, `stream[id]`) **panics** — a bad id is a bug in our code, not user input.
   `Result` is reserved for real user input (JSON loading).
+- The **id space is guarded on the builder side too**, by `assert_id_space` in `lib.rs`. All three ids are `u16`
+  newtypes built by casting a `Vec` index, so `add_unit`, `add_stream` and `SpeciesRegistry::insert` each wrapped the
+  65,537th entry's id round to 0 and aliased the first one. `serial` already rejected an oversized *document*; this is
+  the same mistake made through the builder. `assert!` and not `debug_assert!`, because release is exactly where
+  someone generates 70,000 units, and a panic rather than a `Result` for the reason on the line above.
+  `MAX_IDS` and the helper live at the **crate root rather than in `flowsheet.rs`**, because `species` sits below
+  `flowsheet` in the layering — `flowsheet` uses `species`, so putting the constant in `flowsheet` and importing it
+  back down would invert that. One helper, so the three panic messages match `LoadError::TooMany` word for word and
+  cannot drift. `insert`'s check sits in its `None` arm: a duplicate hands back an existing id and allocates none, so
+  a full registry can still answer for what it already holds.
+- Testing that guard is cheap only because of what the fixtures avoid: `add_unit("", Mixer)` allocates nothing
+  (`String::new` does not, and neither does a `Box` of a ZST), and an empty `SpeciesRegistry` makes `Stream::zeros`
+  a zero-length vector, so filling 65,536 slots is one vector growth. The species test pushes **straight into the
+  private vector** instead of calling `insert`, because `insert` runs the linear-scan `find` first and filling it
+  through the public path would be O(n²) — about two billion comparisons. All three run in 0.02s together.
 - Species registry uses a **linear scan**, not a HashMap. It holds 3–20 entries; two collections would desync.
 - Unit ops were an **enum first, `Box<dyn UnitOp>` now** — the comparison was the point. The enum version is in
   git history at `1612492` if a bench wants the baseline back.
@@ -248,6 +263,16 @@ Never mix severities in one unlabelled list.
   legal input, so `> solved.json` is the supported way to save one — the shell already owns that job. Column
   include/ignore flags were dropped from the original clap item for the same reason they were never missed: nothing
   needs them yet.
+- The CLI's solver flags are **`--tolerance`, `--max-iterations`, `--method direct|wegstein`**. The two numeric
+  defaults are `default_value_t = SolverConfig::default().tolerance` / `.max_iterations`, read off the library so
+  they cannot drift - the price is that `--help` prints `0.000000001` rather than `1e-9`, since clap formats a
+  `default_value_t` with `Display`. `--method` needs its own **fieldless `Method` enum** in `main.rs`, because
+  `ValueEnum` derives a name per variant and `ConvergenceMethod::Wegstein` carries `q_min`/`q_max`; `From<Method>`
+  supplies the clamps (-5.0 / 0.0, the same pair `tests/recycle_convergence.rs` uses) and they stay off the command
+  line until something needs them. `tests/fixtures/stiff_recycle.json` is `recycle.json` with the splitter fraction
+  at 0.9 and **nothing else changed**, so it is the 119-pass case from that test as a document: it fails with
+  `no convergence after 100 passes` under the defaults, and solves in 11 under `--method wegstein`, 119 under
+  `--max-iterations 200`, and 75 under `--tolerance 1e-6`.
 - Solve progress is **`Solver::solve_with(fs, impl FnMut(SolveEvent))`**, and `solve` is `solve_with(fs, |_| {})`. A
   generic closure rather than `&mut dyn FnMut`, a trait or a channel: the no-op closure monomorphises away, and a
   caller wanting a channel or several subscribers can forward from the closure. Benched against `194d1e6`: every

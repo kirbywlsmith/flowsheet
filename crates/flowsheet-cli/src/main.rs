@@ -1,9 +1,9 @@
 //! `flowsheet` - load a flowsheet document, solve it, and print the result.
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use flowsheet::report;
 use flowsheet::serial;
-use flowsheet::{Flowsheet, FlowsheetError, SolveEvent, Solver};
+use flowsheet::{ConvergenceMethod, Flowsheet, FlowsheetError, SolveEvent, Solver, SolverConfig};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::error::Error;
 use std::fmt::Write;
@@ -18,6 +18,43 @@ struct Cli {
     /// Print the solved document as JSON instead of a table.
     #[arg(long)]
     json: bool,
+    /// Relative residual every tear stream must reach to count as converged.
+    #[arg(long, default_value_t = SolverConfig::default().tolerance)]
+    tolerance: f64,
+    /// Passes to make before giving up.
+    #[arg(long, default_value_t = SolverConfig::default().max_iterations)]
+    max_iterations: usize,
+    /// How each pass's result becomes the next pass's guess.
+    #[arg(long, value_enum, default_value_t = Method::Direct)]
+    method: Method,
+}
+
+/// The `--method` values, one per [`ConvergenceMethod`].
+///
+/// A separate enum rather than `ConvergenceMethod` itself: `Wegstein` carries `q_min` and
+/// `q_max`, and a `ValueEnum` derive needs fieldless variants to name on the command line. The
+/// two numeric defaults above are read off `SolverConfig::default()` so they cannot drift; this
+/// one is written out, because a bare `ConvergenceMethod` has no `Default` to read.
+#[derive(Clone, Copy, ValueEnum)]
+enum Method {
+    /// Feed each pass's result straight back in as the next guess.
+    Direct,
+    /// Extrapolate each tear component along the secant through the last two passes.
+    Wegstein,
+}
+
+impl From<Method> for ConvergenceMethod {
+    fn from(method: Method) -> Self {
+        match method {
+            Method::Direct => ConvergenceMethod::DirectSubstitution,
+            // The clamps stay library-only until something needs them. -5.0 is the conventional
+            // floor and permits strong acceleration; 0.0 forbids damping.
+            Method::Wegstein => ConvergenceMethod::Wegstein {
+                q_min: -5.0,
+                q_max: 0.0,
+            },
+        }
+    }
 }
 
 fn main() {
@@ -48,7 +85,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         ProgressStyle::with_template("{spinner} pass {pos}, residual {msg}")
             .expect("the template is valid"),
     );
-    let result = Solver::default().solve_with(&mut solved, |event| {
+    let solver = Solver::new(SolverConfig {
+        tolerance: cli.tolerance,
+        max_iterations: cli.max_iterations,
+        method: cli.method.into(),
+    });
+    let result = solver.solve_with(&mut solved, |event| {
         if let SolveEvent::PassCompleted {
             iteration,
             residual,
