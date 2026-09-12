@@ -12,11 +12,6 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
       a `version` next to the `path`. Cargo ignores that field for local builds — the path always wins inside a
       workspace — and only writes it into the uploaded manifest, so it looks redundant right up until
       `cargo publish` refuses the crate without it. `cargo publish -p <crate> --dry-run` lists every missing piece.
-- [ ] Later: better tear heuristics. `tear_streams` takes the lowest-id stream inside each SCC, one per component. Both
-  parts cost passes: the tear set is the solver's unknown vector, so extra tears mean more to converge, and interlocking
-  loops currently return too few tears to order at all. Prefer Tarjan's back edge (the recycle, whose zero guess is
-  physically sensible) and tear repeatedly until the graph orders. A minimal set is minimum feedback arc set — NP-hard,
-  hence heuristics.
 - [ ] Later: let a downstream unit op round-trip through a document. `Box<dyn UnitOp>` opened the set of ops the
   solver accepts, but not the set the wire format can carry: `serial::UnitOp` is a closed enum, so a third-party op
   has no variant of its own and `ToDocument` forces it to describe itself as one of the six built-ins — which

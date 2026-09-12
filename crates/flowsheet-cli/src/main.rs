@@ -94,8 +94,8 @@ fn describe_validation(errors: Vec<FlowsheetError>) -> String {
 //     │ S0
 //     ▼
 //   Mixer  ◄─────────────┐   (2 in / 1 out)
-//     │ S1  ← TEAR STREAM │
-//     ▼                  │ S4   recycle
+//     │ S1                │
+//     ▼                  │ S4   recycle ← TEAR STREAM
 //   Flotation cell       │
 //     ├── S2 ──▶ Concentrate   (1 in / 2 out)
 //     │ S3               │
@@ -107,7 +107,7 @@ fn describe_validation(errors: Vec<FlowsheetError>) -> String {
 //
 // Streams: S0..S5. Units: U0..U5 in the order listed above.
 // The Feed→Mixer→Flotation→Splitter→Mixer cycle is why a topological sort
-// alone can't solve this — S1 must be guessed and iterated to convergence.
+// alone can't solve this — S4 must be guessed and iterated to convergence.
 //
 // Species (fixed list, index = SpeciesId)
 // ---------------------------------------
@@ -172,10 +172,10 @@ fn describe_validation(errors: Vec<FlowsheetError>) -> String {
 //
 // Convergence behaviour
 // ---------------------
-// Guess S1 = zeros, then direct substitution: the error in each species
+// Guess S4 = zeros, then direct substitution: the error in each species
 // shrinks by f(1 - r) each pass, so the slowest species sets the rate. Here
 // that is the gangue at 0.3 * 0.95 = 0.285, giving 17 iterations to 1e-9.
-// Bump f to 0.9 and the factor is 0.855 and it takes 118 — that's the
+// Bump f to 0.9 and the factor is 0.855 and it takes 119 — that's the
 // motivation for Wegstein, which does it in 11.
 //
 // Build order

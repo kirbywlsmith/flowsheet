@@ -149,6 +149,23 @@ Never mix severities in one unlabelled list.
   a unit to be referenced before its upstream exists, and arity is only decidable once construction stops.
   `ValidFlowsheet` has `Deref` but deliberately no `DerefMut`, so the topology cannot change behind the validation.
 - Kahn's topological sort emits **waves** (`Vec<Vec<UnitId>>`), not a flat order, so parallelism is free later.
+- `tear_streams` tears **back edges, one per cyclic component per round, repeating until nothing cyclic is left**.
+  A component holding one loop costs one round; interlocking loops cost a round each, because no single stream lies
+  on all of them. Before this, one tear per component was all it ever returned, and a component of interlocking loops
+  came back short and unorderable - `SolveError::Untearable` on a legal flowsheet. Two details make the back edge come
+  out as the recycle: `Flowsheet::edges` carries the `StreamId` alongside the downstream `UnitId`, so a back edge can
+  name the stream to cut; and `Tarjan` tracks **`on_path` separately from `on_stack`**, because Tarjan's stack holds
+  the whole component being built, so `on_stack` alone cannot tell a back edge from a cross edge into a sibling
+  branch. The traversal also starts at **sources before other units**, since entering the demo circuit anywhere but
+  the feed finds a different edge of the same loop.
+- The tear set is **not minimal**, deliberately. `tests/interlocking_loops.rs` is a circuit whose three loops need
+  two tears and get three, and it says so. A minimal set is minimum feedback arc set, which is NP-hard; ordering at
+  all is what the heuristic promises, and an extra tear costs one more stream in the unknown vector.
+- Moving the demo's tear from S1 (mixer outlet) to S4 (the recycle) **cost one pass** at every direct-substitution
+  setting: 11 to 12 and 74 to 75 at 1e-6, 118 to 119 at 1e-9 for `f = 0.9`. The residual is now measured one unit
+  further round the loop, and the tight low-recycle case (17) and every Wegstein count did not move. The benched cost
+  of tearing itself is +3% to +6% on flowsheets small enough for setup to dominate, and nothing at 512 units and
+  above - it runs once per solve, not once per pass.
 - Float equality: never `==`. `approx` (dev-dependency) in tests; `Stream::max_flow_residual` for the solver.
 - JSON is a **separate wire format** in `serial.rs`, not serde attributes on the domain types. `serial::Flowsheet`
   etc. reuse the domain names and are told apart by module path, the Rust convention over a `Doc`/`Dto` suffix. The

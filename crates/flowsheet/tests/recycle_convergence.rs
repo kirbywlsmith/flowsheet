@@ -41,22 +41,22 @@ fn low_recycle_tight_tolerance_takes_17_passes() {
 }
 
 #[test]
-fn high_recycle_tight_tolerance_takes_118_passes() {
-    assert_eq!(solve_recycle(0.9, 1e-9, DirectSubstitution).iterations, 118);
+fn high_recycle_tight_tolerance_takes_119_passes() {
+    assert_eq!(solve_recycle(0.9, 1e-9, DirectSubstitution).iterations, 119);
 }
 
 #[test]
-fn low_recycle_loose_tolerance_takes_11_passes() {
-    assert_eq!(solve_recycle(0.3, 1e-6, DirectSubstitution).iterations, 11);
+fn low_recycle_loose_tolerance_takes_12_passes() {
+    assert_eq!(solve_recycle(0.3, 1e-6, DirectSubstitution).iterations, 12);
 }
 
 #[test]
-fn high_recycle_loose_tolerance_takes_74_passes() {
-    assert_eq!(solve_recycle(0.9, 1e-6, DirectSubstitution).iterations, 74);
+fn high_recycle_loose_tolerance_takes_75_passes() {
+    assert_eq!(solve_recycle(0.9, 1e-6, DirectSubstitution).iterations, 75);
 }
 
 #[test]
-fn wegstein_cuts_high_recycle_from_118_passes_to_11() {
+fn wegstein_cuts_high_recycle_from_119_passes_to_11() {
     assert_eq!(solve_recycle(0.9, 1e-9, WEGSTEIN).iterations, 11);
 }
 
