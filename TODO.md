@@ -46,7 +46,6 @@ Rough sequential order. Target flowsheet + expected numbers live in the header c
   map rejects that on both boundaries, so the key has to become composite first (e.g. `"H2O(g)"`). A flash also needs
   pressure - see the item above.
 - [ ] Later: more unit ops (heat exchanger, screen) and design constraints
-- [ ] Later: allow streaming solve events (e.g. `UnitEvaluated { id, iteration, residual }`) to subscribers during a run
 - [ ] Later: dynamic simulation — inventory/holdup, fixed-step integrator
 - [ ] Later: scenario runs and Monte Carlo over feed uncertainty
 - [ ] Later: C ABI (`extern "C"` + `cbindgen`) so .NET can P/Invoke it; UI on top of that - WinUI 3? Ratatui? indicatif

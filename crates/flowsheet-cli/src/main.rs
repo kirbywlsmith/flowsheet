@@ -3,7 +3,8 @@
 use clap::Parser;
 use flowsheet::report;
 use flowsheet::serial;
-use flowsheet::{Flowsheet, FlowsheetError, Solver};
+use flowsheet::{Flowsheet, FlowsheetError, SolveEvent, Solver};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::error::Error;
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -42,7 +43,23 @@ fn run() -> Result<(), Box<dyn Error>> {
         .validate()
         .map_err(describe_validation)?;
 
-    let report = Solver::default().solve(&mut solved)?;
+    // Drawn on stderr, and hidden when that is not a terminal, so `--json > solved.json` is clean.
+    let progress = ProgressBar::new_spinner().with_style(
+        ProgressStyle::with_template("{spinner} pass {pos}, residual {msg}")
+            .expect("the template is valid"),
+    );
+    let result = Solver::default().solve_with(&mut solved, |event| {
+        if let SolveEvent::PassCompleted {
+            iteration,
+            residual,
+        } = event
+        {
+            progress.set_message(format!("{residual:.1e}"));
+            progress.set_position(iteration as u64);
+        }
+    });
+    progress.finish_and_clear();
+    let report = result?;
 
     if cli.json {
         let saved = serial::Flowsheet::from(&solved);

@@ -217,6 +217,15 @@ Never mix severities in one unlabelled list.
   legal input, so `> solved.json` is the supported way to save one — the shell already owns that job. Column
   include/ignore flags were dropped from the original clap item for the same reason they were never missed: nothing
   needs them yet.
+- Solve progress is **`Solver::solve_with(fs, impl FnMut(SolveEvent))`**, and `solve` is `solve_with(fs, |_| {})`. A
+  generic closure rather than `&mut dyn FnMut`, a trait or a channel: the no-op closure monomorphises away, and a
+  caller wanting a channel or several subscribers can forward from the closure. Benched against `194d1e6`: every
+  group moved between -9% and +6%, in both directions, so no cost. `FnMut` rather than `Fn + Sync`, which means the
+  rayon item must emit `UnitEvaluated` from the serial side of a wave, not from inside it. `SolveEvent` is
+  `#[non_exhaustive]`, so a new variant is not a breaking change for downstream `match`es.
+- The CLI shows an **indicatif spinner on stderr**: pass number and residual. indicatif hides it when stderr is not a
+  terminal, so pipes and `tests/cli.rs` never see it. The demo circuit solves before the first redraw, so in practice
+  it only appears on large flowsheets.
 
 ## Layout
 
@@ -229,7 +238,7 @@ crates/flowsheet/       the library: domain types, solver, serial, report. Depen
   src/unit/             one file per operation, re-exported flat from `unit.rs`.
   src/thermo.rs         Shomate heat capacity and enthalpy, per mole. `Species` converts to per kg.
   benches/solve.rs      criterion, `harness = false`. Solve time vs unit count and vs tear count.
-crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, error printing.
+crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, progress, error printing.
 ```
 
 - The split exists so **`clap` stays out of the library's dependency graph**. Cargo has no per-target dependencies,

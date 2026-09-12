@@ -99,6 +99,26 @@ pub struct SolveReport {
     pub residual: f64,
 }
 
+/// Progress reported by [`Solver::solve_with`] while a solve runs.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum SolveEvent {
+    /// A unit was evaluated.
+    UnitEvaluated {
+        /// The unit.
+        unit: UnitId,
+        /// The pass it was evaluated on, counting from 1.
+        iteration: usize,
+    },
+    /// A pass over every unit finished.
+    PassCompleted {
+        /// The pass, counting from 1.
+        iteration: usize,
+        /// The max residual across the tear streams on this pass.
+        residual: f64,
+    },
+}
+
 impl Solver {
     /// Initialises a new [`Solver`] with the specified config.
     pub fn new(config: SolverConfig) -> Self {
@@ -112,6 +132,20 @@ impl Solver {
     /// Returns [`SolveError::Untearable`] before any evaluation, and [`SolveError::NotConverged`] if
     /// the residual is still above tolerance after [`SolverConfig::max_iterations`] passes.
     pub fn solve(&self, flowsheet: &mut ValidFlowsheet) -> Result<SolveReport, SolveError> {
+        self.solve_with(flowsheet, |_| {})
+    }
+
+    /// Like [`Solver::solve`], but calls `on_event` as the solve progresses.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Solver::solve`]. Every pass is reported, including the last one of a
+    /// solve that ends in [`SolveError::NotConverged`].
+    pub fn solve_with(
+        &self,
+        flowsheet: &mut ValidFlowsheet,
+        mut on_event: impl FnMut(SolveEvent),
+    ) -> Result<SolveReport, SolveError> {
         let tears = flowsheet.tear_streams();
         let waves = flowsheet
             .evaluation_waves_with_tears(&tears)
@@ -126,15 +160,18 @@ impl Solver {
         loop {
             tears_snapshot.clear();
             tears_snapshot.extend(tears.iter().map(|&s| flowsheet[s].clone()));
+            iterations += 1;
 
             for wave in &waves {
                 // TODO: make this parallel
-                for &unit_id in wave {
-                    flowsheet.evaluate_unit(unit_id);
+                for &unit in wave {
+                    flowsheet.evaluate_unit(unit);
+                    on_event(SolveEvent::UnitEvaluated {
+                        unit,
+                        iteration: iterations,
+                    });
                 }
             }
-
-            iterations += 1;
 
             let pass_residual = tears
                 .iter()
@@ -144,6 +181,11 @@ impl Solver {
                     nan_max(new.max_flow_residual(old), new.temperature_residual(old))
                 })
                 .fold(0.0, nan_max);
+
+            on_event(SolveEvent::PassCompleted {
+                iteration: iterations,
+                residual: pass_residual,
+            });
 
             if pass_residual <= self.config.tolerance {
                 residual = pass_residual;
