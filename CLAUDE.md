@@ -309,6 +309,17 @@ crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, progress,
 - Dependency versions are declared once in **`[workspace.dependencies]`** and inherited with
   `serde_json = { workspace = true }`. That is what keeps the `float_roundtrip` feature from drifting between the two
   crates that parse JSON. (Closest C# analogue: central package management in `Directory.Packages.props`.)
+- Package metadata follows the same rule: `repository` and `rust-version` live once in
+  **`[workspace.package]`** and are inherited with `repository.workspace = true`. `description` stays per-crate, because
+  the two crates are different things. **`edition` deliberately stays per-crate too** - the note about `resolver`
+  above turns on a virtual manifest having no edition of its own to infer from, and moving it would undercut that.
+- `rust-version` is **1.85**, which edition 2024 requires; clap and indicatif ask the same and serde asks for less.
+  It is a promise to people who *use* the crates, so it excludes dev-dependencies: `criterion` needs 1.86, and so
+  therefore do `cargo test` and `cargo bench` here, but nothing downstream sees that.
+- `cargo publish -p flowsheet-cli --dry-run` **cannot pass before the library is published**. Packaging rewrites the
+  path dependency into a registry one and then resolves it, so it fails with `no matching package named flowsheet`
+  until `flowsheet 0.1.0` is really on crates.io. Not a defect, and not fixable by ordering the fields differently -
+  it is why the library publishes first.
 - The **headline types are re-exported at the crate root** (`pub use` in `lib.rs`), so callers write
   `flowsheet::Flowsheet` instead of `flowsheet::flowsheet::Flowsheet` — the crate and its main module share a name and
   the stutter otherwise shows up at every import. The modules stay `pub`, so the long paths still work. Two things

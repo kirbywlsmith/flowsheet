@@ -2,6 +2,9 @@
 name = "flowsheet-cli"
 version = "0.1.0"
 edition = "2024"
+description = "Solve steady-state process flowsheet documents from the command line."
+repository.workspace = true
+rust-version.workspace = true
 
 # The package is `flowsheet-cli` because the plain `flowsheet` name belongs to the library,
 # which is what people depend on. The binary users type is still just `flowsheet`: a `[[bin]]`
@@ -19,7 +22,11 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-flowsheet = { path = "../flowsheet" }
+# `version` sits next to `path` because Cargo ignores it for local builds - the path always wins
+# inside a workspace - and writes only the version into the manifest it uploads. Without it
+# `cargo publish` refuses the crate, since a path means nothing to anyone downloading from
+# crates.io. It has to be bumped in step with `flowsheet`'s own version above.
+flowsheet = { path = "../flowsheet", version = "0.1.0" }
 clap = { version = "4.6.6", features = ["derive"] }
 indicatif = "0.18.6"
 serde_json = { workspace = true }

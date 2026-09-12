@@ -10,14 +10,6 @@ Packaging comes first, ahead of the domain work, because it is the only part of 
 the rest is ever seen. Then the small correctness gaps, which are cheap and self-contained. Then the process
 engineering, ordered so that no large item gates a small one.
 
-- [ ] Package metadata and a licence, so the workspace can be published at all. Both manifests need `description`,
-  `license` and `repository`, and `flowsheet-cli`'s path dependency on `flowsheet` needs a `version` next to the
-  `path`. Cargo ignores that version for local builds - the path always wins inside a workspace - and only writes it
-  into the uploaded manifest, so it looks redundant right up until `cargo publish` refuses the crate without it. Dual
-  MIT/Apache-2.0, the Rust convention, which means `LICENSE-MIT` and `LICENSE-APACHE` at the root and
-  `license = "MIT OR Apache-2.0"` in both manifests. Set `rust-version` while there: edition 2024 needs 1.85, and
-  without the field an older toolchain reports an edition parse error instead of the version it actually wants. Done
-  when `cargo publish -p flowsheet --dry-run` and `-p flowsheet-cli --dry-run` are both clean.
 - [ ] README: what it is, quickstart, the JSON format, one worked example. The worked example is the demo circuit,
   because `crates/flowsheet-cli/tests/cli.rs` already pins its table output byte-for-byte, so a README that pastes
   that table cannot drift silently.
@@ -30,11 +22,14 @@ engineering, ordered so that no large item gates a small one.
     - `cargo install flowsheet-cli`, not `flowsheet` - the library owns the plain name and installs no binary.
     - Say plainly what is *not* modelled yet: no phase change, no reactions, pressure carried but never solved. A
       stated scope reads as engineering judgement; an unstated one reads as an unfinished project.
-- [ ] Publish 0.1.0 to crates.io, the library first so the CLI's version dependency resolves against a real release.
-  Irreversible in a way nothing else here is - a published version can be yanked but never replaced - so the two
-  dry-runs above are the gate. Afterwards add the docs.rs and crates.io badges to the README, and set the
-  repository description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is
-  exactly why it needs to be written down as an item.
+- [ ] Publish 0.1.0 to crates.io, the library first and the CLI second. That order is forced, not preferred:
+  packaging rewrites `flowsheet-cli`'s path dependency into a registry one, so until `flowsheet 0.1.0` actually
+  exists on crates.io, `cargo publish -p flowsheet-cli --dry-run` fails at resolution with `no matching package
+  named flowsheet`. The library's own dry-run is clean and is the only one that can be run beforehand; the CLI's is
+  a post-publish check, not a gate. Irreversible in a way nothing else here is - a published version can be yanked
+  but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
+  description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
+  why it needs to be written down as an item.
 - [ ] `assert!` on the id space in `add_unit` and `add_stream`. Both cast `(len - 1) as u16`, so the 65,537th unit
   silently becomes `UnitId(0)` and corrupts the graph. `serial` already guards this on the way in - `MAX_IDS`,
   with a `LoadError` naming the count - but a caller building a flowsheet programmatically gets nothing.

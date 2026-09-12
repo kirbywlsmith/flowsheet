@@ -2,6 +2,9 @@
 name = "flowsheet"
 version = "0.1.0"
 edition = "2024"
+description = "Steady-state material and energy balances over a flowsheet of process units and streams."
+repository.workspace = true
+rust-version.workspace = true
 
 # `serde` for the derives on the `serial` wire types, and `serde_json` for the one thing the
 # format cannot express in a closed type: a unit operation's parameters. `serial::Op` carries
