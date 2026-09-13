@@ -10,18 +10,6 @@ Packaging comes first, ahead of the domain work, because it is the only part of 
 the rest is ever seen. Then the small correctness gaps, which are cheap and self-contained. Then the process
 engineering, ordered so that no large item gates a small one.
 
-- [ ] README: what it is, quickstart, the JSON format, one worked example. The worked example is the demo circuit,
-  because `crates/flowsheet-cli/tests/cli.rs` already pins its table output byte-for-byte, so a README that pastes
-  that table cannot drift silently.
-    - Write the input document in its *hand-written* form, not the saved form. `serial::Stream::state` is
-      `#[serde(default)]`, so a stream is `{"from": "feed", "to": "mixer"}` and nothing else - the six `"flows": {}`
-      blocks in `tests/fixtures/recycle.json` are save output, not input. Nobody will work that out from the fixture.
-    - Show `flowsheet --json circuit.json > solved.json` in the quickstart. There is deliberately no `--output` flag:
-      the shell already does it, and `--json` output is tested to reload as a legal input. Saying so keeps the
-      omission reading as a decision rather than a gap.
-    - `cargo install flowsheet-cli`, not `flowsheet` - the library owns the plain name and installs no binary.
-    - Say plainly what is *not* modelled yet: no phase change, no reactions, pressure carried but never solved. A
-      stated scope reads as engineering judgement; an unstated one reads as an unfinished project.
 - [ ] Publish 0.1.0 to crates.io, the library first and the CLI second. That order is forced, not preferred:
   packaging rewrites `flowsheet-cli`'s path dependency into a registry one, so until `flowsheet 0.1.0` actually
   exists on crates.io, `cargo publish -p flowsheet-cli --dry-run` fails at resolution with `no matching package
