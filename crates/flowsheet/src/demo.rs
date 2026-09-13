@@ -1,4 +1,4 @@
-//! The worked example flowsheet from the project README — a flotation circuit with a recycle.
+//! The demo flowsheet — a flotation circuit with a recycle.
 //!
 //! Kept in the library (rather than `examples/`) so `main.rs`, integration tests,
 //! and benchmarks can all build the same flowsheet.

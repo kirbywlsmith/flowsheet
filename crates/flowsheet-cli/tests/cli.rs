@@ -28,8 +28,40 @@ fn flowsheet(args: &[&str]) -> Run {
     }
 }
 
+/// `blend.json` is the README's worked example, pasted verbatim in its hand-written form - no
+/// stream `state`, no default temperatures. The rows below are the table the README prints, so if
+/// either side changes, this is the test that says the README is now wrong.
 #[test]
-fn the_default_table_matches_the_worked_example() {
+fn the_default_table_matches_the_readme_worked_example() {
+    let run = flowsheet(&["tests/fixtures/blend.json"]);
+    assert!(run.ok, "{}", run.stderr);
+
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines[..7],
+        [
+            "  #  stream             H2O  C2H5OH    total   T (K)",
+            "  0  water.mixer     90.000   0.000   90.000  288.15",
+            "  1  ethanol.mixer    0.000  10.000   10.000  298.15",
+            "  2  mixer.heater   180.000  20.000  200.000  308.71",
+            "  3  heater.split   180.000  20.000  200.000  328.68",
+            "  4  split.mixer     90.000  10.000  100.000  328.68",
+            "  5  split.product   90.000  10.000  100.000  328.68",
+        ]
+    );
+    // Half of every pass's error comes back round the loop, so 0.5^n <= 1e-9 puts the count at
+    // 30. As above, only the footer's prefix is pinned.
+    assert!(
+        lines[7]
+            .trim()
+            .starts_with("converged in 30 iterations, residual "),
+        "{}",
+        lines[7]
+    );
+}
+
+#[test]
+fn the_default_table_matches_the_demo_circuit() {
     // These are the numbers in this crate's `src/main.rs` header comment: the two products
     // together equal the feed, and the concentrate is upgraded from 4.00% to 12.33% CuFeS2.
     let run = flowsheet(&["tests/fixtures/recycle.json"]);

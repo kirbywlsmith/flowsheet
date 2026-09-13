@@ -432,6 +432,10 @@ crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, progress,
   *package* root, so the relative fixture paths in `cli.rs` resolve inside `crates/flowsheet-cli/`.
 - `recycle.json` is the demo circuit saved as a document; `cli.rs` asserts it byte-for-byte against
   `serial::Flowsheet::from(&demo::build_flowsheet())`, so it cannot drift from the demo.
+- `blend.json` is the **README's worked example**, pasted verbatim in hand-written form, and `cli.rs` pins the
+  table rows the README prints. It replaced the demo circuit as the README example because flotation read as too
+  mineral-processing-specific; the price is that the README example is no longer the flowsheet the rest of the suite
+  reasons about. Edit the README's JSON or table and this fixture and test move with it.
 - Every completed TODO item ships with tests. Demo and example code is illustrative and exempt.
 
 ## Commands

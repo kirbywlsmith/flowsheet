@@ -1,0 +1,31 @@
+{
+  "species": [
+    {
+      "name": "H2O", "phase": "Liquid", "molar_mass": 18.015,
+      "shomate": { "a": -203.606, "b": 1523.29, "c": -3196.413, "d": 2474.455, "e": 3.855326 }
+    },
+    { "name": "C2H5OH", "phase": "Liquid", "molar_mass": 46.07, "shomate": { "a": 112.4 } }
+  ],
+  "units": [
+    {
+      "name": "water",
+      "op": { "type": "feed", "state": { "flows": { "H2O": 90.0 }, "temperature": 288.15 } }
+    },
+    {
+      "name": "ethanol",
+      "op": { "type": "feed", "state": { "flows": { "C2H5OH": 10.0 } } }
+    },
+    { "name": "mixer", "op": { "type": "mixer" } },
+    { "name": "heater", "op": { "type": "heater", "duty": 16000.0 } },
+    { "name": "split", "op": { "type": "splitter", "fraction": 0.5 } },
+    { "name": "product", "op": { "type": "product" } }
+  ],
+  "streams": [
+    { "from": "water", "to": "mixer" },
+    { "from": "ethanol", "to": "mixer" },
+    { "from": "mixer", "to": "heater" },
+    { "from": "heater", "to": "split" },
+    { "from": "split", "to": "mixer" },
+    { "from": "split", "to": "product" }
+  ]
+}
