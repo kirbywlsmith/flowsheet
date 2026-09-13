@@ -218,8 +218,6 @@ impl Flowsheet {
     /// Groups the flowsheet's units into strongly connected components by Tarjan's algorithm.
     ///
     /// Components come back in reverse topological order - the most downstream first.
-    ///
-    /// Note that the traversal recurses, so it is bounded by the stack.
     pub fn components(&self) -> Vec<Vec<UnitId>> {
         let torn = self.torn_mask(&[]);
         Tarjan::run(&self.edges(), &torn, &self.visit_order(&torn)).components
@@ -227,9 +225,7 @@ impl Flowsheet {
 }
 
 /// The scratch state of one run of Tarjan's algorithm.
-struct Tarjan<'a> {
-    edges: &'a [Vec<(StreamId, UnitId)>],
-    torn: &'a [bool],
+struct Tarjan {
     /// Discovery order of each unit. `None` until it is first visited.
     index: Vec<Option<u32>>,
     /// The lowest discovery order reachable from each unit without leaving the current stack.
@@ -245,25 +241,77 @@ struct Tarjan<'a> {
     back_edges: Vec<(StreamId, UnitId)>,
 }
 
-impl<'a> Tarjan<'a> {
+impl Tarjan {
     /// Visits every unit in `order`, skipping torn edges, and returns the finished state.
-    fn run(edges: &'a [Vec<(StreamId, UnitId)>], torn: &'a [bool], order: &[UnitId]) -> Self {
-        let mut tarjan = Self::new(edges, torn);
+    ///
+    /// The traversal is depth-first, but on an explicit stack rather than by recursion, so its
+    /// depth is bounded by the heap and not by the thread's stack - a single chain of tens of
+    /// thousands of units is a legal flowsheet.
+    fn run<'a>(edges: &'a [Vec<(StreamId, UnitId)>], torn: &[bool], order: &[UnitId]) -> Self {
+        let mut tarjan = Self::new(edges.len());
 
-        for &unit in order {
-            if tarjan.index[unit.as_usize()].is_none() {
-                tarjan.visit(unit);
+        // One frame per unit on the current path: the unit, and the edges it has yet to look at.
+        // The iterator borrows `edges`, not `call`, so taking an edge out of it ends the borrow of
+        // the frame and leaves `call` free to push.
+        let mut call: Vec<(UnitId, std::slice::Iter<'a, (StreamId, UnitId)>)> = Vec::new();
+
+        for &root in order {
+            if tarjan.index[root.as_usize()].is_some() {
+                continue;
+            }
+
+            tarjan.enter(root);
+            call.push((root, edges[root.as_usize()].iter()));
+
+            while let Some((unit, rest)) = call.last_mut() {
+                let u = unit.as_usize();
+
+                let Some(&(stream, downstream)) = rest.next() else {
+                    // Out of edges: the unit is done, and control returns to whoever reached it.
+                    let unit = *unit;
+                    call.pop();
+                    tarjan.finish(unit);
+
+                    // The line a recursive traversal runs right after its call returns: the parent
+                    // inherits whatever the child could reach.
+                    if let Some(&(parent, _)) = call.last() {
+                        let p = parent.as_usize();
+                        tarjan.lowlink[p] = tarjan.lowlink[p].min(tarjan.lowlink[u]);
+                    }
+                    continue;
+                };
+
+                if torn[stream.as_usize()] {
+                    continue;
+                }
+
+                let d = downstream.as_usize();
+                match tarjan.index[d] {
+                    // Unvisited: descend. Its edges are looked at before this unit's next one.
+                    None => {
+                        tarjan.enter(downstream);
+                        call.push((downstream, edges[d].iter()));
+                    }
+                    // Visited and still on the stack: an edge into the component being built.
+                    Some(seen) if tarjan.on_stack[d] => {
+                        tarjan.lowlink[u] = tarjan.lowlink[u].min(seen);
+                        // The stack holds the whole component, so only `on_path` tells a back edge -
+                        // a loop closing on an ancestor - from a cross edge into a sibling branch.
+                        if tarjan.on_path[d] {
+                            tarjan.back_edges.push((stream, downstream));
+                        }
+                    }
+                    // Visited and already emitted: a cross edge into a finished component.
+                    Some(_) => {}
+                }
             }
         }
 
         tarjan
     }
 
-    fn new(edges: &'a [Vec<(StreamId, UnitId)>], torn: &'a [bool]) -> Self {
-        let n = edges.len();
+    fn new(n: usize) -> Self {
         Self {
-            edges,
-            torn,
             index: vec![None; n],
             lowlink: vec![0; n],
             on_stack: vec![false; n],
@@ -275,8 +323,8 @@ impl<'a> Tarjan<'a> {
         }
     }
 
-    /// Visits one unvisited unit, emitting every component rooted at or below it.
-    fn visit(&mut self, unit: UnitId) {
+    /// Discovers an unvisited unit: numbers it and puts it on both the stack and the path.
+    fn enter(&mut self, unit: UnitId) {
         let u = unit.as_usize();
         let index = self.next_index;
 
@@ -286,41 +334,17 @@ impl<'a> Tarjan<'a> {
         self.stack.push(unit);
         self.on_stack[u] = true;
         self.on_path[u] = true;
+    }
 
-        // `edges` is a shared reference, so copying it out of `self` detaches it from the
-        // borrow - otherwise iterating it would hold `self` immutably across the `&mut self` call.
-        let edges = self.edges;
-        for &(stream, downstream) in &edges[u] {
-            if self.torn[stream.as_usize()] {
-                continue;
-            }
-
-            let d = downstream.as_usize();
-            match self.index[d] {
-                // Unvisited: recurse, then inherit whatever it could reach.
-                None => {
-                    self.visit(downstream);
-                    self.lowlink[u] = self.lowlink[u].min(self.lowlink[d]);
-                }
-                // Visited and still on the stack: an edge into the component being built.
-                Some(seen) if self.on_stack[d] => {
-                    self.lowlink[u] = self.lowlink[u].min(seen);
-                    // The stack holds the whole component, so only `on_path` tells a back edge -
-                    // a loop closing on an ancestor - from a cross edge into a sibling branch.
-                    if self.on_path[d] {
-                        self.back_edges.push((stream, downstream));
-                    }
-                }
-                // Visited and already emitted: a cross edge into a finished component.
-                Some(_) => {}
-            }
-        }
+    /// Leaves a unit whose edges have all been looked at, emitting the component it roots, if any.
+    fn finish(&mut self, unit: UnitId) {
+        let u = unit.as_usize();
 
         self.on_path[u] = false;
 
         // Nothing under this unit reached above it, so it roots a component: everything pushed
         // since is part of it.
-        if self.lowlink[u] == index {
+        if Some(self.lowlink[u]) == self.index[u] {
             let mut component = Vec::new();
             while let Some(popped) = self.stack.pop() {
                 self.on_stack[popped.as_usize()] = false;
@@ -623,5 +647,64 @@ mod tests {
         tears.sort_unstable_by_key(|s| s.as_usize());
 
         assert_eq!(tears, vec![StreamId(4), StreamId(9)]);
+    }
+
+    /// Deeper than any stack a traversal that recursed once per unit could fit in.
+    const DEEP: u16 = 50_000;
+
+    /// `DEEP` tanks, each feeding the next, and if `closed` the last feeding the first.
+    ///
+    /// Nothing here is validated - no feed, no product - because the graph functions never ask.
+    /// Empty names and an empty registry keep it cheap, as in `units_filled_to_the_id_space`.
+    fn deep_chain(closed: bool) -> Flowsheet {
+        let empty = SpeciesRegistry::default();
+        let mut fs = Flowsheet::new(SpeciesRegistry::default());
+
+        let units: Vec<UnitId> = (0..DEEP).map(|_| fs.add_unit("", Tank)).collect();
+        for pair in units.windows(2) {
+            fs.add_stream(pair[0], blank(&empty), pair[1]);
+        }
+        if closed {
+            fs.add_stream(units[units.len() - 1], blank(&empty), units[0]);
+        }
+
+        fs
+    }
+
+    /// Runs `f` on a thread with a small stack of known size.
+    ///
+    /// A test thread's default stack is 2 MiB and a debug frame is larger than a release one, so
+    /// without this whether the old recursion overflowed would depend on the build. A stack
+    /// overflow aborts the whole test binary rather than failing one test, so there is no
+    /// `should_panic` equivalent to assert it with.
+    fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(f)
+            .expect("the thread spawns")
+            .join()
+            .expect("the traversal does not panic")
+    }
+
+    #[test]
+    fn a_chain_deeper_than_the_stack_is_one_component_per_unit() {
+        let fs = deep_chain(false);
+
+        let components = on_small_stack(move || fs.components());
+
+        assert_eq!(components.len(), DEEP as usize);
+        // Reverse topological: the far end of the chain is the sink, so it comes out first.
+        assert_eq!(components[0], vec![UnitId(DEEP - 1)]);
+    }
+
+    #[test]
+    fn a_loop_deeper_than_the_stack_is_torn_once_at_its_back_edge() {
+        // Every unit's lowlink has to travel back up all the way from the last unit, which is the
+        // half of Tarjan an explicit stack moves around.
+        let fs = deep_chain(true);
+
+        let tears = on_small_stack(move || fs.tear_streams());
+
+        assert_eq!(tears, vec![StreamId(DEEP - 1)]);
     }
 }

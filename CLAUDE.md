@@ -350,11 +350,25 @@ Never mix severities in one unlabelled list.
   enough for 100 ms on its own inside a recycle. There is no realistic mass-and-energy-only flowsheet that takes
   100 ms; a plant-scale flotation circuit of 300 cells is single-digit milliseconds. So "the demo feels substantial"
   and "parallelism pays" are one blocker, not two.
-- Three limits found while measuring that: `Flowsheet::components` recurses, so a 16,000-unit single chain overflows
-  the stack - the doc comment's warning, with a number on it; cascading tears in series costs O(N) passes, and 128
-  flotation stages in series took 239, past the default 100; and `add_unit` / `add_stream` cast with `as u16`, so the
-  65,536th unit or stream wraps silently rather than failing. Independent loops dodge the first two - short paths,
-  one tear each, and a pass count that does not grow with the loop count.
+- Three limits found while measuring that: `Flowsheet::components` recursed, so a 16,000-unit single chain overflowed
+  the stack; cascading tears in series costs O(N) passes, and 128 flotation stages in series took 239, past the
+  default 100; and `add_unit` / `add_stream` cast with `as u16`, so the 65,536th unit or stream wrapped silently
+  rather than failing. Independent loops dodge the first two - short paths, one tear each, and a pass count that does
+  not grow with the loop count. The third is `assert_id_space`, near the top; the first is the entry below.
+- **Tarjan runs on an explicit stack**, `Vec<(UnitId, slice::Iter)>` - a unit and the edges it has yet to look at,
+  the frame a recursive call would have kept. The iterator rather than a `(UnitId, usize)` edge index because it
+  borrows `edges` and not the frame, so `rest.next()` hands back an edge and ends the frame's borrow, leaving `call`
+  free to push. The one line that moves is the lowlink inheritance: a recursive traversal runs it right after its call
+  returns, and here it runs when the child's frame is popped, against the new top. `visit` split into `enter` and
+  `finish` either side of that loop, and `edges` / `torn` stopped being fields, because `run` is the only reader.
+  The tests are a 50,000-unit chain and a 50,000-unit ring run on a **256 KiB thread**: a test thread's default 2 MiB
+  and the debug/release difference in frame size would otherwise decide whether the old code overflowed. A stack
+  overflow **aborts the process** (`STATUS_STACK_OVERFLOW`, 0xc00000fd) rather than panicking, so it cannot be a
+  `should_panic` test, and before the fix it took the whole test binary down with it.
+  Benched against `9d35a92`: `solve/units` improved 4-6% at 8, 512 and 4096 and did not move at 64; `solve/tears`
+  moved between +0.1% and +5.8%, significant only at `tears/1` (6.9 to 7.3 µs). The likeliest cause there is the
+  `call` vector - one more heap allocation per Tarjan run, on a flowsheet small enough for setup to dominate - but
+  that is not measured. Nothing at 512 units or 16 tears and above regressed.
 
 ## Layout
 

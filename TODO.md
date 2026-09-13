@@ -30,11 +30,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Make `Flowsheet::components` iterative. Tarjan recurses one frame per unit, so a single chain of roughly 16,000
-  units overflows the stack before the solver runs - a panic on a legal flowsheet, found while
-  sizing the rayon item. The doc comment warns about it; the fix is an explicit stack of (unit, next-edge) pairs,
-  fiddly only because the lowlink update has to happen on the way back *up* rather than on the way down. Independent
-  loops dodge it, which is why the benches never hit it, so add a test at a size that would have.
 - [ ] Conversion reactor, isothermal, one reaction. `Reaction { stoichiometry: Vec<f64>, limiting: SpeciesId,
   conversion: f64 }` with one inlet and one outlet - structurally `Flotation`'s sibling: a dense `Vec<f64>` in
   `SpeciesId` order validated by a `unit::react` free function, composition changed by transforming species rather
