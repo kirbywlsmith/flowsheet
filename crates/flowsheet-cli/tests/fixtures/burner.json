@@ -17,11 +17,13 @@
       "op": {
         "type": "conversion_reactor",
         "energy": "isothermal",
-        "reaction": {
-          "stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 },
-          "limiting": "CH4",
-          "conversion": 0.9
-        }
+        "reactions": [
+          {
+            "stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 },
+            "limiting": "CH4",
+            "conversion": 0.9
+          }
+        ]
       }
     },
     { "name": "flue", "op": { "type": "product" } }

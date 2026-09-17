@@ -4,21 +4,27 @@ use super::{Arity, EvalError, Reaction, ReactorEnergy, UnitOp, react, solve_temp
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
-/// One inlet, one outlet: runs one [`Reaction`] to a fixed conversion with [`react`].
+/// One inlet, one outlet: runs its [`Reaction`]s in declared order, each to a fixed conversion
+/// with [`react`].
 ///
 /// Structurally [`super::Flotation`]'s sibling - a dense per-species vector changing a stream's
 /// composition - except that it transforms species rather than partitioning them, so the outlet
 /// holds species the inlet did not.
 ///
+/// **In declared order**, the shape of Aspen's `RStoic` in series mode: each reaction runs on what
+/// the one before it left, so its conversion is a fraction of the limiting reactant *at that
+/// point*, not at the inlet. Two reactions competing for one reactant are therefore well
+/// defined - the first takes its share and the second takes its share of the rest - and no
+/// ordering of conversions can consume more than arrived. A reactant the earlier reactions
+/// leave too little of for a later one is an [`EvalError`] naming that reaction, from the same
+/// check [`react`] makes for one.
+///
 /// `energy` says what happens to the heat of reaction; see [`ReactorEnergy`]. Mass is conserved
 /// exactly either way; see [`react`].
-///
-/// One reaction, named `reaction`. Several reactions in one reactor is a later item, and it will
-/// make this a `Vec<Reaction>` under the same op.
 #[derive(Debug, Clone)]
 pub struct ConversionReactor {
-    /// The reaction this reactor runs.
-    pub reaction: Reaction,
+    /// The reactions this reactor runs, first to last. Never empty.
+    pub reactions: Vec<Reaction>,
     /// Whether the outlet holds the inlet's temperature or its enthalpy.
     pub energy: ReactorEnergy,
 }
@@ -33,23 +39,35 @@ impl UnitOp for ConversionReactor {
     }
 
     /// # Errors
-    /// If the inlet carries too little of a non-limiting reactant (see [`react`]), or, when
-    /// adiabatic, no positive temperature holds the inlet's enthalpy in the outlet's composition
-    /// (see [`solve_temperature`]) - an endothermic reaction asking for more heat than the stream
-    /// has above absolute zero.
+    /// If the stream reaching a reaction carries too little of a non-limiting reactant (see
+    /// [`react`]); the message starts `reaction {i}: `, counting from 0. Or, when adiabatic, if no
+    /// positive temperature holds the inlet's enthalpy in the outlet's composition (see
+    /// [`solve_temperature`]) - an endothermic reaction asking for more heat than the stream has
+    /// above absolute zero.
     ///
     /// # Panics
-    /// If the reaction is malformed. See [`react`].
+    /// If `reactions` is empty, or a reaction is malformed (see [`react`]).
     fn evaluate(
         &self,
         registry: &SpeciesRegistry,
         inlets: &[&Stream],
     ) -> Result<Vec<Stream>, EvalError> {
+        assert!(
+            !self.reactions.is_empty(),
+            "a conversion reactor needs at least one reaction"
+        );
         let inlet = inlets[0];
-        let mut outlet = react(registry, inlet, &self.reaction)?;
 
-        // An empty inlet has no heat capacity, and `solve_temperature` panics on one. A reactor
-        // downstream of a tear sees exactly that on the first pass; the same guard as `heat`.
+        let mut outlet = inlet.clone();
+        for (i, reaction) in self.reactions.iter().enumerate() {
+            outlet = react(registry, &outlet, reaction)
+                .map_err(|e| EvalError::new(format!("reaction {i}: {e}")))?;
+        }
+
+        // Once, after the last reaction: enthalpy is a state function, so the temperatures in
+        // between would change nothing. An empty inlet has no heat capacity, and
+        // `solve_temperature` panics on one. A reactor downstream of a tear sees exactly that on
+        // the first pass; the same guard as `heat`.
         if self.energy == ReactorEnergy::Adiabatic && outlet.heat_capacity(registry) != 0.0 {
             // Newton starts from the inlet temperature, which `react` left on the outlet.
             solve_temperature(registry, &mut outlet, inlet.enthalpy(registry))?;
@@ -74,7 +92,7 @@ mod tests {
 
     fn reactor(r: &SpeciesRegistry, energy: ReactorEnergy) -> ConversionReactor {
         ConversionReactor {
-            reaction: combustion(r, 0.9),
+            reactions: vec![combustion(r, 0.9)],
             energy,
         }
     }
@@ -130,11 +148,11 @@ mod tests {
         let r = combustion_registry(COMBUSTION_MASSES);
         let inlet = Stream::from_flows(&r, vec![0.0, 0.0, 44.0, 36.0], AMBIENT_K, AMBIENT_KPA);
         let unburn = ConversionReactor {
-            reaction: Reaction {
+            reactions: vec![Reaction {
                 stoichiometry: vec![1.0, 2.0, -1.0, -2.0],
                 limiting: r.find("CO2", crate::Phase::Gas).unwrap(),
                 conversion: 0.9,
-            },
+            }],
             energy: ReactorEnergy::Adiabatic,
         };
 
@@ -143,6 +161,18 @@ mod tests {
             .expect_err("nothing pays for un-burning methane");
 
         assert!(e.to_string().contains("no positive temperature"), "{e}");
+    }
+
+    #[test]
+    #[should_panic(expected = "a conversion reactor needs at least one reaction")]
+    fn a_reactor_with_no_reactions_panics() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let inlet = Stream::from_flows(&r, vec![10.0, 60.0, 0.0, 0.0], 350.0, AMBIENT_KPA);
+        let empty = ConversionReactor {
+            reactions: Vec::new(),
+            energy: ReactorEnergy::Isothermal,
+        };
+        let _ = empty.evaluate(&r, &[&inlet]);
     }
 
     #[test]

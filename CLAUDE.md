@@ -120,13 +120,21 @@ Never mix severities in one unlabelled list.
   independently, so `M = F / (1 - f(1 - r))` is the whole answer. The balance tests assert against that formula
   rather than against pasted numbers, so changing `f` or the recovery vector does not invalidate them. Convergence
   now varies by species too - the rate is `f(1 - r)`, and the slowest species sets it.
-- The **conversion reactor is the first op that transforms species**. `ConversionReactor { reaction: Reaction }`,
-  tag `conversion_reactor`, one inlet and one outlet. `Reaction { stoichiometry, limiting, conversion }` is plain data
-  defined in `unit.rs` beside `unit::react`, not in the op's file, so `unit.rs` never imports from its own child and
-  the later several-reactions item can reuse it. Coefficients are **molar and signed**; extent is
+- The **conversion reactor is the first op that transforms species**. `ConversionReactor { reactions: Vec<Reaction>,
+  energy }`, tag `conversion_reactor`, one inlet and one outlet. `Reaction { stoichiometry, limiting, conversion }` is
+  plain data defined in `unit.rs` beside `unit::react`, not in the op's file, so `unit.rs` never imports from its own
+  child. Coefficients are **molar and signed**; extent is
   `conversion * n_limiting / |nu_limiting|` in Mmol/h, and t/h over g/mol needs no factor. The limiting species is
   written `in * (1 - conversion)`, not through the extent, which does not cancel exactly and lands a ULP either side
   of zero at conversion 1.
+- Several reactions run **in declared order**, Aspen `RStoic`'s series mode: `evaluate` folds `react` over the list,
+  so each conversion is a fraction of the limiting reactant *at that point* and two reactions competing for one
+  reactant cannot over-consume it. That also made "no species goes negative" free - `react` already checks it - and
+  the only addition is a `reaction {i}: ` prefix on the error. An adiabatic reactor solves temperature **once, after
+  the last reaction**, because enthalpy is a state function; `tests/several_reactions.rs` proves it against two
+  single-reaction reactors in series. Simultaneous mode (every conversion against the inlet) was left out on purpose:
+  it can over-consume a shared reactant and needs its own validation. An empty list panics in `evaluate` and is a
+  `LoadError::BadValue` of 0 at the boundary.
 - The reactor's energy is a **required `energy: ReactorEnergy` spec, `isothermal` or `adiabatic`**, with no
   heat-of-reaction parameter anywhere: with absolute enthalpies, `H_out - H_in` *is* the heat of reaction. Isothermal
   keeps the inlet temperature; adiabatic runs `react` and then hands `H_in` to `unit::solve_temperature`, with the
@@ -175,11 +183,13 @@ Never mix severities in one unlabelled list.
   change (a C# 8 default interface method), so `tests/downstream_op.rs`'s `Bleed` compiled unchanged. **Cost,
   accepted:** the switch is flowsheet-wide, so one reactor hides a species mis-wiring anywhere else in the plant.
   Without every reaction's extent stored somewhere, total mass is the only balance a reacting flowsheet can check.
-- On the wire the reaction is **nested and singular**: `{ "type": "conversion_reactor", "energy": "adiabatic",
-  "reaction": { "stoichiometry": {..}, "limiting": "CH4", "conversion": 0.9 } }`. The stoichiometry is a species-name map like `recovery`, but
-  **zero coefficients are dropped on save** - an equation lists its participants, whereas a zero recovery is a
-  statement. The several-reactions item will rename `reaction` to `reactions` and break the format; acceptable only
-  because nothing is published.
+- On the wire the reactions are **a nested array**: `{ "type": "conversion_reactor", "energy": "adiabatic",
+  "reactions": [{ "stoichiometry": {..}, "limiting": "CH4", "conversion": 0.9 }] }`. The stoichiometry is a
+  species-name map like `recovery`, but **zero coefficients are dropped on save** - an equation lists its
+  participants, whereas a zero recovery is a statement. The singular `reaction` of the first version was replaced
+  outright, not kept as an alias, so there is one way to write a reactor; a test pins that the old key is rejected.
+  Load errors name the reaction in the field, `reactions[1].conversion`, which `BadValue`'s `String` field already
+  allowed.
 - **The energy balance solves temperature and nothing else.** `pressure` is still a carried label (see TODO.md), and
   there is no phase change.
 - `UnitOp::evaluate` takes **`&SpeciesRegistry`** as a plain second parameter. A `Stream` is a bare vector of flows and

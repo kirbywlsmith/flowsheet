@@ -1428,11 +1428,11 @@ mod tests {
             // chalcopyrite into its own mass of quartz, which is all the closure check asks.
             (
                 Box::new(ConversionReactor {
-                    reaction: Reaction {
+                    reactions: vec![Reaction {
                         stoichiometry: vec![-1.0, 183.5 / 60.08, 0.0],
                         limiting: all_ids(&r)[0],
                         conversion: 0.5,
-                    },
+                    }],
                     energy: ReactorEnergy::Isothermal,
                 }),
                 (1, Some(1)),

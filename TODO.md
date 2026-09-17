@@ -18,10 +18,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Several reactions in one reactor. `Vec<Reaction>`, extents applied in declared order, with the limiting
-  reactant's moles re-read between reactions so that two reactions competing for one reactant are well defined rather
-  than over-consuming it. Aspen's `RStoic` is the shape. Mostly a loop plus a validation that no species goes
-  negative.
 - [ ] Composite species key on the wire, e.g. `"H2O(g)"`. `SpeciesRegistry::find` already keys on name *and* phase,
   but the JSON flows map is name-only, so the same name in two phases is rejected on both boundaries
   (`LoadError::DuplicateSpecies` going in, `FlowsheetError::DuplicateSpeciesName` in `check` coming out). Parse and

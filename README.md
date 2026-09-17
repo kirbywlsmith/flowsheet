@@ -143,7 +143,7 @@ Each unit has a unique `name` and an `op`. The `op` has a `type` plus that opera
 | `splitter_n` | 1      | N       | `ratios`: one per outlet, relative, so `[3, 7]` is a 30/70 split                |
 | `flotation`  | 1      | 2       | `recovery`: species map, share of each to the concentrate (omitted = 0). Outlets: concentrate, then tails |
 | `heater`     | 1      | 1       | `duty`: MJ/h, negative cools                                                   |
-| `conversion_reactor` | 1 | 1   | `energy`: `isothermal` or `adiabatic`. `reaction`: `stoichiometry` (species map of molar coefficients, negative consumed), `limiting` (a reactant's name), `conversion` (0 to 1) |
+| `conversion_reactor` | 1 | 1   | `energy`: `isothermal` or `adiabatic`. `reactions`: a list, run in order, each with `stoichiometry` (species map of molar coefficients, negative consumed), `limiting` (a reactant's name) and `conversion` (0 to 1, a share of what reaches that reaction) |
 | `tank`       | 1      | 1       | none                                                                           |
 | `product`    | 1      | 0       | none                                                                           |
 

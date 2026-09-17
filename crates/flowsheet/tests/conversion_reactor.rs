@@ -84,7 +84,7 @@ fn solve(fraction: f64, method: ConvergenceMethod) -> Solved {
     let u_reactor = fs.add_unit(
         "reactor",
         ConversionReactor {
-            reaction,
+            reactions: vec![reaction],
             energy: ReactorEnergy::Isothermal,
         },
     );

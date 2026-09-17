@@ -510,7 +510,7 @@ mod tests {
         let u_reactor = fs.add_unit(
             "reactor",
             ConversionReactor {
-                reaction,
+                reactions: vec![reaction],
                 energy: ReactorEnergy::Isothermal,
             },
         );
@@ -596,7 +596,7 @@ mod tests {
     fn an_isothermal_reactor_sheds_the_heat_of_reaction_worked_by_hand() {
         let r = exact_combustion_registry();
         let reactor = ConversionReactor {
-            reaction: combustion(&r, 0.9),
+            reactions: vec![combustion(&r, 0.9)],
             energy: ReactorEnergy::Isothermal,
         };
         let (fs, unit, _) = through(
@@ -622,7 +622,7 @@ mod tests {
     fn an_adiabatic_reactor_takes_no_duty() {
         let r = exact_combustion_registry();
         let reactor = ConversionReactor {
-            reaction: combustion(&r, 0.9),
+            reactions: vec![combustion(&r, 0.9)],
             energy: ReactorEnergy::Adiabatic,
         };
         let (fs, unit, inlet) = through(

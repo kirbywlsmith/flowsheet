@@ -171,8 +171,8 @@ pub struct ConversionReactorSpec {
     /// `"isothermal"` or `"adiabatic"`. Required, with no default: a silent isothermal default is
     /// how a combustion chamber ends up at 25 °C.
     pub energy: unit::ReactorEnergy,
-    /// The one reaction the reactor runs.
-    pub reaction: ReactionSpec,
+    /// The reactions the reactor runs, in the order it runs them. At least one.
+    pub reactions: Vec<ReactionSpec>,
 }
 
 /// The parameters of a `heater`.
@@ -623,65 +623,84 @@ impl OpRegistry {
         });
 
         ops.register(unit::ConversionReactor::TAG, |s| {
-            let ConversionReactorSpec { energy, reaction } =
+            let ConversionReactorSpec { energy, reactions } =
                 s.parse(unit::ConversionReactor::TAG)?;
             let unknown = |name: &String| LoadError::UnknownSpecies {
                 at: s.at.clone(),
                 name: name.clone(),
             };
 
-            // A species the map leaves out takes no part in the reaction.
-            let mut stoichiometry = vec![0.0; s.registry.len()];
-            for (name, &nu) in &reaction.stoichiometry {
-                let id = s.species_ids.get(name).ok_or_else(|| unknown(name))?;
-                stoichiometry[id.as_usize()] = nu;
-            }
-            let limiting = *s
-                .species_ids
-                .get(&reaction.limiting)
-                .ok_or_else(|| unknown(&reaction.limiting))?;
-
-            // Every panic in `unit::react` has a matching check here. The wrong-length one does
-            // not: the vector is built above to the registry's length.
+            // The one panic in `ConversionReactor::evaluate` itself. A count is not an `f64`, but
+            // `BadValue` prints it as one without trouble and a variant of its own would buy nothing.
             require(
-                (0.0..=1.0).contains(&reaction.conversion),
+                !reactions.is_empty(),
                 s.at,
-                "conversion",
-                reaction.conversion,
-                "between 0.0 and 1.0",
+                "reactions",
+                0.0,
+                "at least one reaction",
             )?;
-            let nu_limiting = stoichiometry[limiting.as_usize()];
-            require(
-                nu_limiting < 0.0,
-                s.at,
-                "limiting",
-                nu_limiting,
-                "the coefficient of a reactant, which is negative",
-            )?;
-            unit::mass_closure(s.registry, &stoichiometry).map_err(|residual| {
-                LoadError::BadValue {
-                    at: s.at.clone(),
-                    field: "stoichiometry".to_string(),
-                    value: residual,
-                    expected: format!(
-                        "a mass balance within {} g/mol per unit of coefficient",
-                        unit::MASS_CLOSURE_TOLERANCE
-                    ),
-                }
-            })?;
-            unit::formation_enthalpies(s.registry, &stoichiometry).map_err(|species| {
-                LoadError::MissingFormationEnthalpy {
-                    at: s.at.clone(),
-                    species: species.name.clone(),
-                }
-            })?;
 
-            Ok(Box::new(unit::ConversionReactor {
-                reaction: unit::Reaction {
+            let mut domain = Vec::with_capacity(reactions.len());
+            for (i, reaction) in reactions.iter().enumerate() {
+                // Every field is named with its reaction, so a bad value in the third reaction of
+                // five says which.
+                let field = |name: &str| format!("reactions[{i}].{name}");
+
+                // A species the map leaves out takes no part in the reaction.
+                let mut stoichiometry = vec![0.0; s.registry.len()];
+                for (name, &nu) in &reaction.stoichiometry {
+                    let id = s.species_ids.get(name).ok_or_else(|| unknown(name))?;
+                    stoichiometry[id.as_usize()] = nu;
+                }
+                let limiting = *s
+                    .species_ids
+                    .get(&reaction.limiting)
+                    .ok_or_else(|| unknown(&reaction.limiting))?;
+
+                // Every panic in `unit::react` has a matching check here. The wrong-length one
+                // does not: the vector is built above to the registry's length.
+                require(
+                    (0.0..=1.0).contains(&reaction.conversion),
+                    s.at,
+                    &field("conversion"),
+                    reaction.conversion,
+                    "between 0.0 and 1.0",
+                )?;
+                let nu_limiting = stoichiometry[limiting.as_usize()];
+                require(
+                    nu_limiting < 0.0,
+                    s.at,
+                    &field("limiting"),
+                    nu_limiting,
+                    "the coefficient of a reactant, which is negative",
+                )?;
+                unit::mass_closure(s.registry, &stoichiometry).map_err(|residual| {
+                    LoadError::BadValue {
+                        at: s.at.clone(),
+                        field: field("stoichiometry"),
+                        value: residual,
+                        expected: format!(
+                            "a mass balance within {} g/mol per unit of coefficient",
+                            unit::MASS_CLOSURE_TOLERANCE
+                        ),
+                    }
+                })?;
+                unit::formation_enthalpies(s.registry, &stoichiometry).map_err(|species| {
+                    LoadError::MissingFormationEnthalpy {
+                        at: s.at.clone(),
+                        species: species.name.clone(),
+                    }
+                })?;
+
+                domain.push(unit::Reaction {
                     stoichiometry,
                     limiting,
                     conversion: reaction.conversion,
-                },
+                });
+            }
+
+            Ok(Box::new(unit::ConversionReactor {
+                reactions: domain,
                 energy,
             }))
         });
@@ -1036,34 +1055,41 @@ impl ToDocument for unit::ConversionReactor {
     }
 
     /// # Panics
-    /// If `stoichiometry` does not hold exactly one coefficient per species, for the reason
-    /// [`unit::Flotation`]'s `spec` gives: `zip` would truncate, and the document would reload as
-    /// a different reaction.
+    /// If a reaction's `stoichiometry` does not hold exactly one coefficient per species, for the
+    /// reason [`unit::Flotation`]'s `spec` gives: `zip` would truncate, and the document would
+    /// reload as a different reaction.
     fn spec(&self, registry: &SpeciesRegistry) -> serde_json::Value {
-        let reaction = &self.reaction;
-        assert_eq!(
-            reaction.stoichiometry.len(),
-            registry.len(),
-            "a reaction needs one stoichiometric coefficient per species"
-        );
-
-        // Zero coefficients are dropped, unlike zero recoveries: an equation lists only the
-        // species that take part in it.
-        let stoichiometry = reaction
-            .stoichiometry
+        let reactions = self
+            .reactions
             .iter()
-            .zip(registry.all())
-            .filter(|(nu, _)| **nu != 0.0)
-            .map(|(&nu, species)| (species.name.clone(), nu))
+            .map(|reaction| {
+                assert_eq!(
+                    reaction.stoichiometry.len(),
+                    registry.len(),
+                    "a reaction needs one stoichiometric coefficient per species"
+                );
+
+                // Zero coefficients are dropped, unlike zero recoveries: an equation lists only
+                // the species that take part in it.
+                let stoichiometry = reaction
+                    .stoichiometry
+                    .iter()
+                    .zip(registry.all())
+                    .filter(|(nu, _)| **nu != 0.0)
+                    .map(|(&nu, species)| (species.name.clone(), nu))
+                    .collect();
+
+                ReactionSpec {
+                    stoichiometry,
+                    limiting: registry[reaction.limiting].name.clone(),
+                    conversion: reaction.conversion,
+                }
+            })
             .collect();
 
         spec_of(&ConversionReactorSpec {
             energy: self.energy,
-            reaction: ReactionSpec {
-                stoichiometry,
-                limiting: registry[reaction.limiting].name.clone(),
-                conversion: reaction.conversion,
-            },
+            reactions,
         })
     }
 }
@@ -1680,8 +1706,13 @@ mod tests {
     }
 
     /// Methane burning in oxygen, with nitrogen along for the ride: feed -> reactor -> product.
-    /// `reaction` is the body of the reactor's `reaction` object.
+    /// `reaction` is the body of the reactor's one reaction object.
     fn combustion_json(reaction: &str) -> String {
+        combustion_json_with(&format!("{{ {reaction} }}"))
+    }
+
+    /// [`combustion_json`] with `reactions` as the whole body of the reactor's `reactions` array.
+    fn combustion_json_with(reactions: &str) -> String {
         format!(
             r#"{{ "species": [
                 {{ "name": "CH4", "phase": "Gas", "molar_mass": 16.043, "shomate": {{ "a": 35.7 }}, "enthalpy_of_formation": -74.87 }},
@@ -1693,7 +1724,7 @@ mod tests {
               "units": [
                 {{ "name": "f", "op": {{ "type": "feed",
                   "state": {{ "flows": {{ "CH4": 10.0, "O2": 60.0, "N2": 200.0 }} }} }} }},
-                {{ "name": "r", "op": {{ "type": "conversion_reactor", "energy": "adiabatic", "reaction": {{ {reaction} }} }} }},
+                {{ "name": "r", "op": {{ "type": "conversion_reactor", "energy": "adiabatic", "reactions": [{reactions}] }} }},
                 {{ "name": "p", "op": {{ "type": "product" }} }}
               ],
               "streams": [{{ "from": "f", "to": "r" }}, {{ "from": "r", "to": "p" }}] }}"#
@@ -1704,6 +1735,63 @@ mod tests {
                           "limiting": "CH4", "conversion": 0.9"#;
 
     #[test]
+    fn several_reactions_survive_a_round_trip_in_order() {
+        // Half the methane, then all of what is left: the same equation twice, told apart only by
+        // conversion, so a save that reordered or merged them would show.
+        let reactions = r#"
+            { "stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 }, "limiting": "CH4", "conversion": 0.5 },
+            { "stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 }, "limiting": "CH4", "conversion": 1.0 }"#;
+        let fs = load(&combustion_json_with(reactions))
+            .unwrap()
+            .validate()
+            .unwrap();
+        let saved = Flowsheet::from(&fs);
+
+        let reactor: ConversionReactorSpec = spec(&saved, 1, unit::ConversionReactor::TAG);
+        let conversions: Vec<f64> = reactor.reactions.iter().map(|r| r.conversion).collect();
+        assert_eq!(conversions, [0.5, 1.0]);
+
+        let json = serde_json::to_string(&saved).unwrap();
+        let reloaded = DomainFlowsheet::try_from(doc(&json))
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_string(&Flowsheet::from(&reloaded)).unwrap(),
+            json
+        );
+    }
+
+    #[test]
+    fn a_reactor_with_no_reactions_is_an_error_not_a_panic() {
+        assert_eq!(
+            load(&combustion_json_with("")).unwrap_err().to_string(),
+            "unit `r`: `reactions` is 0, expected at least one reaction"
+        );
+    }
+
+    #[test]
+    fn a_bad_value_in_a_later_reaction_names_that_reaction() {
+        let reactions = r#"
+            { "stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 }, "limiting": "CH4", "conversion": 0.5 },
+            { "stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 }, "limiting": "CH4", "conversion": 2.0 }"#;
+        assert_eq!(
+            load(&combustion_json_with(reactions))
+                .unwrap_err()
+                .to_string(),
+            "unit `r`: `reactions[1].conversion` is 2, expected between 0.0 and 1.0"
+        );
+    }
+
+    #[test]
+    fn the_old_singular_reaction_field_is_rejected() {
+        let json = combustion_json(BURN).replace(r#""reactions": ["#, r#""reaction": ["#);
+        let e = load(&json).unwrap_err();
+        assert!(e.to_string().contains("reaction"), "{e}");
+        assert!(matches!(e, LoadError::BadOp { .. }), "{e:?}");
+    }
+
+    #[test]
     fn a_conversion_reactor_survives_load_solve_save_load() {
         let mut fs = load(&combustion_json(BURN)).unwrap().validate().unwrap();
         crate::solver::Solver::default().solve(&mut fs).unwrap();
@@ -1711,10 +1799,10 @@ mod tests {
 
         let reactor: ConversionReactorSpec = spec(&saved, 1, unit::ConversionReactor::TAG);
         assert_eq!(reactor.energy, unit::ReactorEnergy::Adiabatic);
-        assert_eq!(reactor.reaction.limiting, "CH4");
-        assert_eq!(reactor.reaction.conversion, 0.9);
+        assert_eq!(reactor.reactions[0].limiting, "CH4");
+        assert_eq!(reactor.reactions[0].conversion, 0.9);
         assert_eq!(
-            reactor.reaction.stoichiometry,
+            reactor.reactions[0].stoichiometry,
             BTreeMap::from([
                 ("CH4".to_string(), -1.0),
                 ("CO2".to_string(), 1.0),
@@ -1765,8 +1853,8 @@ mod tests {
         let reactor: ConversionReactorSpec =
             spec(&Flowsheet::from(&fs), 1, unit::ConversionReactor::TAG);
 
-        assert_eq!(reactor.reaction.stoichiometry.len(), 4);
-        assert!(!reactor.reaction.stoichiometry.contains_key("N2"));
+        assert_eq!(reactor.reactions[0].stoichiometry.len(), 4);
+        assert!(!reactor.reactions[0].stoichiometry.contains_key("N2"));
     }
 
     #[test]
@@ -1775,7 +1863,7 @@ mod tests {
                           "limiting": "CH4", "conversion": 1.5"#;
         assert_eq!(
             load(&combustion_json(reaction)).unwrap_err().to_string(),
-            "unit `r`: `conversion` is 1.5, expected between 0.0 and 1.0"
+            "unit `r`: `reactions[0].conversion` is 1.5, expected between 0.0 and 1.0"
         );
     }
 
@@ -1785,7 +1873,7 @@ mod tests {
                           "limiting": "CO2", "conversion": 0.9"#;
         assert_eq!(
             load(&combustion_json(reaction)).unwrap_err().to_string(),
-            "unit `r`: `limiting` is 1, expected the coefficient of a reactant, which is negative"
+            "unit `r`: `reactions[0].limiting` is 1, expected the coefficient of a reactant, which is negative"
         );
     }
 
@@ -1796,7 +1884,7 @@ mod tests {
                           "limiting": "N2", "conversion": 0.9"#;
         assert!(matches!(
             load(&combustion_json(reaction)).unwrap_err(),
-            LoadError::BadValue { ref field, value, .. } if field == "limiting" && value == 0.0
+            LoadError::BadValue { ref field, value, .. } if field == "reactions[0].limiting" && value == 0.0
         ));
     }
 
@@ -1812,7 +1900,7 @@ mod tests {
         else {
             panic!("expected a bad value, got {e:?}");
         };
-        assert_eq!(field, "stoichiometry");
+        assert_eq!(field, "reactions[0].stoichiometry");
         assert!((value - 15.999 / 6.5).abs() < 1e-9, "{value}");
         assert!(
             e.to_string()

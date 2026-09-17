@@ -78,11 +78,11 @@ fn temperature_holding(n: [f64; 5], h: f64) -> f64 {
 fn burner(r: &SpeciesRegistry) -> (Stream, ConversionReactor) {
     let feed = Stream::from_flows(r, FEED.to_vec(), FEED_K, AMBIENT_KPA);
     let reactor = ConversionReactor {
-        reaction: Reaction {
+        reactions: vec![Reaction {
             stoichiometry: STOICHIOMETRY.to_vec(),
             limiting: r.find("CH4", Phase::Gas).expect("declared above"),
             conversion: CONVERSION,
-        },
+        }],
         energy: ReactorEnergy::Adiabatic,
     };
     (feed, reactor)
@@ -222,22 +222,22 @@ fn a_cycle_of_reactions_returns_to_the_temperature_it_started_at() {
     let u_forward = fs.add_unit(
         "forward",
         ConversionReactor {
-            reaction: Reaction {
+            reactions: vec![Reaction {
                 stoichiometry: vec![-1.0, 1.0],
                 limiting: n,
                 conversion: 0.7,
-            },
+            }],
             energy: ReactorEnergy::Adiabatic,
         },
     );
     let u_back = fs.add_unit(
         "back",
         ConversionReactor {
-            reaction: Reaction {
+            reactions: vec![Reaction {
                 stoichiometry: vec![1.0, -1.0],
                 limiting: iso,
                 conversion: 1.0,
-            },
+            }],
             energy: ReactorEnergy::Adiabatic,
         },
     );
