@@ -20,13 +20,16 @@ use flowsheet::ConvergenceMethod::{self, DirectSubstitution, Wegstein};
 use flowsheet::demo::{AMBIENT_K, AMBIENT_KPA};
 use flowsheet::unit::{Feed, Mixer, Product, Splitter};
 use flowsheet::{
-    ConversionReactor, Flowsheet, Phase, Reaction, Shomate, Solver, SolverConfig, Species,
-    SpeciesRegistry, Stream, StreamId, ValidFlowsheet,
+    ConversionReactor, Flowsheet, Phase, Reaction, ReactorEnergy, Shomate, Solver, SolverConfig,
+    Species, SpeciesRegistry, Stream, StreamId, ValidFlowsheet,
 };
 
 /// CH4, O2, CO2 and H2O to three decimals. Both sides of the equation sum to 80.039 g/mol, so the
 /// reactor's mass correction is 1 to rounding and the hand formula needs no `k`.
 const MOLAR_MASS: [f64; 4] = [16.043, 31.998, 44.009, 18.015];
+
+/// NIST standard enthalpies of formation, as gases, kJ/mol.
+const FORMATION: [f64; 4] = [-74.87, 0.0, -393.52, -241.83];
 
 const STOICHIOMETRY: [f64; 4] = [-1.0, -2.0, 1.0, 2.0];
 
@@ -37,13 +40,17 @@ const CONVERSION: f64 = 0.9;
 
 fn registry() -> SpeciesRegistry {
     let mut r = SpeciesRegistry::default();
-    for (name, molar_mass) in ["CH4", "O2", "CO2", "H2O"].into_iter().zip(MOLAR_MASS) {
+    for ((name, molar_mass), h_f) in ["CH4", "O2", "CO2", "H2O"]
+        .into_iter()
+        .zip(MOLAR_MASS)
+        .zip(FORMATION)
+    {
         r.insert(Species {
             name: name.into(),
             phase: Phase::Gas,
             molar_mass,
             shomate: Shomate::constant(35.0),
-            enthalpy_of_formation: None,
+            enthalpy_of_formation: Some(h_f),
         });
     }
     r
@@ -74,7 +81,13 @@ fn solve(fraction: f64, method: ConvergenceMethod) -> Solved {
         },
     );
     let u_mixer = fs.add_unit("mixer", Mixer);
-    let u_reactor = fs.add_unit("reactor", ConversionReactor { reaction });
+    let u_reactor = fs.add_unit(
+        "reactor",
+        ConversionReactor {
+            reaction,
+            energy: ReactorEnergy::Isothermal,
+        },
+    );
     let u_split = fs.add_unit("split", Splitter { fraction });
     let u_product = fs.add_unit("product", Product);
 
@@ -157,8 +170,15 @@ fn wegstein_through_a_reactor_settles_where_the_hand_balance_says() {
 }
 
 #[test]
-fn the_product_leaves_at_the_feed_temperature_whatever_the_reaction_released() {
-    // Isothermal, and so wrong for combustion: see the reactor energy balance item in TODO.md.
+fn an_isothermal_product_leaves_at_the_feed_temperature() {
+    // Isothermal: the heat of reaction leaves as duty, and the outlet keeps the inlet temperature.
+    // `tests/reactor_energy.rs` covers the adiabatic case.
+    // Not exactly equal: the mixer solves for temperature over enthalpy flows that now include
+    // formation enthalpies of about a hundred thousand MJ/h, and lands a few ULP from the feed's.
     let s = solve(0.3, DirectSubstitution);
-    assert_eq!(s.flowsheet[s.product].temperature(), AMBIENT_K);
+    assert_relative_eq!(
+        s.flowsheet[s.product].temperature(),
+        AMBIENT_K,
+        max_relative = 1e-12
+    );
 }

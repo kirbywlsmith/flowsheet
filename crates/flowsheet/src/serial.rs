@@ -168,6 +168,9 @@ pub struct ReactionSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConversionReactorSpec {
+    /// `"isothermal"` or `"adiabatic"`. Required, with no default: a silent isothermal default is
+    /// how a combustion chamber ends up at 25 °C.
+    pub energy: unit::ReactorEnergy,
     /// The one reaction the reactor runs.
     pub reaction: ReactionSpec,
 }
@@ -273,6 +276,17 @@ pub enum LoadError {
         /// What was required.
         expected: String,
     },
+    /// A reaction names a species that has no `enthalpy_of_formation`.
+    ///
+    /// Optional everywhere else, because a species nothing creates or destroys carries the same
+    /// offset on both sides of a balance. A reaction's participants do not, and a missing value
+    /// would read as zero and invent a heat of reaction.
+    MissingFormationEnthalpy {
+        /// The unit whose reaction names the species.
+        at: Location,
+        /// The species without one.
+        species: String,
+    },
     /// A unit's `type` is not a tag the [`OpRegistry`] knows.
     UnknownOp {
         /// The unit the tag appeared on.
@@ -328,6 +342,11 @@ impl fmt::Display for LoadError {
                 value,
                 expected,
             } => write!(f, "{at}: `{field}` is {value}, expected {expected}"),
+            LoadError::MissingFormationEnthalpy { at, species } => write!(
+                f,
+                "{at}: species `{species}` takes part in the reaction but has no \
+                 `enthalpy_of_formation`"
+            ),
             LoadError::UnknownOp { at, tag } => {
                 write!(f, "{at}: `{tag}` is not a registered unit operation")
             }
@@ -604,7 +623,8 @@ impl OpRegistry {
         });
 
         ops.register(unit::ConversionReactor::TAG, |s| {
-            let ConversionReactorSpec { reaction } = s.parse(unit::ConversionReactor::TAG)?;
+            let ConversionReactorSpec { energy, reaction } =
+                s.parse(unit::ConversionReactor::TAG)?;
             let unknown = |name: &String| LoadError::UnknownSpecies {
                 at: s.at.clone(),
                 name: name.clone(),
@@ -649,6 +669,12 @@ impl OpRegistry {
                     ),
                 }
             })?;
+            unit::formation_enthalpies(s.registry, &stoichiometry).map_err(|species| {
+                LoadError::MissingFormationEnthalpy {
+                    at: s.at.clone(),
+                    species: species.name.clone(),
+                }
+            })?;
 
             Ok(Box::new(unit::ConversionReactor {
                 reaction: unit::Reaction {
@@ -656,6 +682,7 @@ impl OpRegistry {
                     limiting,
                     conversion: reaction.conversion,
                 },
+                energy,
             }))
         });
 
@@ -1031,6 +1058,7 @@ impl ToDocument for unit::ConversionReactor {
             .collect();
 
         spec_of(&ConversionReactorSpec {
+            energy: self.energy,
             reaction: ReactionSpec {
                 stoichiometry,
                 limiting: registry[reaction.limiting].name.clone(),
@@ -1656,16 +1684,16 @@ mod tests {
     fn combustion_json(reaction: &str) -> String {
         format!(
             r#"{{ "species": [
-                {{ "name": "CH4", "phase": "Gas", "molar_mass": 16.043, "shomate": {{ "a": 35.7 }} }},
-                {{ "name": "O2",  "phase": "Gas", "molar_mass": 31.998, "shomate": {{ "a": 29.4 }} }},
-                {{ "name": "CO2", "phase": "Gas", "molar_mass": 44.009, "shomate": {{ "a": 37.1 }} }},
-                {{ "name": "H2O", "phase": "Gas", "molar_mass": 18.015, "shomate": {{ "a": 33.6 }} }},
+                {{ "name": "CH4", "phase": "Gas", "molar_mass": 16.043, "shomate": {{ "a": 35.7 }}, "enthalpy_of_formation": -74.87 }},
+                {{ "name": "O2",  "phase": "Gas", "molar_mass": 31.998, "shomate": {{ "a": 29.4 }}, "enthalpy_of_formation": 0.0 }},
+                {{ "name": "CO2", "phase": "Gas", "molar_mass": 44.009, "shomate": {{ "a": 37.1 }}, "enthalpy_of_formation": -393.52 }},
+                {{ "name": "H2O", "phase": "Gas", "molar_mass": 18.015, "shomate": {{ "a": 33.6 }}, "enthalpy_of_formation": -241.83 }},
                 {{ "name": "N2",  "phase": "Gas", "molar_mass": 28.014, "shomate": {{ "a": 29.1 }} }}
               ],
               "units": [
                 {{ "name": "f", "op": {{ "type": "feed",
                   "state": {{ "flows": {{ "CH4": 10.0, "O2": 60.0, "N2": 200.0 }} }} }} }},
-                {{ "name": "r", "op": {{ "type": "conversion_reactor", "reaction": {{ {reaction} }} }} }},
+                {{ "name": "r", "op": {{ "type": "conversion_reactor", "energy": "adiabatic", "reaction": {{ {reaction} }} }} }},
                 {{ "name": "p", "op": {{ "type": "product" }} }}
               ],
               "streams": [{{ "from": "f", "to": "r" }}, {{ "from": "r", "to": "p" }}] }}"#
@@ -1682,6 +1710,7 @@ mod tests {
         let saved = Flowsheet::from(&fs);
 
         let reactor: ConversionReactorSpec = spec(&saved, 1, unit::ConversionReactor::TAG);
+        assert_eq!(reactor.energy, unit::ReactorEnergy::Adiabatic);
         assert_eq!(reactor.reaction.limiting, "CH4");
         assert_eq!(reactor.reaction.conversion, 0.9);
         assert_eq!(
@@ -1704,6 +1733,23 @@ mod tests {
             serde_json::to_string(&Flowsheet::from(&reloaded)).unwrap(),
             json
         );
+    }
+
+    #[test]
+    fn a_reactor_without_an_energy_spec_is_rejected() {
+        let json = combustion_json(BURN).replace(r#""energy": "adiabatic", "#, "");
+        let e = load(&json).unwrap_err();
+        assert!(
+            matches!(e, LoadError::BadOp { .. }) && e.to_string().contains("energy"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_energy_spec_is_rejected() {
+        let json = combustion_json(BURN).replace(r#""adiabatic""#, r#""exothermic""#);
+        let e = load(&json).unwrap_err();
+        assert!(e.to_string().contains("exothermic"), "{e}");
     }
 
     #[test]
@@ -1798,6 +1844,19 @@ mod tests {
                 at: Location::Unit("r".into()),
                 name: "C2H6".into()
             }
+        );
+    }
+
+    #[test]
+    fn a_reaction_participant_without_a_formation_enthalpy_is_an_error_not_a_panic() {
+        // N2 has none in the fixture. As a spectator it loads (see `saving_drops_zero_coefficients`);
+        // as a participant it does not. The fixture has no NO to make a real reaction with, so this
+        // turns nitrogen into its own mass of oxygen, which is all the closure check asks.
+        let reaction = r#""stoichiometry": { "N2": -1, "O2": 0.87549 },
+                          "limiting": "N2", "conversion": 0.5"#;
+        assert_eq!(
+            load(&combustion_json(reaction)).unwrap_err().to_string(),
+            "unit `r`: species `N2` takes part in the reaction but has no `enthalpy_of_formation`"
         );
     }
 

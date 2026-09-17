@@ -5,8 +5,9 @@
 //! the formatter here also keeps it free of any CLI dependency, so it survived the split into
 //! the `flowsheet` library crate unchanged.
 
-use crate::flowsheet::ValidFlowsheet;
+use crate::flowsheet::{StreamId, UnitId, ValidFlowsheet};
 use crate::solver::{SolveReport, nan_max};
+use crate::unit::Unit;
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -18,8 +19,19 @@ const GAP: &str = "  ";
 const PRECISION: usize = 3;
 /// Decimal places on the temperature column.
 const TEMPERATURE_PRECISION: usize = 2;
-/// The one column holding text rather than a number, so the one that is left-aligned.
-const LABEL_COLUMN: usize = 1;
+/// Decimal places on the duty column.
+const DUTY_PRECISION: usize = 1;
+/// The stream table's one text column, the label, and so its one left-aligned column.
+const STREAM_TEXT_COLUMNS: &[usize] = &[1];
+/// The duty table's text columns: the unit's name and its type.
+const DUTY_TEXT_COLUMNS: &[usize] = &[0, 1];
+
+/// How small a duty is, relative to the enthalpy flows it was computed from and their heat
+/// capacity flow times temperature, before it counts as nothing. Not rounding alone: a unit whose
+/// inlet is a tear stream sees that stream move once more after it ran, by up to the solver
+/// tolerance, so a mixer on a recycle shows a duty of about `1e-9` of its flows that it never
+/// took. A millionth is well above that and well below any duty worth printing.
+const DUTY_NOISE: f64 = 1e-6;
 
 /// A `{from_unit}.{to_unit}` label for every stream, in [`crate::flowsheet::StreamId`] order.
 ///
@@ -128,6 +140,36 @@ pub fn imbalance(fs: &ValidFlowsheet) -> f64 {
         .fold(0.0, nan_max)
 }
 
+/// The heat a unit takes in, in MJ/h: its outlets' enthalpy flow minus its inlets'. Positive
+/// heats, negative cools, the same sign as [`crate::Heater::duty`].
+///
+/// Computed from the streams rather than stored by the op, so it works for any unit and costs
+/// [`crate::UnitOp`] nothing. For a heater it hands the duty back. For an isothermal
+/// [`crate::ConversionReactor`] it is the heat of reaction at the inlet temperature, which is
+/// what the reactor had to shed or be given; for an adiabatic one it is zero to rounding. A unit
+/// that only mixes or splits gives zero to rounding too.
+///
+/// Only meaningful for a unit with both inlets and outlets. A feed has no inlets, so this is its
+/// outlet's enthalpy flow, and a product's is minus its inlet's: stream enthalpies, not heat.
+///
+/// Enthalpies are absolute for species with an enthalpy of formation, so a duty of a few MJ/h
+/// can be the difference of two flows of a million, and its error is relative to those flows
+/// rather than to the duty.
+///
+/// # Panics
+/// If `unit` is not a unit of `fs`.
+pub fn duty(fs: &ValidFlowsheet, unit: UnitId) -> f64 {
+    unit_duty(fs, &fs.units()[unit.as_usize()])
+}
+
+/// [`duty`] for a unit already in hand, so [`write_duties`] can walk the units without
+/// rebuilding an id for each.
+fn unit_duty(fs: &ValidFlowsheet, u: &Unit) -> f64 {
+    let enthalpy =
+        |ports: &[StreamId]| -> f64 { ports.iter().map(|&s| fs[s].enthalpy(fs.registry())).sum() };
+    enthalpy(&u.outlets) - enthalpy(&u.inlets)
+}
+
 /// Renders every stream of a solved flowsheet as one row, followed by a convergence footer.
 ///
 /// Flows are t/h and the last column is temperature in Kelvin. Pressure is not shown: nothing
@@ -172,20 +214,11 @@ pub fn table(fs: &ValidFlowsheet, report: &SolveReport) -> String {
         })
         .collect();
 
-    let widths: Vec<usize> = (0..header.len())
-        .map(|c| {
-            std::iter::once(&header[c])
-                .chain(rows.iter().map(|r| &r[c]))
-                .map(String::len)
-                .max()
-                .expect("the header cell makes the iterator non-empty")
-        })
-        .collect();
-
+    let widths = column_widths(&header, &rows);
     let mut out = String::new();
-    write_row(&mut out, &header, &widths);
+    write_row(&mut out, &header, &widths, STREAM_TEXT_COLUMNS);
     for row in &rows {
-        write_row(&mut out, row, &widths);
+        write_row(&mut out, row, &widths, STREAM_TEXT_COLUMNS);
     }
 
     // The footer starts where the `stream` column does, so the index column reads as a gutter.
@@ -201,17 +234,89 @@ pub fn table(fs: &ValidFlowsheet, report: &SolveReport) -> String {
     )
     .expect("writing to a String is infallible");
 
+    write_duties(&mut out, fs);
     out
 }
 
-/// Writes one padded row. Only [`LABEL_COLUMN`] is left-aligned; the rest are numbers.
-fn write_row(out: &mut String, cells: &[String], widths: &[usize]) {
+/// Appends a blank line and one row per unit that takes heat in or gives it out, after the
+/// footer, so the stream rows and the footer read the same whether or not anything follows.
+///
+/// ```text
+///   unit       type                duty (MJ/h)
+///   preheater  heater                  20000.0
+///   burner     conversion_reactor    -449704.1
+/// ```
+///
+/// Only units with both inlets and outlets are candidates, because [`duty`] on a feed or a
+/// product is a stream's enthalpy rather than heat. Of those, a unit whose duty is noise next to
+/// the enthalpy flows it was computed from ([`DUTY_NOISE`]) is left out, so a flowsheet that only
+/// mixes and splits prints nothing here at all - not even the header.
+fn write_duties(out: &mut String, fs: &ValidFlowsheet) {
+    let registry = fs.registry();
+    let rows: Vec<Vec<String>> = fs
+        .units()
+        .iter()
+        .filter(|u| !u.inlets.is_empty() && !u.outlets.is_empty())
+        .filter_map(|u| {
+            let q = unit_duty(fs, u);
+            // `C * T` as well as `|H|`: without formation enthalpies a stream at 25 °C carries no
+            // enthalpy at all, and a mixer whose temperature solve lands a hair off 25 °C would
+            // show a duty that is all noise against a scale of nearly zero.
+            let scale: f64 = u
+                .inlets
+                .iter()
+                .chain(&u.outlets)
+                .map(|&s| {
+                    let s = &fs[s];
+                    s.enthalpy(registry).abs() + s.heat_capacity(registry) * s.temperature()
+                })
+                .sum();
+            // Strictly greater, so a unit with no enthalpy on any port - duty and scale both zero -
+            // is left out too.
+            (q.abs() > DUTY_NOISE * scale).then(|| {
+                vec![
+                    u.name.clone(),
+                    u.op.tag().to_string(),
+                    format!("{q:.DUTY_PRECISION$}"),
+                ]
+            })
+        })
+        .collect();
+
+    if rows.is_empty() {
+        return;
+    }
+
+    let header = ["unit", "type", "duty (MJ/h)"].map(String::from);
+    let widths = column_widths(&header, &rows);
+    out.push('\n');
+    write_row(out, &header, &widths, DUTY_TEXT_COLUMNS);
+    for row in &rows {
+        write_row(out, row, &widths, DUTY_TEXT_COLUMNS);
+    }
+}
+
+/// The width of each column: its header or its widest cell, whichever is wider.
+fn column_widths(header: &[String], rows: &[Vec<String>]) -> Vec<usize> {
+    (0..header.len())
+        .map(|c| {
+            std::iter::once(&header[c])
+                .chain(rows.iter().map(|r| &r[c]))
+                .map(String::len)
+                .max()
+                .expect("the header cell makes the iterator non-empty")
+        })
+        .collect()
+}
+
+/// Writes one padded row. The columns in `text` are left-aligned; the rest are numbers.
+fn write_row(out: &mut String, cells: &[String], widths: &[usize], text: &[usize]) {
     out.push_str(INDENT);
     for (c, (cell, &w)) in cells.iter().zip(widths).enumerate() {
         if c > 0 {
             out.push_str(GAP);
         }
-        if c == LABEL_COLUMN {
+        if text.contains(&c) {
             write!(out, "{cell:<w$}")
         } else {
             write!(out, "{cell:>w$}")
@@ -227,12 +332,15 @@ mod tests {
     use crate::demo;
     use crate::flowsheet::Flowsheet;
     use crate::solver::{Solver, SolverConfig};
+    use crate::species::SpeciesRegistry;
     use crate::stream::Stream;
     use crate::test_support::{
-        AMBIENT_K, AMBIENT_KPA, ROUNDED_COMBUSTION_MASSES, combustion, combustion_registry,
-        demo_registry, feed,
+        AMBIENT_K, AMBIENT_KPA, COMBUSTION_FORMATION, COMBUSTION_MASSES, ROUNDED_COMBUSTION_MASSES,
+        combustion, combustion_registry, demo_registry, feed,
     };
-    use crate::unit::{ConversionReactor, Feed, Mixer, Product, Splitter, Tank};
+    use crate::unit::{
+        ConversionReactor, Feed, Heater, Mixer, Product, ReactorEnergy, Splitter, Tank,
+    };
     use approx::assert_relative_eq;
 
     /// A report is only ever an input to formatting, so the layout tests supply their own
@@ -399,7 +507,13 @@ mod tests {
                 stream: at_inlet.clone(),
             },
         );
-        let u_reactor = fs.add_unit("reactor", ConversionReactor { reaction });
+        let u_reactor = fs.add_unit(
+            "reactor",
+            ConversionReactor {
+                reaction,
+                energy: ReactorEnergy::Isothermal,
+            },
+        );
         let u_product = fs.add_unit("product", Product);
         fs.add_stream(u_feed, at_inlet, u_reactor);
         fs.add_stream(u_reactor, at_outlet, u_product);
@@ -433,6 +547,138 @@ mod tests {
         // per-species check exists for - is invisible once anything in the plant reacts.
         let fs = burner([10.0, 0.0, 0.0, 0.0], [0.0, 10.0, 0.0, 0.0], false);
         assert_eq!(imbalance(&fs), 0.0);
+    }
+
+    // ---- duty ----
+
+    /// `feed -> op -> product`, solved. Returns the flowsheet, the op's id and the feed stream.
+    fn through(
+        registry: fn() -> SpeciesRegistry,
+        flows: Vec<f64>,
+        op: impl Into<Box<dyn crate::UnitOp>>,
+    ) -> (ValidFlowsheet, UnitId, Stream) {
+        let r = registry();
+        let inlet = Stream::from_flows(&r, flows, AMBIENT_K, AMBIENT_KPA);
+        let blank = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
+
+        let mut fs = Flowsheet::new(registry());
+        let u_feed = fs.add_unit(
+            "feed",
+            Feed {
+                stream: inlet.clone(),
+            },
+        );
+        let u_op = fs.add_unit("op", op);
+        let u_product = fs.add_unit("product", Product);
+        fs.add_stream(u_feed, blank.clone(), u_op);
+        fs.add_stream(u_op, blank, u_product);
+
+        let mut fs = fs.validate().expect("the chain is wired correctly");
+        Solver::default().solve(&mut fs).expect("it is acyclic");
+        (fs, u_op, inlet)
+    }
+
+    fn exact_combustion_registry() -> SpeciesRegistry {
+        combustion_registry(COMBUSTION_MASSES)
+    }
+
+    #[test]
+    fn a_heater_duty_is_handed_back() {
+        let (fs, heater, _) = through(
+            demo_registry,
+            vec![40.0, 360.0, 600.0],
+            Heater { duty: 50_000.0 },
+        );
+        assert_relative_eq!(duty(&fs, heater), 50_000.0, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn an_isothermal_reactor_sheds_the_heat_of_reaction_worked_by_hand() {
+        let r = exact_combustion_registry();
+        let reactor = ConversionReactor {
+            reaction: combustion(&r, 0.9),
+            energy: ReactorEnergy::Isothermal,
+        };
+        let (fs, unit, _) = through(
+            exact_combustion_registry,
+            vec![10.0, 60.0, 0.0, 0.0],
+            reactor,
+        );
+
+        // CH4 + 2 O2 -> CO2 + 2 H2O at 25 °C, where there is no sensible heat: products' formation
+        // enthalpies minus the reactants', kJ/mol.
+        let [ch4, o2, co2, h2o] = COMBUSTION_FORMATION;
+        let heat_of_reaction = (co2 + 2.0 * h2o) - (ch4 + 2.0 * o2);
+        assert_relative_eq!(heat_of_reaction, -802.31, max_relative = 1e-12);
+
+        // Mmol/h of methane burned, times kJ/mol, is GJ/h: a thousand MJ/h.
+        let extent = 0.9 * 10.0 / COMBUSTION_MASSES[0];
+        let expected = extent * heat_of_reaction * 1000.0;
+
+        assert_relative_eq!(duty(&fs, unit), expected, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn an_adiabatic_reactor_takes_no_duty() {
+        let r = exact_combustion_registry();
+        let reactor = ConversionReactor {
+            reaction: combustion(&r, 0.9),
+            energy: ReactorEnergy::Adiabatic,
+        };
+        let (fs, unit, inlet) = through(
+            exact_combustion_registry,
+            vec![10.0, 60.0, 0.0, 0.0],
+            reactor,
+        );
+
+        // Zero to rounding, and the rounding is on the enthalpy flows being subtracted.
+        let scale = inlet.enthalpy(fs.registry()).abs();
+        assert!(duty(&fs, unit).abs() <= 1e-9 * scale, "{}", duty(&fs, unit));
+    }
+
+    #[test]
+    fn a_mixer_takes_no_duty() {
+        let (fs, mixer, inlet) = through(demo_registry, vec![40.0, 360.0, 600.0], Mixer);
+        let scale = inlet.enthalpy(fs.registry()).abs().max(1.0);
+        assert!(
+            duty(&fs, mixer).abs() <= 1e-9 * scale,
+            "{}",
+            duty(&fs, mixer)
+        );
+    }
+
+    #[test]
+    fn the_table_lists_a_heater_below_the_footer_and_leaves_feeds_and_products_out() {
+        let (fs, _, _) = through(
+            demo_registry,
+            vec![40.0, 360.0, 600.0],
+            Heater { duty: 50_000.0 },
+        );
+        let text = table(&fs, &report(1, 0.0));
+        let lines: Vec<&str> = text.lines().collect();
+
+        // Header, two streams, footer - then the section. The feed and the product have a
+        // non-zero `duty` (their streams' enthalpy), and must not appear.
+        assert_eq!(
+            lines[4..],
+            [
+                "",
+                "  unit  type    duty (MJ/h)",
+                "  op    heater      50000.0"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_duty_section_has_no_trailing_whitespace() {
+        let (fs, _, _) = through(
+            demo_registry,
+            vec![40.0, 360.0, 600.0],
+            Heater { duty: -1234.5 },
+        );
+        for line in table(&fs, &report(1, 0.0)).lines() {
+            assert_eq!(line, line.trim_end(), "trailing space on `{line}`");
+        }
     }
 
     // ---- layout ----

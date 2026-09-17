@@ -58,6 +58,15 @@ fn the_default_table_matches_the_readme_worked_example() {
         "{}",
         lines[7]
     );
+    // The heater's duty comes back from the streams; the mixer's is noise and is not listed.
+    assert_eq!(
+        lines[8..],
+        [
+            "",
+            "  unit    type    duty (MJ/h)",
+            "  heater  heater      16000.0",
+        ]
+    );
 }
 
 #[test]
@@ -271,4 +280,56 @@ fn a_duty_with_no_physical_answer_names_the_unit_and_the_pass() {
         "{}",
         run.stderr
     );
+}
+
+/// `burner.json` preheats methane in oxygen and nitrogen, then burns 90% of it in an isothermal
+/// reactor. Neither duty is printed anywhere in the document's streams: the heater's is an input,
+/// and the reactor's is the heat of reaction it had to shed, which only `report::duty` computes.
+#[test]
+fn units_that_take_heat_in_or_give_it_out_are_listed_below_the_footer() {
+    let run = flowsheet(&["tests/fixtures/burner.json"]);
+    assert!(run.ok, "{}", run.stderr);
+
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines[5..],
+        [
+            "",
+            "  unit       type                duty (MJ/h)",
+            "  preheater  heater                  20000.0",
+            "  burner     conversion_reactor    -449704.1",
+        ]
+    );
+
+    // The burner's duty by hand, with constant heat capacities so Kirchhoff's law is exact:
+    // the heat of reaction at 25 °C, moved to the preheated temperature by the heat capacities
+    // the reaction adds. Molar flows are Mmol/h and kJ/mol, so GJ/h, hence the 1000.
+    let (m_ch4, m_o2, m_n2) = (16.043, 31.998, 28.014);
+    let heat_capacity_flow = 10.0 * 35.7 / m_ch4 + 60.0 * 29.4 / m_o2 + 200.0 * 29.1 / m_n2;
+    let preheated = 298.15 + 20000.0 / heat_capacity_flow;
+    let at_25c = (-393.52 + 2.0 * -241.83) - (-74.87);
+    let delta_cp = ((37.1 + 2.0 * 33.6) - (35.7 + 2.0 * 29.4)) / 1000.0;
+    let extent = 0.9 * 10.0 / m_ch4;
+    let expected = extent * (at_25c + delta_cp * (preheated - 298.15)) * 1000.0;
+
+    let printed: f64 = lines[8]
+        .split_whitespace()
+        .last()
+        .expect("a duty column")
+        .parse()
+        .expect("a number");
+    assert!(
+        (printed - expected).abs() <= 0.05,
+        "{printed} vs {expected}"
+    );
+}
+
+#[test]
+fn a_flowsheet_that_only_mixes_and_splits_prints_no_duty_section() {
+    // The demo circuit is all at 25 °C, so every duty is float noise and none is shown - not
+    // even the header, so the footer is still the last line.
+    let run = flowsheet(&["tests/fixtures/recycle.json"]);
+    assert!(run.ok, "{}", run.stderr);
+    let last = run.stdout.lines().last().expect("output");
+    assert!(last.trim().starts_with("converged in"), "{last}");
 }

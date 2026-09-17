@@ -65,7 +65,7 @@ pub use crate::stream::Stream;
 pub use crate::thermo::Shomate;
 pub use crate::unit::{
     Arity, ConversionReactor, EvalError, Feed, Flotation, Heater, Mixer, Product, Reaction,
-    Splitter, SplitterN, Tank, Unit, UnitOp,
+    ReactorEnergy, Splitter, SplitterN, Tank, Unit, UnitOp,
 };
 
 #[cfg(test)]

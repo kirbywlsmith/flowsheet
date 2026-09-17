@@ -96,7 +96,15 @@ flowsheet blend.json
   4  split.mixer     90.000  10.000  100.000  328.68
   5  split.product   90.000  10.000  100.000  328.68
      converged in 30 iterations, residual 8.4e-10, imbalance 8.4e-10
+
+  unit    type    duty (MJ/h)
+  heater  heater      16000.0
 ```
+
+Below the footer, every unit that takes heat in or gives it out is listed with its duty: its
+outlets' enthalpy flow minus its inlets'. For a heater that is the duty it was given; for an
+isothermal reactor it is the heat of reaction it had to shed. Units that only mix or split are
+left out.
 
 ## The JSON format
 
@@ -111,6 +119,7 @@ A document has three lists: `species`, `units`, `streams`.
 | Pressure      | kPa               |
 | Heater duty   | MJ/h              |
 | Molar mass    | g/mol             |
+| Enthalpy of formation | kJ/mol    |
 
 ### `species`
 
@@ -120,6 +129,7 @@ A document has three lists: `species`, `units`, `streams`.
 | `phase`      | yes      | `Solid`, `Liquid` or `Gas`                                                                                                                                               |
 | `molar_mass` | yes      | g/mol                                                                                                                                                                    |
 | `shomate`    | yes      | Heat capacity, [NIST Shomate](https://webbook.nist.gov/chemistry/) `a`-`e`. Only `a` is required; omitted terms are zero, so `{ "a": 75.3 }` is a constant 75.3 J/(mol·K). |
+| `enthalpy_of_formation` | no | Standard enthalpy of formation at 298.15 K, kJ/mol: NIST's `H`. Only needed by a species that a reaction creates or destroys. |
 
 ### `units`
 
@@ -133,6 +143,7 @@ Each unit has a unique `name` and an `op`. The `op` has a `type` plus that opera
 | `splitter_n` | 1      | N       | `ratios`: one per outlet, relative, so `[3, 7]` is a 30/70 split                |
 | `flotation`  | 1      | 2       | `recovery`: species map, share of each to the concentrate (omitted = 0). Outlets: concentrate, then tails |
 | `heater`     | 1      | 1       | `duty`: MJ/h, negative cools                                                   |
+| `conversion_reactor` | 1 | 1   | `energy`: `isothermal` or `adiabatic`. `reaction`: `stoichiometry` (species map of molar coefficients, negative consumed), `limiting` (a reactant's name), `conversion` (0 to 1) |
 | `tank`       | 1      | 1       | none                                                                           |
 | `product`    | 1      | 0       | none                                                                           |
 

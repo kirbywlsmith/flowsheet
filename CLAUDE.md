@@ -126,8 +126,34 @@ Never mix severities in one unlabelled list.
   the later several-reactions item can reuse it. Coefficients are **molar and signed**; extent is
   `conversion * n_limiting / |nu_limiting|` in Mmol/h, and t/h over g/mol needs no factor. The limiting species is
   written `in * (1 - conversion)`, not through the extent, which does not cancel exactly and lands a ULP either side
-  of zero at conversion 1. **Isothermal**: the outlet takes the inlet temperature, so any reaction with a heat of
-  reaction breaks the energy balance silently until the reactor energy balance item lands.
+  of zero at conversion 1.
+- The reactor's energy is a **required `energy: ReactorEnergy` spec, `isothermal` or `adiabatic`**, with no
+  heat-of-reaction parameter anywhere: with absolute enthalpies, `H_out - H_in` *is* the heat of reaction. Isothermal
+  keeps the inlet temperature; adiabatic runs `react` and then hands `H_in` to `unit::solve_temperature`, with the
+  same empty-inlet guard as `heat`. Required rather than defaulting to isothermal, because a silent default is how a
+  combustion chamber ends up at 25 °C. `ReactorEnergy` derives `serde` directly (plain data, like `Phase`), written
+  `snake_case` to match the op tags. `tests/reactor_energy.rs` holds the two proofs: an n-butane -> isobutane ->
+  n-butane cycle over temperature-dependent Shomate fits returns to its feed temperature, and adiabatic combustion
+  lands on a temperature solved by hand in molar units - where Mmol/h times kJ/mol is **GJ/h**, a factor of 1000 the
+  library never sees because it works per kg.
+- Every **reaction participant must carry an `enthalpy_of_formation`**, or a missing value would read as zero and
+  invent a heat of reaction. `unit::formation_enthalpies` returns the first offender and is shared, like
+  `mass_closure`, by `react`'s panic and `LoadError::MissingFormationEnthalpy` - a variant of its own, because
+  `BadValue` needs an `f64` and here there is no value. A species with a zero coefficient is not a participant.
+- **`report::duty(fs, unit)`** is a unit's outlet enthalpy flow minus its inlet's, computed from the streams rather
+  than stored by the op, so `UnitOp` did not change and it works for every unit: a heater's duty comes back, an
+  isothermal reactor's heat of reaction appears, and mixers, splitters and adiabatic reactors give zero to rounding.
+- `report::table` prints **unit duties after the footer**, a blank line and then `unit`, `type`, `duty (MJ/h)` for
+  every unit with inlets and outlets whose duty is not noise. After the footer rather than between the rows and it, so
+  every existing layout test - which pins the rows and then the footer by line number - held unchanged. Feeds and
+  products are skipped because `duty` on them is a stream's enthalpy, not heat. A plain mixing circuit prints no
+  section at all, not even a header, so its output is byte-identical to before. **Noise** is `|duty| <= 1e-6 *
+  sum(|H| + C*T)` over the unit's ports: relative because a mixer on a recycle sees its tear inlet move once more
+  after it ran, by up to the solver tolerance, and `C*T` as well as `|H|` because a stream at 25 °C with no formation
+  enthalpy carries no enthalpy at all - measured, the Wegstein stiff recycle printed its mixer at `0.0` without it.
+  `write_row` takes the set of left-aligned columns now, since this table has two text columns, and the duty is
+  computed through a private `unit_duty(fs, &Unit)` because `UnitId`'s field is private and `table` walks units.
+  `burner.json` pins a heater and an isothermal reactor, and checks the reactor's duty against Kirchhoff's law by hand.
 - Mass closure is **two layers**. First, `unit::mass_closure` rejects `|sum(nu_i M_i)| / sum(|nu_i|) > 0.01` g/mol -
   divided by `sum(|nu_i|)` because rounding error is bounded by the rounding step times that sum and does not grow
   with molar mass. A tolerance relative to `sum(|nu_i| M_i)` accepted triolein + 2.5 H2 -> tristearin, off by a whole
@@ -149,8 +175,8 @@ Never mix severities in one unlabelled list.
   change (a C# 8 default interface method), so `tests/downstream_op.rs`'s `Bleed` compiled unchanged. **Cost,
   accepted:** the switch is flowsheet-wide, so one reactor hides a species mis-wiring anywhere else in the plant.
   Without every reaction's extent stored somewhere, total mass is the only balance a reacting flowsheet can check.
-- On the wire the reaction is **nested and singular**: `{ "type": "conversion_reactor", "reaction": { "stoichiometry":
-  {..}, "limiting": "CH4", "conversion": 0.9 } }`. The stoichiometry is a species-name map like `recovery`, but
+- On the wire the reaction is **nested and singular**: `{ "type": "conversion_reactor", "energy": "adiabatic",
+  "reaction": { "stoichiometry": {..}, "limiting": "CH4", "conversion": 0.9 } }`. The stoichiometry is a species-name map like `recovery`, but
   **zero coefficients are dropped on save** - an equation lists its participants, whereas a zero recovery is a
   statement. The several-reactions item will rename `reaction` to `reactions` and break the format; acceptable only
   because nothing is published.
@@ -171,7 +197,7 @@ Never mix severities in one unlabelled list.
   property" below, because a species no reaction touches has the same offset on both sides of every balance and it
   cancels, and a flotation plant should not have to look up chalcopyrite's. `None` reads as `0.0`, and `0.0 + x` is
   `x` bit for bit, so every document and test without it gives identical numbers. The price is that a *missing*
-  value reads as zero too, so the reactor energy balance item has to reject a reaction whose participants lack one.
+  value reads as zero too, which is why every reaction participant is required to carry one (see the reactor entries).
   With it set, temperatures agree to 1e-9 rather than bit for bit: Newton subtracts enthalpy flows of millions of
   MJ/h to find a few degrees, which costs about three digits.
 - `shomate` is **required** on the wire. A defaulted temperature is a guess at state; a defaulted cp would fabricate a
@@ -181,7 +207,7 @@ Never mix severities in one unlabelled list.
   times kJ/kg is MJ/h.
 - Demo heat capacities: water and quartz are **NIST-JANAF Shomate fits**. Chalcopyrite has no published fit, so it is a
   **Neumann-Kopp estimate** - Cu + Fe + 2 S at 298.15 K, 95.0 J/(mol·K) - held constant.
-- `Mixer` and `Heater` are the **only ops with a temperature solve**. `Splitter`, `SplitterN` and `Flotation`
+- `Mixer`, `Heater` and an adiabatic `ConversionReactor` are the **only ops with a temperature solve**. `Splitter`, `SplitterN` and `Flotation`
   partition flows at constant temperature, which conserves enthalpy exactly. `unit::mix` sums inlet enthalpy and hands it to
   `unit::solve_temperature`: Newton on `H(T) - target`, whose slope is the heat capacity flow and therefore positive,
   so there is exactly one root. It is seeded with the heat-capacity-weighted mean temperature, exact for constant cp,
@@ -211,9 +237,11 @@ Never mix severities in one unlabelled list.
   being `Send`.
 - The **line between a panic and an `EvalError`** is whose mistake it is. `EvalError`: user input the numerics cannot
   answer - a duty no positive temperature absorbs, Newton not converging because a Shomate fit extrapolates cp
-  negative, a reactant driven negative, later a flash with no two-phase split. Still a panic: a split fraction outside
+  negative, a reactant driven negative, an adiabatic endothermic reaction no positive temperature can pay for, later a
+  flash with no two-phase split. Still a panic: a split fraction outside
   `0.0..=1.0`, empty or all-zero `split_n` ratios, a `recovery` or `stoichiometry` of the wrong length, a conversion
-  outside `0.0..=1.0`, a limiting species that is not a reactant, a stoichiometry whose mass does not close, a
+  outside `0.0..=1.0`, a limiting species that is not a reactant, a stoichiometry whose mass does not close, a reaction
+  participant without an enthalpy of formation, a
   non-finite duty, and `solve_temperature` on a stream with no heat capacity. Every one of those is either caught by a `LoadError` at the JSON boundary or guarded by the
   caller, so reaching it is a bug in the crate.
 - `SolveError::Evaluation` carries **both `UnitId` and `name`**: the id so a caller can look the unit up, the name

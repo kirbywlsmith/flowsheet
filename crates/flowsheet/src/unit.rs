@@ -2,8 +2,9 @@
 
 use crate::flowsheet::StreamId;
 use crate::serial::ToDocument;
-use crate::species::{SpeciesId, SpeciesRegistry};
+use crate::species::{Species, SpeciesId, SpeciesRegistry};
 use crate::stream::Stream;
+use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug};
 
 /// Why a [`UnitOp`] could not produce an answer for the inlets it was given.
@@ -394,6 +395,25 @@ pub fn recover(inlet: &Stream, recovery: &[f64]) -> (Stream, Stream) {
     (concentrate, tails)
 }
 
+/// What a reactor does with the heat its reaction releases or absorbs.
+///
+/// There is no heat-of-reaction parameter anywhere: once every participant has an
+/// [`crate::Species::enthalpy_of_formation`], the heat of reaction *is* the outlet's enthalpy
+/// minus the inlet's, and this only says which of the two is held.
+///
+/// Derives `serde` directly, the rule for plain data with no invariant to protect, like
+/// [`crate::Phase`]. Written in `snake_case` on the wire, to match the op tags beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReactorEnergy {
+    /// The outlet leaves at the inlet temperature. The heat of reaction is taken away or supplied
+    /// from outside, and [`crate::report::duty`] says how much.
+    Isothermal,
+    /// No heat crosses the boundary: the outlet takes the temperature at which its enthalpy flow
+    /// equals the inlet's. An exothermic reaction heats its own products.
+    Adiabatic,
+}
+
 /// One chemical reaction, run to a fixed conversion of its limiting reactant.
 ///
 /// Plain data, validated by [`react`] rather than on construction, for the same reason
@@ -457,6 +477,36 @@ pub(crate) fn mass_closure(registry: &SpeciesRegistry, stoichiometry: &[f64]) ->
     }
 }
 
+/// Checks that every species `stoichiometry` touches has an enthalpy of formation, returning the
+/// first that does not.
+///
+/// [`crate::Species::enthalpy_of_formation`] is optional because a species that is never created
+/// or destroyed has the same offset on both sides of a balance. A reaction's participants are
+/// exactly the species that do not, and for them `None` would read as zero and fabricate a heat of
+/// reaction. Shared by [`react`] and the JSON loader, like [`mass_closure`].
+///
+/// # Panics
+/// If `stoichiometry` does not hold one coefficient per species in `registry`.
+pub(crate) fn formation_enthalpies<'a>(
+    registry: &'a SpeciesRegistry,
+    stoichiometry: &[f64],
+) -> Result<(), &'a Species> {
+    assert_eq!(
+        stoichiometry.len(),
+        registry.len(),
+        "a reaction needs one stoichiometric coefficient per species"
+    );
+
+    match stoichiometry
+        .iter()
+        .zip(registry.all())
+        .find(|(nu, species)| **nu != 0.0 && species.enthalpy_of_formation.is_none())
+    {
+        Some((_, species)) => Err(species),
+        None => Ok(()),
+    }
+}
+
 /// How far below zero a reactant's outlet flow may land, as a fraction of *its own* inlet flow,
 /// before it counts as consumed beyond what was there rather than as round-off.
 ///
@@ -493,7 +543,8 @@ const REACTANT_ROUND_OFF: f64 = 1e-12;
 /// - `stoichiometry` does not hold one coefficient per species;
 /// - `conversion` is outside `0.0..=1.0`, or `NaN`;
 /// - the limiting species' coefficient is not negative;
-/// - the mass balance does not close to within 0.01 g/mol per unit of coefficient, or a coefficient is `NaN`.
+/// - the mass balance does not close to within 0.01 g/mol per unit of coefficient, or a coefficient is `NaN`;
+/// - a species with a non-zero coefficient has no enthalpy of formation.
 pub fn react(
     registry: &SpeciesRegistry,
     inlet: &Stream,
@@ -523,6 +574,12 @@ pub fn react(
         panic!(
             "the reaction's mass balance misses by {residual} g/mol per unit of coefficient, \
              more than {MASS_CLOSURE_TOLERANCE}"
+        );
+    }
+    if let Err(species) = formation_enthalpies(registry, stoichiometry) {
+        panic!(
+            "species `{}` takes part in the reaction but has no enthalpy of formation",
+            species.name
         );
     }
 
@@ -575,7 +632,7 @@ mod tests {
     use crate::species::{Phase, Species};
     use crate::test_support::{
         AMBIENT_K, AMBIENT_KPA, COMBUSTION_MASSES, ROUNDED_COMBUSTION_MASSES, all_ids, combustion,
-        combustion_registry, demo_registry, feed,
+        combustion_registry, demo_registry, demo_registry_with_formation, feed,
     };
     use crate::thermo::Shomate;
     use approx::assert_relative_eq;
@@ -1270,6 +1327,44 @@ mod tests {
         assert!(mass_closure(&r, &[0.0; 4]).unwrap_err().is_nan());
     }
 
+    /// [`combustion_registry`] with one species' enthalpy of formation taken away.
+    fn without_formation(name: &str) -> SpeciesRegistry {
+        let mut r = SpeciesRegistry::default();
+        for species in combustion_registry(COMBUSTION_MASSES).all() {
+            r.insert(Species {
+                enthalpy_of_formation: species
+                    .enthalpy_of_formation
+                    .filter(|_| species.name != name),
+                ..species.clone()
+            });
+        }
+        r
+    }
+
+    #[test]
+    fn formation_enthalpies_names_the_participant_without_one() {
+        let r = without_formation("CO2");
+        let missing = formation_enthalpies(&r, &[-1.0, -2.0, 1.0, 2.0]).unwrap_err();
+        assert_eq!(missing.name, "CO2");
+    }
+
+    #[test]
+    fn formation_enthalpies_ignores_a_species_the_reaction_does_not_touch() {
+        // Burning methane with CO2 left out of the equation: not balanced, but this only asks
+        // about the participants, and CO2 is not one.
+        let r = without_formation("CO2");
+        assert!(formation_enthalpies(&r, &[-1.0, -2.0, 0.0, 2.0]).is_ok());
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "species `H2O` takes part in the reaction but has no enthalpy of formation"
+    )]
+    fn react_rejects_a_participant_without_a_formation_enthalpy() {
+        let r = without_formation("H2O");
+        let _ = react(&r, &lean(&r), &combustion(&r, 0.9));
+    }
+
     // ---- arity ----
 
     #[test]
@@ -1285,7 +1380,8 @@ mod tests {
 
     #[test]
     fn every_op_declares_the_arity_its_evaluate_assumes() {
-        let r = demo_registry();
+        // With formation enthalpies, because the reactor below evaluates a reaction over them.
+        let r = demo_registry_with_formation();
 
         // `Box<dyn UnitOp>` is what lets one array hold eight different concrete types. The
         // enum version of this test relied on them all being the same type instead.
@@ -1337,6 +1433,7 @@ mod tests {
                         limiting: all_ids(&r)[0],
                         conversion: 0.5,
                     },
+                    energy: ReactorEnergy::Isothermal,
                 }),
                 (1, Some(1)),
                 (1, Some(1)),

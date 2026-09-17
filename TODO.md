@@ -18,14 +18,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] The reactor's energy balance, on `Species::enthalpy_of_formation`. `H_out - H_in` *is* the heat of reaction once
-  enthalpies are absolute, so there is no separate heat-of-reaction parameter; what the reactor gains instead is a
-  spec - isothermal reports the duty it needed, adiabatic hands `H_in` to `unit::solve_temperature` the way `heat`
-  already does. The formation enthalpy is optional, so a reaction whose participants lack one must be rejected: a
-  `LoadError` at the boundary and a panic in `react`, or a missing value silently reads as zero. Two
-  tests earn their keep. A cycle of reactions whose enthalpies sum to zero proves the basis is consistent; an
-  exothermic reaction raising its own outlet temperature proves the reactor reads it. Do we need to update the README
-  with the reactor unit?
 - [ ] Several reactions in one reactor. `Vec<Reaction>`, extents applied in declared order, with the limiting
   reactant's moles re-read between reactions so that two reactions competing for one reactant are well defined rather
   than over-consuming it. Aspen's `RStoic` is the shape. Mostly a loop plus a validation that no species goes
