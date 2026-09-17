@@ -18,13 +18,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Seed tear streams from the feeds instead of zeros. CLAUDE.md names this as the general mitigation for the
-  early-pass transient that a `Result`-returning `evaluate` cannot fix on its own: a heater on a recycle-only branch
-  sees an empty stream on pass one and a near-empty one on pass two, so a duty the converged loop absorbs easily can
-  still ask for a temperature below 0 K on the way there. A seed at the feeds' total flow and adiabatic mix
-  temperature is one pass over the acyclic part of the graph, which the topological order already yields. Record the
-  pass counts on `recycle.json` and `stiff_recycle.json` before and after: a seed nearer the answer should cost none
-  and may save a few. Small and self-contained, so it sits with the other correctness gaps.
 - [ ] Pressure, declared per op and propagated. Nothing reads it and nothing solves it - `Stream::add_assign` says so,
   and the field survives a whole solve untouched. Aspen Plus and HYSYS specify it at this level too: each op declares
   a pressure drop, `evaluate` writes the outlet pressure, and a mixer takes the minimum inlet pressure rather than

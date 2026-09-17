@@ -267,9 +267,26 @@ Never mix severities in one unlabelled list.
 - Threading `Result` through does **not** fix the early-pass transient it was partly motivated by, and on the
   `tests/heated_recycle.rs` shape there is nothing to fix: all the feed passes through the heater and out to the
   product, so the boundary balance pins the heater outlet at `T_feed + Q / C_feed` whatever the recycle fraction, and
-  a duty the converged loop can absorb is one every pass can absorb too. A heater on a recycle-only branch would not
-  have that property. Seeding tear streams from feeds instead of zeros is the general mitigation, and it is not an
-  item yet.
+  a duty the converged loop can absorb is one every pass can absorb too.
+- **A cooler on a recycle-only branch has no transient either**, which this file used to claim it did. Feed ->
+  mixer -> splitter, recycle -> cooler -> mixer, constant cp: the tear is the cooler outlet, so pass 1 hands the
+  cooler `f * F` at `T_feed`, and its outlet is `T_feed - q / f` (with `q = |Q| / C_feed`). The converged boundary
+  balance puts the mixer outlet at `T_feed - q` and the cooler, on `f / (1 - f)` of the feed, at
+  `T_feed - q - q (1 - f) / f` - which is `T_feed - q / f` again. Measured: a duty that cools the converged recycle to
+  1 K solves from the all-zero tear at f = 0.3, 0.5 and 0.9, and so does the same loop with the demo's
+  temperature-dependent Shomate feed. A transient that crosses 0 K would need a recycle whose composition, and so its
+  cp per tonne, drifts between passes; none has been found.
+- **Tear streams are not seeded from the feeds, deliberately** - it was built, measured, and thrown away. The seed was
+  every empty tear set to the feeds' sum at their adiabatic mix temperature (a tear that already held flow was left
+  alone, so a warm start survived). On flows alone it saved one pass at f = 0.9 (119 to 118, 75 to 74, heated 171 to
+  170), nothing at f = 0.3, and three on `blend.json` (30 to 27, where a recycle of one half makes the loop carry
+  exactly the feed). Direct substitution shrinks the error by a constant factor, so a seed saves
+  `ln(|x0 - x*| / |seed - x*|) / ln(1 / factor)` passes, and a feed-sized seed is only much nearer a recycle that is many
+  times the feed - about one pass at most, at every fraction measured. Temperature is where it lost: the seed starts the recycle
+  at feed temperature, whereas a zero tear carries no enthalpy and pass 1 lands on the right temperature (the entry
+  above). On the cooled loop it cost **18 to 24 passes at f = 0.3, 30 to 39 at 0.5 and 176 to 210 at 0.9**, the colder
+  the recycle the worse. A seed that helps would have to guess temperature as well as flow, and there is nothing to
+  guess it from.
 - `Stream::set_temperature` is **public** because `mix` lives in `unit.rs` and cannot reach the private field; the
   alternative was copying the flows into a new stream on every Newton step. `+=` on `Stream` stays **flows-only** by
   design - combining temperatures needs the registry, and that is `mix`.
