@@ -458,7 +458,7 @@ Never mix severities in one unlabelled list.
   and the debug/release difference in frame size would otherwise decide whether the old code overflowed. A stack
   overflow **aborts the process** (`STATUS_STACK_OVERFLOW`, 0xc00000fd) rather than panicking, so it cannot be a
   `should_panic` test, and before the fix it took the whole test binary down with it.
-  Benched against `9d35a92`: `solve/units` improved 4-6% at 8, 512 and 4096 and did not move at 64; `solve/tears`
+  Benched against `a04caee`: `solve/units` improved 4-6% at 8, 512 and 4096 and did not move at 64; `solve/tears`
   moved between +0.1% and +5.8%, significant only at `tears/1` (6.9 to 7.3 µs). The likeliest cause there is the
   `call` vector - one more heap allocation per Tarjan run, on a flowsheet small enough for setup to dominate - but
   that is not measured. Nothing at 512 units or 16 tears and above regressed.
