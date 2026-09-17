@@ -64,8 +64,8 @@ pub use crate::species::{Phase, Species, SpeciesId, SpeciesRegistry};
 pub use crate::stream::Stream;
 pub use crate::thermo::Shomate;
 pub use crate::unit::{
-    Arity, EvalError, Feed, Flotation, Heater, Mixer, Product, Splitter, SplitterN, Tank, Unit,
-    UnitOp,
+    Arity, ConversionReactor, EvalError, Feed, Flotation, Heater, Mixer, Product, Reaction,
+    Splitter, SplitterN, Tank, Unit, UnitOp,
 };
 
 #[cfg(test)]

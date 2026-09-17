@@ -78,10 +78,18 @@ fn stream_labels(fs: &ValidFlowsheet) -> Vec<String> {
 /// [`table`], so they have to mean the same thing. A flowsheet with no sources and no sinks, or
 /// one that has not been solved yet, has nothing flowing and reports `0.0`.
 ///
+/// **Unless a unit converts species.** If any unit's [`crate::UnitOp::conserves_species`] is
+/// `false` - a reactor - the two ends are *supposed* to disagree species by species, and this
+/// compares total mass instead, normalised the same way. The switch is flowsheet-wide: one
+/// reactor puts the whole plant on the total check, so the gangue-in-the-copper-column mistake
+/// above stops showing up anywhere in it. Without the extent of every reaction stored somewhere,
+/// total mass is the only balance a reacting flowsheet still has.
+///
 /// Note that this only sees the plant's two ends. A unit that loses mass in the middle of the
 /// circuit shows up here only if the loss reaches a product; what checks every unit individually
 /// is the arity and the op's own arithmetic.
 pub fn imbalance(fs: &ValidFlowsheet) -> f64 {
+    let per_species = fs.units().iter().all(|u| u.op.conserves_species());
     let n = fs.registry().len();
     let (mut entered, mut left) = (vec![0.0; n], vec![0.0; n]);
 
@@ -103,9 +111,14 @@ pub fn imbalance(fs: &ValidFlowsheet) -> f64 {
         }
     }
 
-    let scale = nan_max(entered.iter().sum(), left.iter().sum());
+    let (entered_total, left_total): (f64, f64) = (entered.iter().sum(), left.iter().sum());
+    let scale = nan_max(entered_total, left_total);
     if scale == 0.0 {
         return 0.0; // nothing entered and nothing left
+    }
+
+    if !per_species {
+        return (entered_total - left_total).abs() / scale;
     }
 
     entered
@@ -215,8 +228,11 @@ mod tests {
     use crate::flowsheet::Flowsheet;
     use crate::solver::{Solver, SolverConfig};
     use crate::stream::Stream;
-    use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
-    use crate::unit::{Feed, Mixer, Product, Splitter, Tank};
+    use crate::test_support::{
+        AMBIENT_K, AMBIENT_KPA, ROUNDED_COMBUSTION_MASSES, combustion, combustion_registry,
+        demo_registry, feed,
+    };
+    use crate::unit::{ConversionReactor, Feed, Mixer, Product, Splitter, Tank};
     use approx::assert_relative_eq;
 
     /// A report is only ever an input to formatting, so the layout tests supply their own
@@ -364,6 +380,59 @@ mod tests {
     #[test]
     fn a_nan_flow_does_not_report_a_closed_balance() {
         assert!(imbalance(&leaking([f64::NAN, 0.0, 0.0], [1.0, 0.0, 0.0])).is_nan());
+    }
+
+    /// `feed -> reactor -> product`, burning 90% of 10 t/h of methane.
+    ///
+    /// When `solve` is false the two streams are written by hand from `entered` and `left`, the
+    /// same trick as [`leaking`], so that a reacting flowsheet's ends can be made to disagree.
+    fn burner(entered: [f64; 4], left: [f64; 4], solve: bool) -> ValidFlowsheet {
+        let r = combustion_registry(ROUNDED_COMBUSTION_MASSES);
+        let reaction = combustion(&r, 0.9);
+        let at_inlet = Stream::from_flows(&r, entered.to_vec(), AMBIENT_K, AMBIENT_KPA);
+        let at_outlet = Stream::from_flows(&r, left.to_vec(), AMBIENT_K, AMBIENT_KPA);
+        let mut fs = Flowsheet::new(r);
+
+        let u_feed = fs.add_unit(
+            "feed",
+            Feed {
+                stream: at_inlet.clone(),
+            },
+        );
+        let u_reactor = fs.add_unit("reactor", ConversionReactor { reaction });
+        let u_product = fs.add_unit("product", Product);
+        fs.add_stream(u_feed, at_inlet, u_reactor);
+        fs.add_stream(u_reactor, at_outlet, u_product);
+
+        let mut fs = fs.validate().expect("the chain is wired correctly");
+        if solve {
+            Solver::default().solve(&mut fs).expect("it is acyclic");
+        }
+        fs
+    }
+
+    #[test]
+    fn a_reacting_flowsheet_closes_on_total_mass() {
+        // Per species this would be about 0.1: the methane went in and did not come out. On total
+        // mass it closes to rounding, even with the two-decimal molar masses whose equation gains
+        // 0.01 g/mol - the reactor corrects for that.
+        let fs = burner([10.0, 60.0, 0.0, 0.0], [0.0; 4], true);
+        assert_relative_eq!(imbalance(&fs), 0.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn a_reacting_flowsheet_still_catches_lost_mass() {
+        // 70 t/h in, 63 t/h out.
+        let fs = burner([10.0, 60.0, 0.0, 0.0], [10.0, 53.0, 0.0, 0.0], false);
+        assert_relative_eq!(imbalance(&fs), 0.1, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn one_reactor_puts_the_whole_flowsheet_on_the_total_mass_check() {
+        // The price of the switch: a species swap that leaves the totals alone - the mistake the
+        // per-species check exists for - is invisible once anything in the plant reacts.
+        let fs = burner([10.0, 0.0, 0.0, 0.0], [0.0, 10.0, 0.0, 0.0], false);
+        assert_eq!(imbalance(&fs), 0.0);
     }
 
     // ---- layout ----

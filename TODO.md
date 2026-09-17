@@ -18,17 +18,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Conversion reactor, isothermal, one reaction. `Reaction { stoichiometry: Vec<f64>, limiting: SpeciesId,
-  conversion: f64 }` with one inlet and one outlet - structurally `Flotation`'s sibling: a dense `Vec<f64>` in
-  `SpeciesId` order validated by a `unit::react` free function, composition changed by transforming species rather
-  than partitioning them. Coefficients are **molar** and signed (negative consumed, positive produced), because that
-  is how a reaction is written; `react` converts with `molar_mass` and rejects a stoichiometry whose mass balance does
-  not close (`sum of nu_i * M_i ~ 0`), which is the one way a stoichiometry can be wrong that a recovery vector
-  cannot. Extent is `conversion * n_limiting / |nu_limiting|`. On the wire, a species-name map like `recovery`, but
-  zero coefficients are **dropped** on save rather than kept: a zero recovery says a species does not float, while a
-  reaction equation simply lists its participants. The outlet leaves at the inlet temperature, which means an
-  exothermic reaction silently breaks the energy balance until the reactor energy balance item lands - say so in the
-  doc comment, and make the test assert the extent by hand the way `demo::balance` does.
 - [ ] An absolute enthalpy basis. Every enthalpy today is relative to `thermo::REFERENCE_K` and the zero point
   cancels, which stops being true the moment a species is destroyed: bring Shomate's `F` and `H` back
   (`deny_unknown_fields` currently rejects them) and add a standard enthalpy of formation per species. No unit

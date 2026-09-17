@@ -2,7 +2,7 @@
 
 use crate::flowsheet::StreamId;
 use crate::serial::ToDocument;
-use crate::species::SpeciesRegistry;
+use crate::species::{SpeciesId, SpeciesRegistry};
 use crate::stream::Stream;
 use std::fmt::{self, Debug};
 
@@ -19,7 +19,8 @@ use std::fmt::{self, Debug};
 /// thread boundary.
 ///
 /// This is for **user input the numerics cannot answer** - a heater duty that cools a stream
-/// past absolute zero, later a flash on a composition with no two-phase split. Bad ids,
+/// past absolute zero, a reaction that consumes more of a reactant than the inlet carries, later
+/// a flash on a composition with no two-phase split. Bad ids,
 /// mismatched arities and a split fraction outside `0.0..=1.0` stay panics: those are bugs in
 /// the calling code, and the JSON boundary already rejects them with a
 /// [`crate::serial::LoadError`].
@@ -91,13 +92,26 @@ pub trait UnitOp: Debug + Send + Sync + ToDocument {
     /// [`crate::solver::SolveError::Evaluation`] and reports to the user. Keep panicking for
     /// what is a bug in the calling code; see [`EvalError`] for where the line falls.
     ///
-    /// An operation that cannot fail returns `Ok`, and most do: only [`Mixer`] and [`Heater`]
-    /// solve anything.
+    /// An operation that cannot fail returns `Ok`, and most do. [`Mixer`] and [`Heater`] fail
+    /// when their temperature solve does, and [`ConversionReactor`] when its reaction asks for
+    /// more of a reactant than the inlet carries - which needs no solve at all.
     fn evaluate(
         &self,
         registry: &SpeciesRegistry,
         inlets: &[&Stream],
     ) -> Result<Vec<Stream>, EvalError>;
+
+    /// Whether every species that enters this operation leaves it as the same species.
+    ///
+    /// True for everything that only mixes, splits or heats. An operation that turns one
+    /// species into another returns `false`, and [`crate::report::imbalance`] then checks the
+    /// flowsheet's total mass instead of each species separately - a reactor's outlet is
+    /// *meant* to disagree with its inlet species by species.
+    ///
+    /// A default method, so adding it broke no downstream operation.
+    fn conserves_species(&self) -> bool {
+        true
+    }
 }
 
 /// Boxes any operation, so [`crate::flowsheet::Flowsheet::add_unit`] accepts either a bare
@@ -139,6 +153,7 @@ impl Arity {
     }
 }
 
+mod conversion_reactor;
 mod feed;
 mod flotation;
 mod heater;
@@ -150,6 +165,7 @@ mod tank;
 // Re-exported flat, so every call site keeps writing `unit::Mixer` rather than
 // `unit::mixer::Mixer`. The submodules stay private: they are a file-layout detail, and one
 // operation per file is the only thing they buy.
+pub use conversion_reactor::ConversionReactor;
 pub use feed::Feed;
 pub use flotation::Flotation;
 pub use heater::Heater;
@@ -377,10 +393,191 @@ pub fn recover(inlet: &Stream, recovery: &[f64]) -> (Stream, Stream) {
 
     (concentrate, tails)
 }
+
+/// One chemical reaction, run to a fixed conversion of its limiting reactant.
+///
+/// Plain data, validated by [`react`] rather than on construction, for the same reason
+/// [`Flotation::recovery`] is: the fields are public and the species count is not known until an
+/// inlet arrives. It lives here rather than beside [`ConversionReactor`] so that `unit.rs` never
+/// imports from one of its own submodules.
+///
+/// `Debug` is not optional: it is a supertrait of [`UnitOp`], so the reactor's derive needs every
+/// field to have it.
+#[derive(Debug, Clone)]
+pub struct Reaction {
+    /// Molar stoichiometric coefficients in [`SpeciesId`] order: negative for a reactant,
+    /// positive for a product, zero for a species the reaction does not touch.
+    ///
+    /// e.g. `CH4 + 2 O2 -> CO2 + 2 H2O` is `[-1.0, -2.0, 1.0, 2.0]`.
+    pub stoichiometry: Vec<f64>,
+    /// The reactant that `conversion` is a fraction of. Its coefficient must be negative.
+    pub limiting: SpeciesId,
+    /// The fraction of the limiting reactant's inlet flow that reacts, `0.0..=1.0`.
+    pub conversion: f64,
+}
+
+/// How far a stoichiometry's mass balance may miss, in g/mol per unit of coefficient.
+///
+/// Published molar masses are rounded, so `sum(nu_i * M_i)` of a correct equation is rarely zero.
+/// Rounding to two decimals puts each mass off by at most 0.005 g/mol, so the error is at most
+/// `0.005 * sum(|nu_i|)` - which is why the residual is divided by `sum(|nu_i|)`, and why this
+/// tolerance does not loosen as molecules get heavier. A missing hydrogen is 1.008 g/mol, far
+/// outside it.
+pub(crate) const MASS_CLOSURE_TOLERANCE: f64 = 0.01;
+
+/// Checks that `stoichiometry` conserves mass, to within [`MASS_CLOSURE_TOLERANCE`].
+///
+/// Returns the residual, `|sum(nu_i * M_i)| / sum(|nu_i|)`, on failure: both [`react`] and the
+/// JSON loader call this, and doing the comparison here rather than in each is what stops the
+/// tolerance drifting between them.
+///
+/// Written as `residual <= tolerance`, never `residual > tolerance`: a `NaN` coefficient, or an
+/// all-zero stoichiometry's `0 / 0`, makes the residual `NaN`, and the negated form would accept it.
+///
+/// # Panics
+/// If `stoichiometry` does not hold one coefficient per species in `registry`.
+pub(crate) fn mass_closure(registry: &SpeciesRegistry, stoichiometry: &[f64]) -> Result<(), f64> {
+    assert_eq!(
+        stoichiometry.len(),
+        registry.len(),
+        "a reaction needs one stoichiometric coefficient per species"
+    );
+
+    let (mut mass, mut coefficients) = (0.0, 0.0);
+    for (nu, species) in stoichiometry.iter().zip(registry.all()) {
+        mass += nu * species.molar_mass;
+        coefficients += nu.abs();
+    }
+
+    let residual = mass.abs() / coefficients;
+    if residual <= MASS_CLOSURE_TOLERANCE {
+        Ok(())
+    } else {
+        Err(residual)
+    }
+}
+
+/// How far below zero a reactant's outlet flow may land, as a fraction of *its own* inlet flow,
+/// before it counts as consumed beyond what was there rather than as round-off.
+///
+/// A near-zero outlet is the difference of two numbers that are both about the inlet flow, so
+/// its error is a few ULP of that flow; this leaves four orders of magnitude of margin. Scaled by
+/// the species' own flow, not the stream total, so a reactant absent from the inlet has no window
+/// at all and consuming any of it is an error.
+const REACTANT_ROUND_OFF: f64 = 1e-12;
+
+/// Runs `reaction` on an inlet, returning the outlet at the inlet's temperature and pressure.
+///
+/// The extent, in Mmol/h, is `conversion * n_limiting / |nu_limiting|`, where `n_limiting` is the
+/// limiting reactant's inlet flow over its molar mass. No conversion factor appears: t/h over
+/// g/mol is Mmol/h, and Mmol/h times g/mol is t/h again.
+///
+/// **Isothermal, and so not energy-conserving.** The outlet leaves at the inlet temperature, so
+/// the heat an exothermic reaction releases, or an endothermic one absorbs, silently goes
+/// nowhere. That waits on an absolute enthalpy basis; see the reactor energy balance in TODO.md.
+///
+/// Mass is conserved exactly, even though the molar masses are rounded. Every product's mass
+/// change is scaled by `k = sum(-nu_i * M_i, reactants) / sum(nu_i * M_i, products)`, which is 1
+/// for exact masses and within the closure tolerance of it (0.01 g/mol per unit of coefficient) for any stoichiometry that loads.
+/// `k` comes from the coefficients alone, not from the extent, so an extent of zero - no
+/// limiting reactant in the inlet, or a recycle's all-zero first pass - cannot make it `0 / 0`.
+///
+/// # Errors
+/// If a reactant other than the limiting one would leave with a negative flow: the inlet does not
+/// carry enough of it for the conversion asked. Only an inlet can reveal that, and a recycle's
+/// early passes may carry a different composition from its converged one.
+///
+/// # Panics
+/// Bugs rather than bad input - a document that asks for any of these is a
+/// [`crate::serial::LoadError`] instead:
+/// - `stoichiometry` does not hold one coefficient per species;
+/// - `conversion` is outside `0.0..=1.0`, or `NaN`;
+/// - the limiting species' coefficient is not negative;
+/// - the mass balance does not close to within 0.01 g/mol per unit of coefficient, or a coefficient is `NaN`.
+pub fn react(
+    registry: &SpeciesRegistry,
+    inlet: &Stream,
+    reaction: &Reaction,
+) -> Result<Stream, EvalError> {
+    let Reaction {
+        stoichiometry,
+        limiting,
+        conversion,
+    } = reaction;
+    assert_eq!(
+        stoichiometry.len(),
+        inlet.species_count(),
+        "a reaction needs one stoichiometric coefficient per species"
+    );
+    assert!(
+        (0.0..=1.0).contains(conversion),
+        "conversion must be between 0.0 and 1.0, got {conversion}"
+    );
+    let lim = limiting.as_usize();
+    let nu_limiting = stoichiometry[lim];
+    assert!(
+        nu_limiting < 0.0,
+        "the limiting species must be a reactant, but its coefficient is {nu_limiting}"
+    );
+    if let Err(residual) = mass_closure(registry, stoichiometry) {
+        panic!(
+            "the reaction's mass balance misses by {residual} g/mol per unit of coefficient, \
+             more than {MASS_CLOSURE_TOLERANCE}"
+        );
+    }
+
+    let species = registry.all();
+    let (mut consumed, mut produced) = (0.0, 0.0);
+    for (&nu, s) in stoichiometry.iter().zip(species) {
+        if nu < 0.0 {
+            consumed -= nu * s.molar_mass;
+        } else {
+            produced += nu * s.molar_mass;
+        }
+    }
+    let k = consumed / produced;
+
+    let extent = conversion * inlet.flows()[lim] / (species[lim].molar_mass * -nu_limiting);
+
+    let mut outlet = inlet.clone();
+    for (i, (&nu, s)) in stoichiometry.iter().zip(species).enumerate() {
+        let before = inlet.flows()[i];
+        let after = if i == lim {
+            // Not through `extent`: `n - (n / (M * |nu|)) * |nu| * M` does not cancel exactly, and
+            // at conversion 1 it lands a ULP either side of zero. Same reason `recover` writes
+            // `1.0 - r` rather than subtracting.
+            before * (1.0 - conversion)
+        } else if nu > 0.0 {
+            before + k * nu * extent * s.molar_mass
+        } else {
+            before + nu * extent * s.molar_mass
+        };
+
+        outlet.flows_mut()[i] = if after >= 0.0 {
+            after
+        } else if after >= -REACTANT_ROUND_OFF * before {
+            0.0
+        } else {
+            return Err(EvalError::new(format!(
+                "the reaction needs more {} than the inlet carries ({before} t/h in, {:e} t/h \
+                 short)",
+                s.name, -after
+            )));
+        };
+    }
+
+    Ok(outlet)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{AMBIENT_K, AMBIENT_KPA, all_ids, demo_registry, feed};
+    use crate::species::{Phase, Species};
+    use crate::test_support::{
+        AMBIENT_K, AMBIENT_KPA, COMBUSTION_MASSES, ROUNDED_COMBUSTION_MASSES, all_ids, combustion,
+        combustion_registry, demo_registry, feed,
+    };
+    use crate::thermo::Shomate;
     use approx::assert_relative_eq;
 
     /// [`mix`] for the tests that expect both a successful solve and at least one inlet.
@@ -824,6 +1021,254 @@ mod tests {
         recover(&feed(&r), &[f64::NAN, 0.05, 0.30]);
     }
 
+    // ---- react ----
+
+    /// 10 t/h of methane in 60 t/h of oxygen: plenty of oxygen even at full conversion, which
+    /// needs 2 * 10 / 16.043 * 31.998 = 39.9 t/h.
+    fn lean(r: &SpeciesRegistry) -> Stream {
+        Stream::from_flows(r, vec![10.0, 60.0, 0.0, 0.0], AMBIENT_K, AMBIENT_KPA)
+    }
+
+    #[test]
+    fn react_matches_the_extent_worked_by_hand() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let [m_ch4, m_o2, m_co2, m_h2o] = COMBUSTION_MASSES;
+
+        let out = react(&r, &lean(&r), &combustion(&r, 0.9)).unwrap();
+
+        // Mmol/h of methane burned: 90% of 10 t/h, over its molar mass and a coefficient of 1.
+        let extent = 0.9 * 10.0 / m_ch4;
+        assert_relative_eq!(out.flows()[0], 1.0, max_relative = 1e-12);
+        assert_relative_eq!(
+            out.flows()[1],
+            60.0 - 2.0 * extent * m_o2,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(out.flows()[2], extent * m_co2, max_relative = 1e-12);
+        assert_relative_eq!(out.flows()[3], 2.0 * extent * m_h2o, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn react_conserves_mass_when_the_molar_masses_are_rounded() {
+        // At two decimals the equation gains 0.01 g/mol, so without the correction the outlet
+        // would carry more than came in. The products are scaled by 80.04 / 80.05 instead.
+        let masses = ROUNDED_COMBUSTION_MASSES;
+        let [m_ch4, _, m_co2, m_h2o] = masses;
+        let r = combustion_registry(masses);
+        let inlet = lean(&r);
+
+        let out = react(&r, &inlet, &combustion(&r, 0.9)).unwrap();
+
+        let k = 80.04 / 80.05;
+        let extent = 0.9 * 10.0 / m_ch4;
+        assert_relative_eq!(out.total(), inlet.total(), max_relative = 1e-12);
+        assert_relative_eq!(out.flows()[2], k * extent * m_co2, max_relative = 1e-12);
+        assert_relative_eq!(
+            out.flows()[3],
+            k * 2.0 * extent * m_h2o,
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn zero_conversion_passes_the_inlet_through() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let inlet = lean(&r);
+
+        let out = react(&r, &inlet, &combustion(&r, 0.0)).unwrap();
+
+        assert_eq!(out.flows(), inlet.flows());
+    }
+
+    #[test]
+    fn an_empty_inlet_passes_through_without_a_nan() {
+        // What a reactor downstream of a tear sees on the first pass.
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let empty = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
+
+        let out = react(&r, &empty, &combustion(&r, 0.9)).unwrap();
+
+        assert_eq!(out.flows(), [0.0; 4]);
+    }
+
+    #[test]
+    fn an_inlet_without_the_limiting_reactant_passes_through() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let inlet = Stream::from_flows(&r, vec![0.0, 60.0, 5.0, 0.0], AMBIENT_K, AMBIENT_KPA);
+
+        let out = react(&r, &inlet, &combustion(&r, 0.9)).unwrap();
+
+        assert_eq!(out.flows(), inlet.flows());
+    }
+
+    #[test]
+    fn full_conversion_exhausts_the_limiting_reactant_exactly() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+
+        let out = react(&r, &lean(&r), &combustion(&r, 1.0)).unwrap();
+
+        assert_eq!(out.flows()[0], 0.0);
+    }
+
+    #[test]
+    fn a_stoichiometric_feed_at_full_conversion_leaves_no_oxygen_and_no_error() {
+        // The oxygen is sized to burn the methane exactly, but by a different sequence of float
+        // operations than `react` uses, so the outlet lands a few ULP either side of zero. Across
+        // fifty feeds some land below it, and those must clamp rather than fail.
+        let [m_ch4, m_o2, _, _] = COMBUSTION_MASSES;
+        let r = combustion_registry(COMBUSTION_MASSES);
+
+        for methane in (1..=50).map(|n| n as f64 * 0.37) {
+            let oxygen = methane * 2.0 * m_o2 / m_ch4;
+            let inlet =
+                Stream::from_flows(&r, vec![methane, oxygen, 0.0, 0.0], AMBIENT_K, AMBIENT_KPA);
+
+            let out = react(&r, &inlet, &combustion(&r, 1.0))
+                .unwrap_or_else(|e| panic!("{methane} t/h of methane: {e}"));
+
+            let left = out.flows()[1];
+            assert!(
+                (0.0..=1e-12 * oxygen).contains(&left),
+                "{methane} t/h of methane left {left:e} t/h of oxygen"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scarce_non_limiting_reactant_is_an_error() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let inlet = Stream::from_flows(&r, vec![10.0, 1.0, 0.0, 0.0], AMBIENT_K, AMBIENT_KPA);
+
+        let e = react(&r, &inlet, &combustion(&r, 0.9)).expect_err("1 t/h of O2 is not enough");
+
+        assert!(
+            e.to_string()
+                .starts_with("the reaction needs more O2 than the inlet carries (1 t/h in, "),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn consuming_a_reactant_the_inlet_does_not_carry_is_an_error_not_a_clamp() {
+        // A clamp window scaled by the stream total would round this to zero and create mass.
+        // Scaled by the species' own flow, zero oxygen has no window at all.
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let inlet = Stream::from_flows(&r, vec![10.0, 0.0, 0.0, 0.0], AMBIENT_K, AMBIENT_KPA);
+
+        let e = react(&r, &inlet, &combustion(&r, 1e-15)).expect_err("there is no oxygen");
+
+        assert!(e.to_string().contains("more O2"), "{e}");
+    }
+
+    #[test]
+    fn the_outlet_keeps_the_inlet_temperature_and_pressure() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let inlet = Stream::from_flows(&r, vec![10.0, 60.0, 0.0, 0.0], 800.0, 250.0);
+
+        let out = react(&r, &inlet, &combustion(&r, 0.9)).unwrap();
+
+        assert_eq!(out.temperature(), 800.0);
+        assert_eq!(out.pressure(), 250.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "one stoichiometric coefficient per species")]
+    fn react_rejects_a_stoichiometry_of_the_wrong_length() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let reaction = Reaction {
+            stoichiometry: vec![-1.0, -2.0, 1.0],
+            ..combustion(&r, 0.9)
+        };
+        let _ = react(&r, &lean(&r), &reaction);
+    }
+
+    #[test]
+    #[should_panic(expected = "conversion must be between 0.0 and 1.0")]
+    fn react_rejects_a_conversion_above_one() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let _ = react(&r, &lean(&r), &combustion(&r, 1.5));
+    }
+
+    #[test]
+    #[should_panic(expected = "conversion must be between 0.0 and 1.0")]
+    fn react_rejects_a_nan_conversion() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let _ = react(&r, &lean(&r), &combustion(&r, f64::NAN));
+    }
+
+    #[test]
+    #[should_panic(expected = "the limiting species must be a reactant")]
+    fn react_rejects_a_product_as_the_limiting_species() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let reaction = Reaction {
+            limiting: r.find("CO2", Phase::Gas).unwrap(),
+            ..combustion(&r, 0.9)
+        };
+        let _ = react(&r, &lean(&r), &reaction);
+    }
+
+    #[test]
+    #[should_panic(expected = "mass balance misses")]
+    fn react_rejects_a_nan_coefficient() {
+        // `NaN > tolerance` is false, so a check written the negated way would wave this through.
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let reaction = Reaction {
+            stoichiometry: vec![-1.0, -2.0, f64::NAN, 2.0],
+            ..combustion(&r, 0.9)
+        };
+        let _ = react(&r, &lean(&r), &reaction);
+    }
+
+    #[test]
+    #[should_panic(expected = "mass balance misses by 0.22")]
+    fn react_rejects_an_equation_short_one_hydrogen_molecule() {
+        // Triolein + 2.5 H2 -> tristearin; the right coefficient is 3. The equation misses by
+        // 1.008 g/mol, which a tolerance relative to sum(|nu| * M) would have accepted, because
+        // these molecules are heavy. Per unit of coefficient it is 1.008 / 4.5 = 0.224.
+        let mut r = SpeciesRegistry::default();
+        let triolein = [
+            ("triolein", 885.453),
+            ("H2", 2.016),
+            ("tristearin", 891.501),
+        ]
+        .map(|(name, molar_mass)| {
+            r.insert(Species {
+                name: name.into(),
+                phase: Phase::Liquid,
+                molar_mass,
+                shomate: Shomate::constant(1000.0),
+            })
+        })[0];
+        let inlet = Stream::from_flows(&r, vec![100.0, 1.0, 0.0], AMBIENT_K, AMBIENT_KPA);
+
+        let _ = react(
+            &r,
+            &inlet,
+            &Reaction {
+                stoichiometry: vec![-1.0, -2.5, 1.0],
+                limiting: triolein,
+                conversion: 0.5,
+            },
+        );
+    }
+
+    #[test]
+    fn mass_closure_accepts_rounded_masses_and_reports_the_residual_otherwise() {
+        let rounded = combustion_registry(ROUNDED_COMBUSTION_MASSES);
+        assert_eq!(mass_closure(&rounded, &[-1.0, -2.0, 1.0, 2.0]), Ok(()));
+
+        // Two and a half oxygens: -16.043 - 79.995 + 44.009 + 36.030 = -15.999 over 6.5.
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let residual = mass_closure(&r, &[-1.0, -2.5, 1.0, 2.0]).unwrap_err();
+        assert_relative_eq!(residual, 15.999 / 6.5, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn mass_closure_rejects_an_all_zero_stoichiometry() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        assert!(mass_closure(&r, &[0.0; 4]).unwrap_err().is_nan());
+    }
+
     // ---- arity ----
 
     #[test]
@@ -882,6 +1327,19 @@ mod tests {
                 (2, Some(2)),
             ),
             (Box::new(Product), (1, Some(1)), (0, Some(0))),
+            // Not chemistry: the demo species have no real reaction between them, so this turns
+            // chalcopyrite into its own mass of quartz, which is all the closure check asks.
+            (
+                Box::new(ConversionReactor {
+                    reaction: Reaction {
+                        stoichiometry: vec![-1.0, 183.5 / 60.08, 0.0],
+                        limiting: all_ids(&r)[0],
+                        conversion: 0.5,
+                    },
+                }),
+                (1, Some(1)),
+                (1, Some(1)),
+            ),
         ];
 
         for (op, inlets, outlets) in cases {

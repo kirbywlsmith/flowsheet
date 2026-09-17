@@ -148,6 +148,30 @@ pub struct FlotationSpec {
     pub recovery: BTreeMap<String, f64>,
 }
 
+/// One reaction, as a document writes it.
+///
+/// `stoichiometry` is keyed by species name, like [`FlotationSpec::recovery`], but a species it
+/// omits simply takes no part in the reaction, and saving drops zero coefficients: a zero recovery
+/// says a species does not float, while an equation only ever lists its participants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReactionSpec {
+    /// Molar coefficients keyed by species name: negative consumed, positive produced.
+    pub stoichiometry: BTreeMap<String, f64>,
+    /// The name of the reactant `conversion` is a fraction of.
+    pub limiting: String,
+    /// The fraction of the limiting reactant that reacts.
+    pub conversion: f64,
+}
+
+/// The parameters of a `conversion_reactor`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConversionReactorSpec {
+    /// The one reaction the reactor runs.
+    pub reaction: ReactionSpec,
+}
+
 /// The parameters of a `heater`.
 ///
 /// `duty` has no load-time check. The domain rejects only a non-finite duty, and a document
@@ -508,7 +532,7 @@ impl OpRegistry {
         }
     }
 
-    /// The eight operations this crate ships, under the tags they save themselves as.
+    /// The nine operations this crate ships, under the tags they save themselves as.
     #[must_use]
     pub fn builtin() -> Self {
         let mut ops = Self::new();
@@ -577,6 +601,62 @@ impl OpRegistry {
                 dense[id.as_usize()] = value;
             }
             Ok(Box::new(unit::Flotation { recovery: dense }))
+        });
+
+        ops.register(unit::ConversionReactor::TAG, |s| {
+            let ConversionReactorSpec { reaction } = s.parse(unit::ConversionReactor::TAG)?;
+            let unknown = |name: &String| LoadError::UnknownSpecies {
+                at: s.at.clone(),
+                name: name.clone(),
+            };
+
+            // A species the map leaves out takes no part in the reaction.
+            let mut stoichiometry = vec![0.0; s.registry.len()];
+            for (name, &nu) in &reaction.stoichiometry {
+                let id = s.species_ids.get(name).ok_or_else(|| unknown(name))?;
+                stoichiometry[id.as_usize()] = nu;
+            }
+            let limiting = *s
+                .species_ids
+                .get(&reaction.limiting)
+                .ok_or_else(|| unknown(&reaction.limiting))?;
+
+            // Every panic in `unit::react` has a matching check here. The wrong-length one does
+            // not: the vector is built above to the registry's length.
+            require(
+                (0.0..=1.0).contains(&reaction.conversion),
+                s.at,
+                "conversion",
+                reaction.conversion,
+                "between 0.0 and 1.0",
+            )?;
+            let nu_limiting = stoichiometry[limiting.as_usize()];
+            require(
+                nu_limiting < 0.0,
+                s.at,
+                "limiting",
+                nu_limiting,
+                "the coefficient of a reactant, which is negative",
+            )?;
+            unit::mass_closure(s.registry, &stoichiometry).map_err(|residual| {
+                LoadError::BadValue {
+                    at: s.at.clone(),
+                    field: "stoichiometry".to_string(),
+                    value: residual,
+                    expected: format!(
+                        "a mass balance within {} g/mol per unit of coefficient",
+                        unit::MASS_CLOSURE_TOLERANCE
+                    ),
+                }
+            })?;
+
+            Ok(Box::new(unit::ConversionReactor {
+                reaction: unit::Reaction {
+                    stoichiometry,
+                    limiting,
+                    conversion: reaction.conversion,
+                },
+            }))
         });
 
         ops.register(unit::Heater::TAG, |s| {
@@ -918,6 +998,48 @@ impl ToDocument for unit::Flotation {
     }
 }
 
+impl unit::ConversionReactor {
+    /// The `type` a conversion reactor writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "conversion_reactor";
+}
+
+impl ToDocument for unit::ConversionReactor {
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
+    /// # Panics
+    /// If `stoichiometry` does not hold exactly one coefficient per species, for the reason
+    /// [`unit::Flotation`]'s `spec` gives: `zip` would truncate, and the document would reload as
+    /// a different reaction.
+    fn spec(&self, registry: &SpeciesRegistry) -> serde_json::Value {
+        let reaction = &self.reaction;
+        assert_eq!(
+            reaction.stoichiometry.len(),
+            registry.len(),
+            "a reaction needs one stoichiometric coefficient per species"
+        );
+
+        // Zero coefficients are dropped, unlike zero recoveries: an equation lists only the
+        // species that take part in it.
+        let stoichiometry = reaction
+            .stoichiometry
+            .iter()
+            .zip(registry.all())
+            .filter(|(nu, _)| **nu != 0.0)
+            .map(|(&nu, species)| (species.name.clone(), nu))
+            .collect();
+
+        spec_of(&ConversionReactorSpec {
+            reaction: ReactionSpec {
+                stoichiometry,
+                limiting: registry[reaction.limiting].name.clone(),
+                conversion: reaction.conversion,
+            },
+        })
+    }
+}
+
 impl unit::Heater {
     /// The `type` a heater writes, and the [`OpRegistry`] key it loads back from.
     pub const TAG: &'static str = "heater";
@@ -1209,6 +1331,7 @@ mod tests {
         assert_eq!(
             tags,
             [
+                "conversion_reactor",
                 "feed",
                 "flotation",
                 "heater",
@@ -1516,6 +1639,164 @@ mod tests {
                 "{duty} should not parse"
             );
         }
+    }
+
+    /// Methane burning in oxygen, with nitrogen along for the ride: feed -> reactor -> product.
+    /// `reaction` is the body of the reactor's `reaction` object.
+    fn combustion_json(reaction: &str) -> String {
+        format!(
+            r#"{{ "species": [
+                {{ "name": "CH4", "phase": "Gas", "molar_mass": 16.043, "shomate": {{ "a": 35.7 }} }},
+                {{ "name": "O2",  "phase": "Gas", "molar_mass": 31.998, "shomate": {{ "a": 29.4 }} }},
+                {{ "name": "CO2", "phase": "Gas", "molar_mass": 44.009, "shomate": {{ "a": 37.1 }} }},
+                {{ "name": "H2O", "phase": "Gas", "molar_mass": 18.015, "shomate": {{ "a": 33.6 }} }},
+                {{ "name": "N2",  "phase": "Gas", "molar_mass": 28.014, "shomate": {{ "a": 29.1 }} }}
+              ],
+              "units": [
+                {{ "name": "f", "op": {{ "type": "feed",
+                  "state": {{ "flows": {{ "CH4": 10.0, "O2": 60.0, "N2": 200.0 }} }} }} }},
+                {{ "name": "r", "op": {{ "type": "conversion_reactor", "reaction": {{ {reaction} }} }} }},
+                {{ "name": "p", "op": {{ "type": "product" }} }}
+              ],
+              "streams": [{{ "from": "f", "to": "r" }}, {{ "from": "r", "to": "p" }}] }}"#
+        )
+    }
+
+    const BURN: &str = r#""stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 },
+                          "limiting": "CH4", "conversion": 0.9"#;
+
+    #[test]
+    fn a_conversion_reactor_survives_load_solve_save_load() {
+        let mut fs = load(&combustion_json(BURN)).unwrap().validate().unwrap();
+        crate::solver::Solver::default().solve(&mut fs).unwrap();
+        let saved = Flowsheet::from(&fs);
+
+        let reactor: ConversionReactorSpec = spec(&saved, 1, unit::ConversionReactor::TAG);
+        assert_eq!(reactor.reaction.limiting, "CH4");
+        assert_eq!(reactor.reaction.conversion, 0.9);
+        assert_eq!(
+            reactor.reaction.stoichiometry,
+            BTreeMap::from([
+                ("CH4".to_string(), -1.0),
+                ("CO2".to_string(), 1.0),
+                ("H2O".to_string(), 2.0),
+                ("O2".to_string(), -2.0),
+            ])
+        );
+
+        // Reloading the saved document and saving again writes the same bytes.
+        let json = serde_json::to_string(&saved).unwrap();
+        let reloaded = DomainFlowsheet::try_from(doc(&json))
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_string(&Flowsheet::from(&reloaded)).unwrap(),
+            json
+        );
+    }
+
+    #[test]
+    fn saving_drops_zero_coefficients() {
+        // The nitrogen is written with an explicit zero, and does not come back.
+        let reaction = r#""stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2, "N2": 0 },
+                          "limiting": "CH4", "conversion": 0.9"#;
+        let fs = load(&combustion_json(reaction))
+            .unwrap()
+            .validate()
+            .unwrap();
+
+        let reactor: ConversionReactorSpec =
+            spec(&Flowsheet::from(&fs), 1, unit::ConversionReactor::TAG);
+
+        assert_eq!(reactor.reaction.stoichiometry.len(), 4);
+        assert!(!reactor.reaction.stoichiometry.contains_key("N2"));
+    }
+
+    #[test]
+    fn a_conversion_above_one_is_an_error_not_a_panic() {
+        let reaction = r#""stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 },
+                          "limiting": "CH4", "conversion": 1.5"#;
+        assert_eq!(
+            load(&combustion_json(reaction)).unwrap_err().to_string(),
+            "unit `r`: `conversion` is 1.5, expected between 0.0 and 1.0"
+        );
+    }
+
+    #[test]
+    fn a_product_as_the_limiting_species_is_an_error_not_a_panic() {
+        let reaction = r#""stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 },
+                          "limiting": "CO2", "conversion": 0.9"#;
+        assert_eq!(
+            load(&combustion_json(reaction)).unwrap_err().to_string(),
+            "unit `r`: `limiting` is 1, expected the coefficient of a reactant, which is negative"
+        );
+    }
+
+    #[test]
+    fn a_limiting_species_missing_from_the_equation_is_an_error_not_a_panic() {
+        // N2 is declared, so this is not an unknown species - it just takes no part.
+        let reaction = r#""stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 },
+                          "limiting": "N2", "conversion": 0.9"#;
+        assert!(matches!(
+            load(&combustion_json(reaction)).unwrap_err(),
+            LoadError::BadValue { ref field, value, .. } if field == "limiting" && value == 0.0
+        ));
+    }
+
+    #[test]
+    fn an_equation_that_does_not_conserve_mass_is_an_error_not_a_panic() {
+        // Two and a half oxygens: misses by 15.999 g/mol over 6.5 units of coefficient.
+        let reaction = r#""stoichiometry": { "CH4": -1, "O2": -2.5, "CO2": 1, "H2O": 2 },
+                          "limiting": "CH4", "conversion": 0.9"#;
+        let e = load(&combustion_json(reaction)).unwrap_err();
+        let LoadError::BadValue {
+            ref field, value, ..
+        } = e
+        else {
+            panic!("expected a bad value, got {e:?}");
+        };
+        assert_eq!(field, "stoichiometry");
+        assert!((value - 15.999 / 6.5).abs() < 1e-9, "{value}");
+        assert!(
+            e.to_string()
+                .ends_with("expected a mass balance within 0.01 g/mol per unit of coefficient"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_species_in_an_equation_names_where_it_appeared() {
+        let reaction = r#""stoichiometry": { "CH4": -1, "Ar": 0 },
+                          "limiting": "CH4", "conversion": 0.9"#;
+        assert_eq!(
+            load(&combustion_json(reaction)).unwrap_err(),
+            LoadError::UnknownSpecies {
+                at: Location::Unit("r".into()),
+                name: "Ar".into()
+            }
+        );
+    }
+
+    #[test]
+    fn an_unknown_limiting_species_names_where_it_appeared() {
+        let reaction = r#""stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 },
+                          "limiting": "C2H6", "conversion": 0.9"#;
+        assert_eq!(
+            load(&combustion_json(reaction)).unwrap_err(),
+            LoadError::UnknownSpecies {
+                at: Location::Unit("r".into()),
+                name: "C2H6".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_stray_field_on_a_reaction_is_rejected() {
+        let reaction = r#""stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2 },
+                          "limiting": "CH4", "conversion": 0.9, "extent": 1.0"#;
+        let e = load(&combustion_json(reaction)).unwrap_err();
+        assert!(e.to_string().contains("extent"), "{e}");
     }
 
     #[test]

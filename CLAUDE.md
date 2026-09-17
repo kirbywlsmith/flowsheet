@@ -83,7 +83,7 @@ Never mix severities in one unlabelled list.
 - Loading is a **`serial::OpRegistry`**, a `BTreeMap<&'static str, Box<dyn Fn(Spec) -> Result<Box<dyn UnitOp>>>>`.
   A document names its op with a string and something must own the name-to-constructor table; making that something a
   *value* rather than a `match` is what makes the wire format as open as the solver. `OpRegistry::builtin()` holds the
-  eight shipped ops, `register` adds or replaces one, and `serial::Flowsheet::into_domain(&ops)` is the real entry
+  nine shipped ops, `register` adds or replaces one, and `serial::Flowsheet::into_domain(&ops)` is the real entry
   point — `TryFrom` stays, delegating to `builtin()`. Two costs, both paid deliberately: `serde_json` stops being a
   dev-dependency of the library (`Value` is now in its public API), and `deny_unknown_fields` no longer fires during
   parsing. It still fires, one step later, when `Spec::parse` deserialises into the op's own spec struct — so a stray
@@ -120,6 +120,40 @@ Never mix severities in one unlabelled list.
   independently, so `M = F / (1 - f(1 - r))` is the whole answer. The balance tests assert against that formula
   rather than against pasted numbers, so changing `f` or the recovery vector does not invalidate them. Convergence
   now varies by species too - the rate is `f(1 - r)`, and the slowest species sets it.
+- The **conversion reactor is the first op that transforms species**. `ConversionReactor { reaction: Reaction }`,
+  tag `conversion_reactor`, one inlet and one outlet. `Reaction { stoichiometry, limiting, conversion }` is plain data
+  defined in `unit.rs` beside `unit::react`, not in the op's file, so `unit.rs` never imports from its own child and
+  the later several-reactions item can reuse it. Coefficients are **molar and signed**; extent is
+  `conversion * n_limiting / |nu_limiting|` in Mmol/h, and t/h over g/mol needs no factor. The limiting species is
+  written `in * (1 - conversion)`, not through the extent, which does not cancel exactly and lands a ULP either side
+  of zero at conversion 1. **Isothermal**: the outlet takes the inlet temperature, so any reaction with a heat of
+  reaction breaks the energy balance silently until the reactor energy balance item lands.
+- Mass closure is **two layers**. First, `unit::mass_closure` rejects `|sum(nu_i M_i)| / sum(|nu_i|) > 0.01` g/mol -
+  divided by `sum(|nu_i|)` because rounding error is bounded by the rounding step times that sum and does not grow
+  with molar mass. A tolerance relative to `sum(|nu_i| M_i)` accepted triolein + 2.5 H2 -> tristearin, off by a whole
+  hydrogen molecule, because the molecules are heavy. The helper does the comparison and returns `Result<(), f64>`,
+  so `react`'s panic and the loader's `LoadError::BadValue` share one tolerance; it is written `residual <= TOL`
+  because a `NaN` coefficient or an all-zero stoichiometry makes the residual `NaN`. Second, `react` scales every
+  product's mass change by `k = reactant mass / product mass`, computed from **coefficients only** - computing it from
+  the extent is `0 / 0` whenever the extent is zero. So a rounded equation still conserves total mass exactly, and
+  "every op conserves mass" stays true on totals. The 0.01 assumes two-decimal masses; the demo's one-decimal
+  CuFeS2 passes in practice because the error is averaged, not by guarantee.
+- A reactant driven negative is an **`EvalError`**, after clamping round-off: an outlet in
+  `[-1e-12 * in[i], 0)` becomes 0.0. The window is scaled by **that species' own inlet flow**, not the stream total,
+  so a reactant absent from the inlet has no window and consuming any of it is an error rather than a silent clamp
+  that creates mass. `tests/conversion_reactor.rs` runs the reactor in a recycle under Wegstein too, because Wegstein
+  extrapolates tear flows with no floor and the extent couples the species - the transient this error could turn
+  into a failed solve. It does not on that loop.
+- `UnitOp::conserves_species()` is a **default trait method returning `true`**; the reactor overrides it. If any unit
+  returns `false`, `report::imbalance` compares total mass instead of per species. A default method is not a breaking
+  change (a C# 8 default interface method), so `tests/downstream_op.rs`'s `Bleed` compiled unchanged. **Cost,
+  accepted:** the switch is flowsheet-wide, so one reactor hides a species mis-wiring anywhere else in the plant.
+  Without every reaction's extent stored somewhere, total mass is the only balance a reacting flowsheet can check.
+- On the wire the reaction is **nested and singular**: `{ "type": "conversion_reactor", "reaction": { "stoichiometry":
+  {..}, "limiting": "CH4", "conversion": 0.9 } }`. The stoichiometry is a species-name map like `recovery`, but
+  **zero coefficients are dropped on save** - an equation lists its participants, whereas a zero recovery is a
+  statement. The several-reactions item will rename `reaction` to `reactions` and break the format; acceptable only
+  because nothing is published.
 - **The energy balance solves temperature and nothing else.** `pressure` is still a carried label (see TODO.md), and
   there is no phase change.
 - `UnitOp::evaluate` takes **`&SpeciesRegistry`** as a plain second parameter. A `Stream` is a bare vector of flows and
@@ -168,9 +202,10 @@ Never mix severities in one unlabelled list.
   being `Send`.
 - The **line between a panic and an `EvalError`** is whose mistake it is. `EvalError`: user input the numerics cannot
   answer - a duty no positive temperature absorbs, Newton not converging because a Shomate fit extrapolates cp
-  negative, later a flash with no two-phase split. Still a panic: a split fraction outside `0.0..=1.0`, empty or
-  all-zero `split_n` ratios, a `recovery` of the wrong length, a non-finite duty, and `solve_temperature` on a stream
-  with no heat capacity. Every one of those is either caught by a `LoadError` at the JSON boundary or guarded by the
+  negative, a reactant driven negative, later a flash with no two-phase split. Still a panic: a split fraction outside
+  `0.0..=1.0`, empty or all-zero `split_n` ratios, a `recovery` or `stoichiometry` of the wrong length, a conversion
+  outside `0.0..=1.0`, a limiting species that is not a reactant, a stoichiometry whose mass does not close, a
+  non-finite duty, and `solve_temperature` on a stream with no heat capacity. Every one of those is either caught by a `LoadError` at the JSON boundary or guarded by the
   caller, so reaching it is a bug in the crate.
 - `SolveError::Evaluation` carries **both `UnitId` and `name`**: the id so a caller can look the unit up, the name
   because this is the one `SolveError` a *user* caused and "unit 41" is no help in a 300-cell circuit.
@@ -271,7 +306,8 @@ Never mix severities in one unlabelled list.
   outlets and the material that left is the sum of every sink's inlets. The footer prints it
   beside the residual (`converged in 17 iterations, residual 6.4e-10, imbalance 1.9e-10`). It is
   **per species, not per total** - a mis-wiring that moved gangue into the copper column leaves
-  both totals untouched - and normalised by the larger of the two totals, `NaN`-propagating,
+  both totals untouched - unless any unit's `UnitOp::conserves_species()` is `false`, which switches the whole
+  flowsheet to total mass (see the conversion reactor entry) - and normalised by the larger of the two totals, `NaN`-propagating,
   which is `Stream::max_flow_residual`'s convention: the two numbers sit side by side, so they
   have to mean the same thing. That is what promoted `solver::nan_max` to `pub(crate)`.
 - The TODO item said the demo circuit's `S2 + S5 == S0` **exactly**; it does not, and cannot.
