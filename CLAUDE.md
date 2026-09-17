@@ -322,11 +322,21 @@ Never mix severities in one unlabelled list.
   still calls `validate`. `LoadError` fails fast — unlike `check`, which collects — because load errors are typos.
 - Every domain constructor that **panics** on bad input has a matching `LoadError` at the JSON boundary
   (split fractions, split ratios, negative flows, non-positive temperature).
-- Document flows are a **species-name map**, so files don't depend on species order. Consequence: names must be unique
-  across phases, so `H2O` liquid + `H2O` gas is currently rejected on **both** boundaries: `LoadError::DuplicateSpecies`
-  on the way in, and `FlowsheetError::DuplicateSpeciesName` in `check` on the way out - otherwise saving would silently
-  drop one of the two flows. Revisit with a composite key (`"H2O(g)"`) when phase change lands -
-  the energy balance shipped without it, with every species staying in the phase it was registered with.
+- Document flows (and `recovery`, `stoichiometry`, `limiting`) are keyed by **`SpeciesRegistry::key`**, so files don't
+  depend on species order. The key is the **bare name when only one phase uses it, `"H2O(g)"` when two do**. Saving
+  writes the bare form wherever it can, so every single-phase document saves byte for byte as before; loading accepts a
+  suffixed key always and a bare one only when it is unambiguous (`LoadError::AmbiguousSpecies`, listing the keys that
+  would work). The suffix is exactly `(s)`, `(l)` or `(g)`, so `Fe(OH)3` and `Quartz(150um)` stay ordinary names, and
+  a name that *ends* in one is rejected on both boundaries (`LoadError::ReservedSpeciesName`,
+  `FlowsheetError::ReservedSpeciesName`) - otherwise a liquid named `H2O(g)` beside a gaseous `H2O` would key the same.
+  That rule is what lets `resolve` try the bare name first and the suffix second without the two readings competing.
+  `DuplicateSpecies` narrowed to the same name *and* phase, because `insert` would silently hand back the first id.
+  The loader's `BTreeMap<String, SpeciesId>` went with it: `Spec::species(key)` resolves by linear scan against the
+  registry, so `Spec` lost its public `species_ids` field and there is one source of truth for a key. Accepting both
+  forms means one species has two keys, so a map writing `"H2O"` *and* `"H2O(l)"` is `LoadError::DuplicateSpeciesKey`
+  rather than the later value silently overwriting the earlier; all three maps go through one `species_vector` helper
+  so none can forget the check. One qualifier
+  only - the screen item still has to decide whether a key carries a list.
 - Units carry a **user-supplied `name`**. Uniqueness is checked in `Flowsheet::check`, not `add_unit`, so the builder
   stays infallible and `ValidFlowsheet` is what guarantees a saveable document.
 - `serde_json` needs the **`float_roundtrip` feature**. Its default parser is off by up to 1 ULP, which silently

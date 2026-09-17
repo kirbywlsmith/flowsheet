@@ -39,7 +39,8 @@ pub struct Flowsheet {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct State {
-    /// Absolute mass flow per species (t/h), keyed by species name. Absent species are zero.
+    /// Absolute mass flow per species (t/h), keyed by [`SpeciesRegistry::key`]: the bare name, or
+    /// `"H2O(g)"` where two phases share one. Absent species are zero.
     pub flows: BTreeMap<String, f64>,
     /// Pressure, in kPa.
     pub pressure: f64,
@@ -257,13 +258,38 @@ pub enum LoadError {
         /// The repeated name.
         name: String,
     },
-    /// Two species share a name. Flows are keyed by name, so names must be unique even across
-    /// phases.
+    /// A name map uses a bare name that more than one phase shares, so it cannot say which it
+    /// means.
+    AmbiguousSpecies {
+        /// Where the name appeared.
+        at: Location,
+        /// The bare name.
+        name: String,
+        /// The keys that would have been unambiguous, in declaration order.
+        keys: Vec<String>,
+    },
+    /// A species-keyed map names one species twice, once bare and once with its phase suffix -
+    /// `"H2O"` and `"H2O(l)"` - so one of the two values would be silently dropped.
+    DuplicateSpeciesKey {
+        /// Where the map appeared.
+        at: Location,
+        /// The key that came first, in the map's sorted order.
+        first: String,
+        /// The key that named the same species again.
+        second: String,
+    },
+    /// Two species share a name *and* a phase. The same name in two phases is legal, keyed as
+    /// `"H2O(l)"` and `"H2O(g)"`.
     DuplicateSpecies {
         /// The repeated name.
         name: String,
-        /// The phase of the second entry.
+        /// The phase both entries declare.
         phase: Phase,
+    },
+    /// A species name ends in a phase suffix such as `(g)`, which a key would read as its phase.
+    ReservedSpeciesName {
+        /// The offending name.
+        name: String,
     },
     /// A numeric field is outside the range the domain accepts.
     BadValue {
@@ -331,10 +357,22 @@ impl fmt::Display for LoadError {
             LoadError::DuplicateUnit { name } => {
                 write!(f, "unit `{name}` is declared more than once")
             }
-            LoadError::DuplicateSpecies { name, phase } => write!(
+            LoadError::AmbiguousSpecies { at, name, keys } => write!(
                 f,
-                "species `{name}` ({phase:?}) repeats a name already declared - flows are keyed \
-                 by name, so names must be unique across phases"
+                "{at} names species `{name}`, which more than one phase shares - write one of `{}`",
+                keys.join("`, `")
+            ),
+            LoadError::DuplicateSpeciesKey { at, first, second } => write!(
+                f,
+                "{at} names one species twice, as `{first}` and `{second}` - write it once"
+            ),
+            LoadError::DuplicateSpecies { name, phase } => {
+                write!(f, "species `{name}` ({phase:?}) is declared more than once")
+            }
+            LoadError::ReservedSpeciesName { name } => write!(
+                f,
+                "species `{name}` ends in a phase suffix - `(s)`, `(l)` and `(g)` are reserved \
+                 for telling phases apart"
             ),
             LoadError::BadValue {
                 at,
@@ -385,13 +423,69 @@ fn require(
     }
 }
 
+/// Resolves a document's species key through [`SpeciesRegistry::resolve`], telling a bare name
+/// two phases share apart from one that is not declared at all.
+fn resolve_species(
+    registry: &SpeciesRegistry,
+    key: &str,
+    at: &Location,
+) -> Result<SpeciesId, LoadError> {
+    registry.resolve(key).ok_or_else(|| {
+        if registry.shares_name(key) {
+            LoadError::AmbiguousSpecies {
+                at: at.clone(),
+                name: key.to_string(),
+                keys: registry
+                    .all()
+                    .iter()
+                    .filter(|s| s.name == key)
+                    .map(|s| format!("{key}{}", s.phase.suffix()))
+                    .collect(),
+            }
+        } else {
+            LoadError::UnknownSpecies {
+                at: at.clone(),
+                name: key.to_string(),
+            }
+        }
+    })
+}
+
+/// Resolves a species-keyed map into a dense vector in [`SpeciesId`] order, running `check` on
+/// each value. Species the map leaves out are zero.
+///
+/// One species has two keys once a suffixed form is accepted - `"H2O"` and `"H2O(l)"` - so a map
+/// can name it twice, and writing the second value over the first would drop one without a word.
+/// That is a [`LoadError::DuplicateSpeciesKey`] instead.
+fn species_vector<'m>(
+    registry: &SpeciesRegistry,
+    map: &'m BTreeMap<String, f64>,
+    at: &Location,
+    mut check: impl FnMut(&'m str, f64) -> Result<(), LoadError>,
+) -> Result<Vec<f64>, LoadError> {
+    let mut dense = vec![0.0; registry.len()];
+    let mut seen: Vec<Option<&str>> = vec![None; registry.len()];
+    for (key, &value) in map {
+        let id = resolve_species(registry, key, at)?;
+        if let Some(first) = seen[id.as_usize()].replace(key) {
+            return Err(LoadError::DuplicateSpeciesKey {
+                at: at.clone(),
+                first: first.to_string(),
+                second: key.clone(),
+            });
+        }
+        check(key, value)?;
+        dense[id.as_usize()] = value;
+    }
+    Ok(dense)
+}
+
 impl State {
-    /// Resolves the name-keyed flows against `registry`, producing a [`stream::Stream`] whose
+    /// Resolves the species-keyed flows against `registry`, producing a [`stream::Stream`] whose
     /// flows are in [`SpeciesId`] order. Species the document omits are zero.
     fn to_stream(
         &self,
         registry: &SpeciesRegistry,
-        species_ids: &BTreeMap<String, SpeciesId>,
         at: &Location,
     ) -> Result<stream::Stream, LoadError> {
         require(
@@ -409,23 +503,15 @@ impl State {
             "0.0 kPa or greater",
         )?;
 
-        let mut flows = vec![0.0; registry.len()];
-        for (name, &value) in &self.flows {
-            let id = species_ids
-                .get(name)
-                .ok_or_else(|| LoadError::UnknownSpecies {
-                    at: at.clone(),
-                    name: name.clone(),
-                })?;
+        let flows = species_vector(registry, &self.flows, at, |name, value| {
             require(
                 value.is_finite() && value >= 0.0,
                 at,
                 name,
                 value,
                 "0.0 t/h or greater",
-            )?;
-            flows[id.as_usize()] = value;
-        }
+            )
+        })?;
 
         Ok(stream::Stream::from_flows(
             registry,
@@ -438,7 +524,7 @@ impl State {
 
 /// Everything a constructor needs to turn one [`Op`] into a domain operation.
 ///
-/// A struct rather than four parameters, because a constructor is stored behind a `dyn Fn` and
+/// A struct rather than three parameters, because a constructor is stored behind a `dyn Fn` and
 /// every added argument would be a breaking change to the [`OpRegistry`] table's type.
 #[derive(Debug, Clone, Copy)]
 pub struct Spec<'a> {
@@ -446,13 +532,22 @@ pub struct Spec<'a> {
     pub params: &'a serde_json::Map<String, serde_json::Value>,
     /// Every species, in [`SpeciesId`] order.
     pub registry: &'a SpeciesRegistry,
-    /// Species by name, for resolving a name-keyed map into a dense vector.
-    pub species_ids: &'a BTreeMap<String, SpeciesId>,
     /// The unit being loaded, for error messages.
     pub at: &'a Location,
 }
 
 impl<'a> Spec<'a> {
+    /// Resolves a species key from the parameters - a bare name, or `"H2O(g)"` where two phases
+    /// share one - for turning a species-keyed map into a dense vector.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::UnknownSpecies`] for a key that names nothing, and
+    /// [`LoadError::AmbiguousSpecies`] for a bare name more than one phase shares.
+    pub fn species(&self, key: &str) -> Result<SpeciesId, LoadError> {
+        resolve_species(self.registry, key, self.at)
+    }
+
     /// Deserialises the parameters into an operation's own spec type.
     ///
     /// Where a spec type's `deny_unknown_fields` fires - see [`Op`] for why it cannot fire at
@@ -559,7 +654,7 @@ impl OpRegistry {
         ops.register(unit::Feed::TAG, |s| {
             let spec: FeedSpec = s.parse(unit::Feed::TAG)?;
             Ok(Box::new(unit::Feed {
-                stream: spec.state.to_stream(s.registry, s.species_ids, s.at)?,
+                stream: spec.state.to_stream(s.registry, s.at)?,
             }))
         });
 
@@ -601,34 +696,21 @@ impl OpRegistry {
             let FlotationSpec { recovery } = s.parse(unit::Flotation::TAG)?;
             // Resolved into a dense `SpeciesId`-ordered vector, the same shape as a stream's
             // flows. A species the map leaves out recovers nothing.
-            let mut dense = vec![0.0; s.registry.len()];
-            for (name, &value) in &recovery {
-                let id = s
-                    .species_ids
-                    .get(name)
-                    .ok_or_else(|| LoadError::UnknownSpecies {
-                        at: s.at.clone(),
-                        name: name.clone(),
-                    })?;
+            let recovery = species_vector(s.registry, &recovery, s.at, |name, value| {
                 require(
                     (0.0..=1.0).contains(&value),
                     s.at,
                     name,
                     value,
                     "between 0.0 and 1.0",
-                )?;
-                dense[id.as_usize()] = value;
-            }
-            Ok(Box::new(unit::Flotation { recovery: dense }))
+                )
+            })?;
+            Ok(Box::new(unit::Flotation { recovery }))
         });
 
         ops.register(unit::ConversionReactor::TAG, |s| {
             let ConversionReactorSpec { energy, reactions } =
                 s.parse(unit::ConversionReactor::TAG)?;
-            let unknown = |name: &String| LoadError::UnknownSpecies {
-                at: s.at.clone(),
-                name: name.clone(),
-            };
 
             // The one panic in `ConversionReactor::evaluate` itself. A count is not an `f64`, but
             // `BadValue` prints it as one without trouble and a variant of its own would buy nothing.
@@ -647,15 +729,9 @@ impl OpRegistry {
                 let field = |name: &str| format!("reactions[{i}].{name}");
 
                 // A species the map leaves out takes no part in the reaction.
-                let mut stoichiometry = vec![0.0; s.registry.len()];
-                for (name, &nu) in &reaction.stoichiometry {
-                    let id = s.species_ids.get(name).ok_or_else(|| unknown(name))?;
-                    stoichiometry[id.as_usize()] = nu;
-                }
-                let limiting = *s
-                    .species_ids
-                    .get(&reaction.limiting)
-                    .ok_or_else(|| unknown(&reaction.limiting))?;
+                let stoichiometry =
+                    species_vector(s.registry, &reaction.stoichiometry, s.at, |_, _| Ok(()))?;
+                let limiting = s.species(&reaction.limiting)?;
 
                 // Every panic in `unit::react` has a matching check here. The wrong-length one
                 // does not: the vector is built above to the registry's length.
@@ -686,9 +762,15 @@ impl OpRegistry {
                     }
                 })?;
                 unit::formation_enthalpies(s.registry, &stoichiometry).map_err(|species| {
+                    // Named by its key, so the message matches what the document wrote.
+                    let species = if s.registry.shares_name(&species.name) {
+                        format!("{}{}", species.name, species.phase.suffix())
+                    } else {
+                        species.name.clone()
+                    };
                     LoadError::MissingFormationEnthalpy {
                         at: s.at.clone(),
-                        species: species.name.clone(),
+                        species,
                     }
                 })?;
 
@@ -749,7 +831,6 @@ impl OpRegistry {
         &self,
         op: &Op,
         registry: &SpeciesRegistry,
-        species_ids: &BTreeMap<String, SpeciesId>,
         at: &Location,
     ) -> Result<Box<dyn unit::UnitOp>, LoadError> {
         let constructor = self
@@ -763,7 +844,6 @@ impl OpRegistry {
         constructor(Spec {
             params: &op.spec,
             registry,
-            species_ids,
             at,
         })
     }
@@ -816,7 +896,6 @@ impl Flowsheet {
         }
 
         let mut registry = SpeciesRegistry::default();
-        let mut species_ids: BTreeMap<String, SpeciesId> = BTreeMap::new();
         for s in &doc.species {
             let at = Location::Species(s.name.clone());
             require(
@@ -836,13 +915,19 @@ impl Flowsheet {
                 cp,
                 "a heat capacity at 298.15 K greater than 0.0 J/(mol·K)",
             )?;
-            if species_ids.contains_key(&s.name) {
+            if Phase::split_suffix(&s.name).is_some() {
+                return Err(LoadError::ReservedSpeciesName {
+                    name: s.name.clone(),
+                });
+            }
+            // `insert` would hand back the first entry's id and silently drop this one.
+            if registry.find(&s.name, s.phase).is_some() {
                 return Err(LoadError::DuplicateSpecies {
                     name: s.name.clone(),
                     phase: s.phase,
                 });
             }
-            species_ids.insert(s.name.clone(), registry.insert(s.clone()));
+            registry.insert(s.clone());
         }
 
         let mut fs = flowsheet::Flowsheet::new(registry);
@@ -857,7 +942,7 @@ impl Flowsheet {
                 });
             }
             let at = Location::Unit(u.name.clone());
-            let op = ops.build(&u.op, fs.registry(), &species_ids, &at)?;
+            let op = ops.build(&u.op, fs.registry(), &at)?;
             unit_ids.insert(&u.name, fs.add_unit(u.name.clone(), op));
         }
 
@@ -875,7 +960,7 @@ impl Flowsheet {
                     stream: i,
                     name: s.to.clone(),
                 })?;
-            let stream = s.state.to_stream(fs.registry(), &species_ids, &at)?;
+            let stream = s.state.to_stream(fs.registry(), &at)?;
             fs.add_stream(from, stream, to);
         }
 
@@ -888,7 +973,7 @@ impl Flowsheet {
 // ---------------------------------------------------------------------------
 
 impl State {
-    /// Captures a stream as a document state, keying flows by species name.
+    /// Captures a stream as a document state, keying flows by [`SpeciesRegistry::key`].
     ///
     /// Zero flows are omitted: they load back as zero anyway, and dropping them keeps a saved
     /// flowsheet readable when most streams carry only a few of the species.
@@ -896,9 +981,9 @@ impl State {
         let flows = s
             .flows()
             .iter()
-            .zip(registry.all())
+            .zip(registry.keys())
             .filter(|(f, _)| **f != 0.0)
-            .map(|(&f, species)| (species.name.clone(), f))
+            .map(|(&f, key)| (key, f))
             .collect();
 
         Self {
@@ -1036,8 +1121,8 @@ impl ToDocument for unit::Flotation {
         let recovery = self
             .recovery
             .iter()
-            .zip(registry.all())
-            .map(|(&r, species)| (species.name.clone(), r))
+            .zip(registry.keys())
+            .map(|(&r, key)| (key, r))
             .collect();
 
         spec_of(&FlotationSpec { recovery })
@@ -1074,14 +1159,14 @@ impl ToDocument for unit::ConversionReactor {
                 let stoichiometry = reaction
                     .stoichiometry
                     .iter()
-                    .zip(registry.all())
+                    .zip(registry.keys())
                     .filter(|(nu, _)| **nu != 0.0)
-                    .map(|(&nu, species)| (species.name.clone(), nu))
+                    .map(|(&nu, key)| (key, nu))
                     .collect();
 
                 ReactionSpec {
                     stoichiometry,
-                    limiting: registry[reaction.limiting].name.clone(),
+                    limiting: registry.key(reaction.limiting),
                     conversion: reaction.conversion,
                 }
             })
@@ -1144,10 +1229,10 @@ impl From<&flowsheet::ValidFlowsheet> for Flowsheet {
     /// streams.
     ///
     /// This takes a [`crate::flowsheet::ValidFlowsheet`] rather than a
-    /// [`crate::flowsheet::Flowsheet`] because only validation rules out the two kinds of
-    /// duplicate name a document cannot survive: two units sharing a name, which a stream
-    /// endpoint could not tell apart, and two species sharing one, which would collide in the
-    /// name-keyed `flows` map and silently drop a flow.
+    /// [`crate::flowsheet::Flowsheet`] because only validation rules out the two kinds of name a
+    /// document cannot survive: two units sharing a name, which a stream endpoint could not tell
+    /// apart, and a species name ending in a phase suffix, whose key would read back as a
+    /// different species.
     fn from(fs: &flowsheet::ValidFlowsheet) -> Self {
         let registry = fs.registry();
 
@@ -1427,18 +1512,153 @@ mod tests {
         assert_eq!(serde_json::to_string(&Flowsheet::from(&fs)).unwrap(), json);
     }
 
+    /// Water in two phases plus a single-phase solid, a feed naming `flows` and a flotation cell
+    /// naming `recovery`, so both kinds of species-keyed map are exercised.
+    fn two_phase_json(feed_flows: &str) -> String {
+        format!(
+            r#"{{ "species": [
+                {{ "name": "H2O",  "phase": "Liquid", "molar_mass": 18.015, "shomate": {{ "a": 75.3 }} }},
+                {{ "name": "H2O",  "phase": "Gas",    "molar_mass": 18.015, "shomate": {{ "a": 33.6 }} }},
+                {{ "name": "SiO2", "phase": "Solid",  "molar_mass": 60.08,  "shomate": {{ "a": 44.6 }} }}
+              ],
+              "units": [
+                {{ "name": "f", "op": {{ "type": "feed", "state": {{ "flows": {{ {feed_flows} }} }} }} }},
+                {{ "name": "c", "op": {{ "type": "flotation",
+                   "recovery": {{ "H2O(g)": 0.9, "H2O(l)": 0.1, "SiO2": 0.05 }} }} }},
+                {{ "name": "conc", "op": {{ "type": "product" }} }},
+                {{ "name": "tail", "op": {{ "type": "product" }} }}
+              ],
+              "streams": [
+                {{ "from": "f", "to": "c" }},
+                {{ "from": "c", "to": "conc" }},
+                {{ "from": "c", "to": "tail" }}
+              ] }}"#
+        )
+    }
+
     #[test]
-    fn a_name_repeated_across_phases_is_rejected() {
+    fn a_name_shared_across_phases_is_keyed_with_its_phase_and_survives_a_round_trip() {
+        let json = two_phase_json(r#""H2O(l)": 600.0, "H2O(g)": 5.0, "SiO2": 400.0"#);
+        let mut fs = load(&json).unwrap().validate().unwrap();
+        crate::solver::Solver::default().solve(&mut fs).unwrap();
+
+        let saved = Flowsheet::from(&fs);
+        let feed: FeedSpec = spec(&saved, 0, "feed");
+        let keys: Vec<&str> = feed.state.flows.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["H2O(g)", "H2O(l)", "SiO2"]);
+        let cell: FlotationSpec = spec(&saved, 1, "flotation");
+        assert_eq!(cell.recovery["H2O(g)"], 0.9);
+        assert_eq!(cell.recovery["H2O(l)"], 0.1);
+
+        let reloaded = DomainFlowsheet::try_from(saved).unwrap();
+        for (a, b) in fs.streams().iter().zip(reloaded.streams()) {
+            assert_eq!(a.flows(), b.flows());
+        }
+        // The concentrate carries 90% of the steam and 10% of the liquid, so the two phases
+        // really did land in different columns.
+        let concentrate = reloaded.streams()[1].flows();
+        for (&got, want) in concentrate.iter().zip([60.0, 4.5, 20.0]) {
+            approx::assert_relative_eq!(got, want, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn a_bare_name_two_phases_share_is_ambiguous() {
+        let e = load(&two_phase_json(r#""H2O": 600.0"#)).unwrap_err();
+        assert_eq!(
+            e,
+            LoadError::AmbiguousSpecies {
+                at: Location::Unit("f".into()),
+                name: "H2O".into(),
+                keys: vec!["H2O(l)".into(), "H2O(g)".into()],
+            }
+        );
+        assert_eq!(
+            e.to_string(),
+            "unit `f` names species `H2O`, which more than one phase shares - write one of \
+             `H2O(l)`, `H2O(g)`"
+        );
+    }
+
+    #[test]
+    fn a_flow_named_both_bare_and_suffixed_is_rejected() {
+        // Both keys resolve to the one liquid water, so one value would otherwise vanish.
+        let json = minimal(
+            r#"{ "name": "f", "op": { "type": "feed",
+                 "state": { "flows": { "H2O": 600.0, "H2O(l)": 5.0 } } } },
+               { "name": "p", "op": { "type": "product" } }"#,
+            r#"{ "from": "f", "to": "p" }"#,
+        );
+        let e = load(&json).unwrap_err();
+        assert_eq!(
+            e,
+            LoadError::DuplicateSpeciesKey {
+                at: Location::Unit("f".into()),
+                first: "H2O".into(),
+                second: "H2O(l)".into(),
+            }
+        );
+        assert_eq!(
+            e.to_string(),
+            "unit `f` names one species twice, as `H2O` and `H2O(l)` - write it once"
+        );
+    }
+
+    #[test]
+    fn a_recovery_named_both_bare_and_suffixed_is_rejected() {
+        let json = two_phase_json(r#""H2O(l)": 600.0"#)
+            .replace(r#""SiO2": 0.05"#, r#""SiO2": 0.05, "SiO2(s)": 0.5"#);
+        assert!(matches!(
+            load(&json).unwrap_err(),
+            LoadError::DuplicateSpeciesKey { first, second, .. }
+                if first == "SiO2" && second == "SiO2(s)"
+        ));
+    }
+
+    #[test]
+    fn a_suffixed_key_is_accepted_where_the_bare_name_would_do() {
+        let json = minimal(
+            r#"{ "name": "f", "op": { "type": "feed", "state": { "flows": { "H2O(l)": 1.0 } } } },
+               { "name": "p", "op": { "type": "product" } }"#,
+            r#"{ "from": "f", "to": "p" }"#,
+        );
+        let mut fs = load(&json).unwrap().validate().unwrap();
+        // A feed writes its stream when it runs, not when it loads.
+        crate::solver::Solver::default().solve(&mut fs).unwrap();
+        assert_eq!(fs.streams()[0].flows(), &[1.0]);
+    }
+
+    #[test]
+    fn a_name_repeated_in_the_same_phase_is_rejected() {
         let json = r#"{ "species": [
             { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 } },
-            { "name": "H2O", "phase": "Gas",    "molar_mass": 18.015, "shomate": { "a": 33.6 } }
+            { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 } }
           ], "units": [], "streams": [] }"#;
         assert_eq!(
             load(json).unwrap_err(),
             LoadError::DuplicateSpecies {
                 name: "H2O".into(),
-                phase: Phase::Gas
+                phase: Phase::Liquid
             }
+        );
+    }
+
+    #[test]
+    fn a_species_name_ending_in_a_phase_suffix_is_rejected() {
+        let json = r#"{ "species": [
+            { "name": "H2O(g)", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 } }
+          ], "units": [], "streams": [] }"#;
+        let e = load(json).unwrap_err();
+        assert_eq!(
+            e,
+            LoadError::ReservedSpeciesName {
+                name: "H2O(g)".into()
+            }
+        );
+        assert!(
+            e.to_string()
+                .starts_with("species `H2O(g)` ends in a phase suffix"),
+            "{e}"
         );
     }
 
@@ -1780,6 +2000,24 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "unit `r`: `reactions[1].conversion` is 2, expected between 0.0 and 1.0"
+        );
+    }
+
+    #[test]
+    fn a_stoichiometry_naming_a_species_twice_is_rejected() {
+        // `H2O(g)` and `H2O` are the one steam; keeping either coefficient would be a different
+        // equation from the one written.
+        let json = combustion_json(
+            r#""stoichiometry": { "CH4": -1, "O2": -2, "CO2": 1, "H2O": 2, "H2O(g)": 1 },
+               "limiting": "CH4", "conversion": 0.9"#,
+        );
+        assert_eq!(
+            load(&json).unwrap_err(),
+            LoadError::DuplicateSpeciesKey {
+                at: Location::Unit("r".into()),
+                first: "H2O".into(),
+                second: "H2O(g)".into(),
+            }
         );
     }
 

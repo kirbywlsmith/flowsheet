@@ -14,6 +14,31 @@ pub enum Phase {
     Gas,
 }
 
+impl Phase {
+    /// Every phase, in declaration order.
+    pub const ALL: [Phase; 3] = [Phase::Solid, Phase::Liquid, Phase::Gas];
+
+    /// The IUPAC state symbol in brackets, as it follows a name in a species key: `(s)`, `(l)`
+    /// or `(g)`.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Phase::Solid => "(s)",
+            Phase::Liquid => "(l)",
+            Phase::Gas => "(g)",
+        }
+    }
+
+    /// Splits a trailing phase suffix off `key`, so `"H2O(g)"` is `("H2O", Phase::Gas)`.
+    ///
+    /// `None` for a key without one - which includes `"Fe(OH)3"` and `"Quartz(150um)"`: only
+    /// the three state symbols count.
+    pub fn split_suffix(key: &str) -> Option<(&str, Phase)> {
+        Phase::ALL
+            .into_iter()
+            .find_map(|phase| key.strip_suffix(phase.suffix()).map(|name| (name, phase)))
+    }
+}
+
 /// Used to index a [`SpeciesRegistry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SpeciesId(u16);
@@ -123,6 +148,59 @@ impl SpeciesRegistry {
             .map(|i| SpeciesId(i as u16))
     }
 
+    /// The key a document uses for `id`: the bare name when no other species shares it, and the
+    /// name with its phase suffix when one does - `"H2O"` alone, but `"H2O(l)"` beside
+    /// `"H2O(g)"`.
+    ///
+    /// Bare wherever it can be, so a single-phase document reads exactly as it did before keys
+    /// could carry a phase.
+    pub fn key(&self, id: SpeciesId) -> String {
+        let species = &self[id];
+        if self.shares_name(&species.name) {
+            format!("{}{}", species.name, species.phase.suffix())
+        } else {
+            species.name.clone()
+        }
+    }
+
+    /// Every [`SpeciesRegistry::key`], in [`SpeciesId`] order.
+    pub fn keys(&self) -> Vec<String> {
+        (0..self.species.len())
+            .map(|i| self.key(SpeciesId(i as u16)))
+            .collect()
+    }
+
+    /// Resolves a document key back to a species: either a bare name only one species has, or a
+    /// name with a phase suffix.
+    ///
+    /// `None` for an unknown key, and for a bare name two phases share, since it cannot say which
+    /// one it means. [`SpeciesRegistry::shares_name`] tells those two cases apart.
+    ///
+    /// The two readings never compete for one key as long as no name itself ends in a suffix,
+    /// which loading and [`crate::flowsheet::Flowsheet::check`] both enforce.
+    pub fn resolve(&self, key: &str) -> Option<SpeciesId> {
+        let mut named = self
+            .species
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.name == key);
+        if let (Some((i, _)), None) = (named.next(), named.next()) {
+            return Some(SpeciesId(i as u16));
+        }
+        let (name, phase) = Phase::split_suffix(key)?;
+        self.find(name, phase)
+    }
+
+    /// Returns `true` if more than one species is called `name` - the one case where a bare name
+    /// is ambiguous.
+    pub fn shares_name(&self, name: &str) -> bool {
+        self.species
+            .iter()
+            .filter(|s| s.name == name)
+            .nth(1)
+            .is_some()
+    }
+
     /// Returns the number of species in the registry.
     pub fn len(&self) -> usize {
         self.species.len()
@@ -177,6 +255,42 @@ mod tests {
         assert_eq!(a.as_usize(), 0);
         assert_eq!(b.as_usize(), 1);
         assert_eq!(reg.len(), 2);
+    }
+
+    #[test]
+    fn a_suffix_is_one_of_the_three_state_symbols_and_nothing_else() {
+        assert_eq!(Phase::split_suffix("H2O(g)"), Some(("H2O", Phase::Gas)));
+        assert_eq!(Phase::split_suffix("NaCl(s)"), Some(("NaCl", Phase::Solid)));
+        assert_eq!(Phase::split_suffix("H2O(l)"), Some(("H2O", Phase::Liquid)));
+        assert_eq!(Phase::split_suffix("H2O"), None);
+        assert_eq!(Phase::split_suffix("Fe(OH)3"), None);
+        assert_eq!(Phase::split_suffix("Quartz(150um)"), None);
+    }
+
+    #[test]
+    fn a_name_only_one_phase_uses_is_keyed_bare() {
+        let mut reg = SpeciesRegistry::default();
+        let id = reg.insert(water());
+        assert_eq!(reg.key(id), "H2O");
+        assert_eq!(reg.resolve("H2O"), Some(id));
+        // The suffixed form is still accepted, just never written.
+        assert_eq!(reg.resolve("H2O(l)"), Some(id));
+        assert_eq!(reg.resolve("H2O(g)"), None);
+    }
+
+    #[test]
+    fn a_name_two_phases_share_is_keyed_with_a_suffix() {
+        let mut reg = SpeciesRegistry::default();
+        let liquid = reg.insert(water());
+        let gas = reg.insert(Species {
+            phase: Phase::Gas,
+            ..water()
+        });
+        assert_eq!(reg.keys(), vec!["H2O(l)", "H2O(g)"]);
+        assert_eq!(reg.resolve("H2O(l)"), Some(liquid));
+        assert_eq!(reg.resolve("H2O(g)"), Some(gas));
+        assert_eq!(reg.resolve("H2O"), None);
+        assert!(reg.shares_name("H2O"));
     }
 
     #[test]

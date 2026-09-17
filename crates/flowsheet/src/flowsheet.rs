@@ -3,7 +3,7 @@
 mod topology;
 
 use crate::assert_id_space;
-use crate::species::{SpeciesId, SpeciesRegistry};
+use crate::species::{Phase, SpeciesId, SpeciesRegistry};
 use crate::stream::Stream;
 use crate::unit::{EvalError, Unit, UnitOp};
 use std::fmt;
@@ -82,12 +82,13 @@ pub enum FlowsheetError {
         /// The repeated name.
         name: String,
     },
-    /// Two species share a name. Saved flows are keyed by species name, so the second would
-    /// overwrite the first and one species' flow would be lost.
-    DuplicateSpeciesName {
-        /// The second species to use the name.
+    /// A species name ends in a phase suffix such as `(g)`. A saved document keys species by
+    /// name plus that suffix where two phases share a name, so this one would read back as a
+    /// different species - or collide with one.
+    ReservedSpeciesName {
+        /// The specific species.
         species: SpeciesId,
-        /// The repeated name.
+        /// The offending name.
         name: String,
     },
     /// A stream leaves a unit and comes straight back into it.
@@ -131,10 +132,10 @@ impl fmt::Display for FlowsheetError {
             FlowsheetError::DuplicateName { unit, name } => {
                 write!(f, "unit {unit} repeats the name `{name}`")
             }
-            FlowsheetError::DuplicateSpeciesName { species, name } => write!(
+            FlowsheetError::ReservedSpeciesName { species, name } => write!(
                 f,
-                "species {species} repeats the name `{name}` - saved flows are keyed by name, \
-                 so names must be unique across phases"
+                "species {species} is named `{name}`, which ends in a phase suffix - `(s)`, `(l)` \
+                 and `(g)` are reserved for telling phases apart"
             ),
             FlowsheetError::SelfLoop { unit, stream } => {
                 write!(f, "stream {stream} leaves unit {unit} and returns to it")
@@ -226,18 +227,17 @@ impl Flowsheet {
     pub fn check(&self) -> Vec<FlowsheetError> {
         let mut errors = Vec::new();
 
-        // Saved flows are keyed by species name, so a repeat would collide in the document even
-        // though the registry itself keys on name *and* phase.
-        let mut seen_species: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // A saved document keys species by name, plus a phase suffix where two phases share one,
+        // so a name that already ends in a suffix would read back as something else.
         for species in self.registry.all() {
-            if !seen_species.insert(species.name.as_str()) {
+            if Phase::split_suffix(&species.name).is_some() {
                 // `find` keys on name *and* phase, so it hands back this entry's own id - the
                 // only way to name a `SpeciesId` from outside the species module.
                 let id = self
                     .registry
                     .find(&species.name, species.phase)
                     .expect("a species listed by the registry is findable in it");
-                errors.push(FlowsheetError::DuplicateSpeciesName {
+                errors.push(FlowsheetError::ReservedSpeciesName {
                     species: id,
                     name: species.name.clone(),
                 });
@@ -385,7 +385,7 @@ impl std::ops::IndexMut<StreamId> for ValidFlowsheet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::species::{Phase, Species};
+    use crate::species::Species;
     use crate::test_support::{AMBIENT_K, AMBIENT_KPA, demo_registry, feed};
     use crate::unit::{Feed, Flotation, Mixer, Product, Splitter, Tank};
     use approx::assert_relative_eq;
@@ -623,9 +623,8 @@ mod tests {
     }
 
     #[test]
-    fn two_species_sharing_a_name_across_phases_are_rejected() {
-        // The registry keys on name *and* phase, so this is a legal registry - but saved flows
-        // are a name map, so the gas entry would overwrite the liquid one and lose its flow.
+    fn two_species_sharing_a_name_across_phases_are_legal() {
+        // Saved as `H2O(l)` and `H2O(g)`, so nothing collides.
         let mut r = SpeciesRegistry::default();
         r.insert(Species {
             name: "H2O".into(),
@@ -634,7 +633,7 @@ mod tests {
             shomate: crate::thermo::Shomate::constant(75.3),
             enthalpy_of_formation: None,
         });
-        let gas = r.insert(Species {
+        r.insert(Species {
             name: "H2O".into(),
             phase: Phase::Gas,
             molar_mass: 18.015,
@@ -642,19 +641,34 @@ mod tests {
             enthalpy_of_formation: None,
         });
 
+        assert_eq!(Flowsheet::new(r).check(), vec![]);
+    }
+
+    #[test]
+    fn a_species_name_ending_in_a_phase_suffix_is_rejected() {
+        // Beside a gaseous `H2O`, this liquid's key and the gas's key would both be `H2O(g)`.
+        let mut r = SpeciesRegistry::default();
+        let liquid = r.insert(Species {
+            name: "H2O(g)".into(),
+            phase: Phase::Liquid,
+            molar_mass: 18.015,
+            shomate: crate::thermo::Shomate::constant(75.3),
+            enthalpy_of_formation: None,
+        });
+
         let errors = Flowsheet::new(r).check();
 
         assert_eq!(
             errors,
-            vec![FlowsheetError::DuplicateSpeciesName {
-                species: gas,
-                name: "H2O".into()
+            vec![FlowsheetError::ReservedSpeciesName {
+                species: liquid,
+                name: "H2O(g)".into()
             }]
         );
         assert!(
             errors[0]
                 .to_string()
-                .starts_with("species 1 repeats the name `H2O`"),
+                .starts_with("species 0 is named `H2O(g)`, which ends in a phase suffix"),
             "{}",
             errors[0]
         );

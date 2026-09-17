@@ -190,7 +190,8 @@ fn unit_duty(fs: &ValidFlowsheet, u: &Unit) -> f64 {
 /// the material leaving it, worst species.
 pub fn table(fs: &ValidFlowsheet, report: &SolveReport) -> String {
     let mut header: Vec<String> = vec!["#".to_string(), "stream".to_string()];
-    header.extend(fs.registry().all().iter().map(|s| s.name.clone()));
+    // Keys rather than names, so water in two phases heads its columns `H2O(l)` and `H2O(g)`.
+    header.extend(fs.registry().keys());
     header.push("total".to_string());
     header.push("T (K)".to_string());
 

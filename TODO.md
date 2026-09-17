@@ -18,12 +18,13 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Composite species key on the wire, e.g. `"H2O(g)"`. `SpeciesRegistry::find` already keys on name *and* phase,
-  but the JSON flows map is name-only, so the same name in two phases is rejected on both boundaries
-  (`LoadError::DuplicateSpecies` going in, `FlowsheetError::DuplicateSpeciesName` in `check` coming out). Parse and
-  format the phase suffix, drop both errors, and keep the bare name valid for the single-phase case so every existing
-  document still loads byte-for-byte. Small, standalone, and a hard prerequisite for both phase change and a
-  size-classified screen.
+- [ ] Seed tear streams from the feeds instead of zeros. CLAUDE.md names this as the general mitigation for the
+  early-pass transient that a `Result`-returning `evaluate` cannot fix on its own: a heater on a recycle-only branch
+  sees an empty stream on pass one and a near-empty one on pass two, so a duty the converged loop absorbs easily can
+  still ask for a temperature below 0 K on the way there. A seed at the feeds' total flow and adiabatic mix
+  temperature is one pass over the acyclic part of the graph, which the topological order already yields. Record the
+  pass counts on `recycle.json` and `stiff_recycle.json` before and after: a seed nearer the answer should cost none
+  and may save a few. Small and self-contained, so it sits with the other correctness gaps.
 - [ ] Pressure, declared per op and propagated. Nothing reads it and nothing solves it - `Stream::add_assign` says so,
   and the field survives a whole solve untouched. Aspen Plus and HYSYS specify it at this level too: each op declares
   a pressure drop, `evaluate` writes the outlet pressure, and a mixer takes the minimum inlet pressure rather than
@@ -37,6 +38,13 @@ engineering, ordered so that no large item gates a small one.
 - [ ] Latent heat. Enthalpy of vaporisation per species plus a vapour pressure correlation (Antoine is the usual
   three-coefficient fit), measured against the absolute basis established above. No flash yet - this is the property
   data and the `thermo` functions over it, testable on their own against steam-table values.
+- [ ] A shipped species library. Today every document pastes Shomate coefficients, a molar mass and a formation
+  enthalpy by hand, so the user is the NIST lookup. Ship a few dozen common species as a JSON file embedded with
+  `include_str!`, loadable by name from a document's `species` list (`{ "name": "H2O", "phase": "Liquid" }` with
+  the properties omitted), and let an inline entry override a library one. It sits after latent heat so the file
+  carries vapour pressure and heat of vaporisation as well, and every entry must cite its source in the file -
+  NIST-JANAF for the Shomate fits - so a wrong number can be traced. The flash tests below can then name their
+  species rather than carry coefficients.
 - [ ] Isothermal flash, `T` and `P` specified. K-values from vapour pressure over system pressure (Raoult to start),
   vapour fraction from a Rachford-Rice solve, outlets vapour first then liquid. Needs the composite key, the latent
   heat and the propagated pressure above. This is also the op that finally makes the rayon item measurable: CLAUDE.md
@@ -45,6 +53,13 @@ engineering, ordered so that no large item gates a small one.
 - [ ] Adiabatic flash, `P` and `H` specified. Newton on temperature around the isothermal flash, so it is an outer
   loop over an inner loop inside one `evaluate` - the same structure as `mix` over `solve_temperature`, one level
   deeper. A flash drum on a recycle is the test that proves the three tolerances compose.
+- [ ] Non-ideal vapour-liquid equilibrium. Raoult's law is wrong for almost every mixture anyone flashes - ethanol
+  and water form an azeotrope it cannot see. Add an activity-coefficient model for the liquid, Wilson or NRTL, with
+  binary interaction parameters declared per species pair in the document, so `K_i = gamma_i * Psat_i / P`. The
+  Rachford-Rice loop is unchanged; `gamma` now depends on the liquid composition, so the flash gains an inner
+  fixed-point iteration on `x`. Test against the published ethanol-water azeotrope. A cubic equation of state for
+  the vapour side is left out on purpose: it is a second model of the same size, and at atmospheric pressure the
+  vapour is near enough ideal that the liquid side is where the error lives.
 - [ ] Equilibrium reactor. Gibbs free energy minimisation over the declared species, which needs entropy and so
   brings Shomate's `G` back alongside a standard entropy of formation. The largest item on this list, and
   deliberately behind the flashes rather than in front of them: constrained minimisation under element balances
@@ -56,6 +71,13 @@ engineering, ordered so that no large item gates a small one.
   arrangement (counter- or co-current LMTD), an outlet temperature, or a duty - the first op whose two sides are
   coupled only through energy and not through flows, which is a new shape for `evaluate`. Declares a pressure drop
   per side, so it waits on the pressure item.
+- [ ] Distillation column. A stack of `N` equilibrium stages with a condenser and reboiler, specified by stage count,
+  feed stage, reflux ratio and distillate rate - the op people judge a simulator by, and the one that makes a
+  flowsheet look like a plant. Each stage is the isothermal flash above, coupled to its neighbours by the liquid
+  going down and the vapour going up, so the whole column is one inner solve over `N` temperatures and `N`
+  vapour flows (bubble-point method to start; Newton on all of it later if it is slow). Needs non-ideal VLE to give
+  a believable answer on anything but a near-ideal pair, and it is the ~5,000x-a-mixer op CLAUDE.md names as what
+  finally makes the rayon item worth benching.
 - [ ] Screen, and size classes. A partition curve over size fractions is structurally `Flotation` with a different
   name - one inlet, two outlets, a dense per-species vector - so the op is not the work. The work is that a size
   fraction has to become a species (`"Quartz(150um)"`), which is the composite key item generalised from phase to an
@@ -64,6 +86,11 @@ engineering, ordered so that no large item gates a small one.
   or Newton loop wrapped around `Solver::solve` rather than inside it. `solve_with` and `SolveEvent` already provide
   the progress hook; what is new is that a flowsheet parameter becomes an unknown, which means naming a parameter
   generically across an open set of ops.
+- [ ] `--csv` output: one row per stream with a column per species key, temperature and pressure, and a second
+  block for unit duties. `--json` is a document and the table is for eyes; neither pastes into a spreadsheet, which
+  is where a solved flowsheet usually goes next. Same shape as `--json` - stdout, and the shell owns the file. It
+  sits here rather than earlier because the scenario item below wants a machine-readable row format for its
+  percentile summary, and this is that format.
 - [ ] Scenario runs and Monte Carlo over feed uncertainty. Many independent solves of one flowsheet with perturbed
   feeds, summarised by percentile rather than printed one by one. Embarrassingly parallel at the *solve* level, which
   is a far better rayon target than a wave of units and should be benched as such.
