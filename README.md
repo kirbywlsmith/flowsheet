@@ -1,6 +1,6 @@
 # Flowsheet
 
-A steady-state process simulation library which can be used to solve flowsheets.
+A steady-state process simulation library and CLI tool which can be used to solve flowsheets.
 
 There are two crates:
 
