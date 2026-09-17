@@ -51,6 +51,17 @@ pub struct Species {
     ///
     /// e.g. `Shomate::constant(75.3)` for liquid water near 25 °C
     pub shomate: Shomate,
+    /// Standard enthalpy of formation at [`crate::thermo::REFERENCE_K`], in kJ/mol - the `H` that
+    /// NIST publishes beside the Shomate coefficients. It depends on phase: liquid water is
+    /// -285.83 and steam -241.83.
+    ///
+    /// `None` for a species no reaction touches. Its zero point is the same on both sides of every
+    /// balance it enters and cancels, so there is nothing to look up for a plant that only mixes,
+    /// splits and heats. A species that *is* destroyed has to carry one.
+    ///
+    /// e.g. `Some(-285.83)` for liquid water
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enthalpy_of_formation: Option<f64>,
 }
 
 impl Species {
@@ -60,11 +71,16 @@ impl Species {
         self.shomate.heat_capacity(temperature) / self.molar_mass
     }
 
-    /// Specific enthalpy at `temperature` (K) relative to [`crate::thermo::REFERENCE_K`], in
-    /// kJ/kg.
+    /// Specific enthalpy at `temperature` (K), in kJ/kg: the enthalpy of formation plus the
+    /// sensible heat gained from [`crate::thermo::REFERENCE_K`].
+    ///
+    /// Absolute when [`Species::enthalpy_of_formation`] is set, so a reaction's heat shows up as
+    /// the difference between its products and reactants. Without one this is the sensible heat
+    /// alone, exactly as before: `0.0 + x` is `x`, bit for bit.
     pub fn enthalpy(&self, temperature: f64) -> f64 {
+        let formation = self.enthalpy_of_formation.unwrap_or(0.0);
         // kJ/mol over g/mol is kJ/g, and a kilogram is a thousand grams.
-        1000.0 * self.shomate.enthalpy(temperature) / self.molar_mass
+        1000.0 * (formation + self.shomate.enthalpy(temperature)) / self.molar_mass
     }
 }
 
@@ -143,6 +159,7 @@ mod tests {
             phase: Phase::Liquid,
             molar_mass: 18.015,
             shomate: WATER_CP,
+            enthalpy_of_formation: None,
         }
     }
 
@@ -155,6 +172,7 @@ mod tests {
             phase: Phase::Solid,
             molar_mass: 60.08,
             shomate: QUARTZ_CP,
+            enthalpy_of_formation: None,
         });
         assert_eq!(a.as_usize(), 0);
         assert_eq!(b.as_usize(), 1);
@@ -204,6 +222,36 @@ mod tests {
     }
 
     #[test]
+    fn an_enthalpy_of_formation_offsets_enthalpy_and_leaves_heat_capacity_alone() {
+        let plain = water();
+        let formed = Species {
+            enthalpy_of_formation: Some(-285.83),
+            ..water()
+        };
+
+        // At the reference temperature there is no sensible heat, so all that is left is the
+        // formation enthalpy per kg: -285.83 kJ/mol over 18.015 g/mol, times 1000 g/kg.
+        assert_relative_eq!(
+            formed.enthalpy(REFERENCE_K),
+            -285_830.0 / 18.015,
+            max_relative = 1e-12
+        );
+
+        // Away from it, the offset is the same constant, and the slope does not see it.
+        for temperature in [300.0, 350.0, 450.0] {
+            assert_relative_eq!(
+                formed.enthalpy(temperature) - plain.enthalpy(temperature),
+                -285_830.0 / 18.015,
+                max_relative = 1e-9
+            );
+            assert_eq!(
+                formed.heat_capacity(temperature),
+                plain.heat_capacity(temperature)
+            );
+        }
+    }
+
+    #[test]
     fn liquid_water_takes_4_18_kilojoules_per_kilogram_kelvin() {
         assert_relative_eq!(
             water().heat_capacity(REFERENCE_K),
@@ -226,6 +274,7 @@ mod tests {
                     phase: Phase::Solid,
                     molar_mass: 1.0,
                     shomate: Shomate::constant(1.0),
+                    enthalpy_of_formation: None,
                 })
                 .collect(),
         }
@@ -249,6 +298,7 @@ mod tests {
             phase: Phase::Solid,
             molar_mass: 1.0,
             shomate: Shomate::constant(1.0),
+            enthalpy_of_formation: None,
         };
         assert_eq!(registry.insert(duplicate).as_usize(), 0);
     }

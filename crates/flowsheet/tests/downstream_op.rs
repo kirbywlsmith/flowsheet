@@ -96,6 +96,7 @@ fn registry() -> SpeciesRegistry {
         phase: Phase::Liquid,
         molar_mass: 18.015,
         shomate: Shomate::constant(75.3),
+        enthalpy_of_formation: None,
     });
     r
 }

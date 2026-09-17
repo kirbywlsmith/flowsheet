@@ -1364,6 +1364,16 @@ mod tests {
     }
 
     #[test]
+    fn an_enthalpy_of_formation_survives_a_round_trip_and_is_left_off_when_absent() {
+        let json = r#"{"species":[{"name":"H2O","phase":"Liquid","molar_mass":18.015,"shomate":{"a":75.3},"enthalpy_of_formation":-285.83},{"name":"SiO2","phase":"Solid","molar_mass":60.08,"shomate":{"a":44.6}}],"units":[],"streams":[]}"#;
+
+        let fs = load(json).unwrap().validate().unwrap();
+        assert_eq!(fs.registry().all()[0].enthalpy_of_formation, Some(-285.83));
+        assert_eq!(fs.registry().all()[1].enthalpy_of_formation, None);
+        assert_eq!(serde_json::to_string(&Flowsheet::from(&fs)).unwrap(), json);
+    }
+
+    #[test]
     fn a_name_repeated_across_phases_is_rejected() {
         let json = r#"{ "species": [
             { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 } },

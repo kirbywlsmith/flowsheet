@@ -632,12 +632,14 @@ mod tests {
             phase: Phase::Liquid,
             molar_mass: 18.015,
             shomate: crate::thermo::Shomate::constant(75.3),
+            enthalpy_of_formation: None,
         });
         let gas = r.insert(Species {
             name: "H2O".into(),
             phase: Phase::Gas,
             molar_mass: 18.015,
             shomate: crate::thermo::Shomate::constant(33.6),
+            enthalpy_of_formation: None,
         });
 
         let errors = Flowsheet::new(r).check();

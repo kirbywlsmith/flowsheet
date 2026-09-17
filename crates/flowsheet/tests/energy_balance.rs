@@ -64,6 +64,7 @@ fn constant_cp_registry() -> SpeciesRegistry {
             phase,
             molar_mass: MOLAR_MASS[i],
             shomate: Shomate::constant(CONSTANT_CP[i]),
+            enthalpy_of_formation: None,
         });
     }
     r
@@ -162,6 +163,50 @@ fn the_recycle_does_not_shift_the_temperature_the_feeds_mix_to() {
 
     for &id in &s.internal {
         assert_relative_eq!(s.flowsheet[id].temperature(), expected, max_relative = 1e-6);
+    }
+}
+
+/// The demo species with standard enthalpies of formation, kJ/mol. Quartz and liquid water are
+/// NIST's values; chalcopyrite's is approximate. What matters here is only that they are large
+/// next to the hundred or so kJ/kg of sensible heat the circuit carries.
+fn formation_registry() -> SpeciesRegistry {
+    let formation = [-190.8, -910.86, -285.83];
+    let mut r = SpeciesRegistry::default();
+    for (species, h_f) in demo::registry().all().iter().zip(formation) {
+        r.insert(Species {
+            enthalpy_of_formation: Some(h_f),
+            ..species.clone()
+        });
+    }
+    r
+}
+
+#[test]
+fn formation_enthalpies_do_not_move_temperatures_when_nothing_reacts() {
+    // No species is created or destroyed, so the offset is the same on both sides of every
+    // balance and cancels. Not bit for bit: Newton now subtracts two enthalpy flows of millions
+    // of MJ/h, which costs a few digits, but nowhere near the solver's tolerance.
+    let (plain, formed) = (solve(demo::registry), solve(formation_registry));
+
+    for &id in &plain.internal {
+        assert_relative_eq!(
+            formed.flowsheet[id].temperature(),
+            plain.flowsheet[id].temperature(),
+            max_relative = 1e-9
+        );
+    }
+}
+
+#[test]
+fn a_heater_raises_a_stream_by_the_same_amount_on_either_basis() {
+    let (plain, formed) = (demo::registry(), formation_registry());
+    let feed =
+        |r: &SpeciesRegistry| Stream::from_flows(r, COLD_FLOWS.to_vec(), AMBIENT_K, AMBIENT_KPA);
+
+    for duty in [50_000.0, -20_000.0] {
+        let a = unit::heat(&plain, &feed(&plain), duty).unwrap();
+        let b = unit::heat(&formed, &feed(&formed), duty).unwrap();
+        assert_relative_eq!(b.temperature(), a.temperature(), max_relative = 1e-9);
     }
 }
 

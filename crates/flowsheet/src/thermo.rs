@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 /// The temperature every enthalpy is measured from, in Kelvin (25 °C).
 ///
-/// Without reactions only enthalpy *differences* enter a balance, so any shared reference would
-/// do. This is the one the Shomate coefficients are published against.
+/// Sensible heat is measured from here, and [`crate::Species::enthalpy_of_formation`] is quoted at
+/// it, so the two add to an absolute enthalpy. It is the temperature NIST publishes both against.
 pub const REFERENCE_K: f64 = 298.15;
 
 /// Heat capacity coefficients for the Shomate equation, as published by the NIST Chemistry
@@ -24,11 +24,12 @@ pub const REFERENCE_K: f64 = 298.15;
 /// cp(T) = A + B·t + C·t² + D·t³ + E/t²    J/(mol·K)
 /// ```
 ///
-/// NIST publishes `F`, `G` and `H` as well, and none of them is stored. `F` and `H` only set the
-/// zero point of enthalpy, which cancels out of every enthalpy here because each one is taken
-/// relative to [`REFERENCE_K`]; `G` is for entropy. Reactions need a heat of formation as an
-/// absolute reference, and will bring `F` and `H` back. Until then a document that pastes them in
-/// is rejected for its unknown fields rather than having them silently ignored.
+/// NIST publishes `F`, `G` and `H` as well, and none of them is stored here. `H` *is* the standard
+/// enthalpy of formation, and it lives on [`crate::Species::enthalpy_of_formation`] instead.
+/// `F - H` only makes the antiderivative vanish at [`REFERENCE_K`], which [`Shomate::enthalpy`]
+/// already does exactly by subtracting it there; storing `F` would be a second, rounded source of
+/// the same number. `G` is for entropy. A document that pastes any of the three in is rejected for
+/// its unknown fields rather than having them silently ignored.
 ///
 /// A constant heat capacity is the special case `B = C = D = E = 0`, built by
 /// [`Shomate::constant`]. A zero term means the term is absent, the same way a zero flow means the

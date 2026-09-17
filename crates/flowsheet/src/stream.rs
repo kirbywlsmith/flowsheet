@@ -84,7 +84,8 @@ impl Stream {
         self.flows.iter().sum()
     }
 
-    /// Enthalpy flow relative to [`crate::thermo::REFERENCE_K`], in MJ/h.
+    /// Enthalpy flow, in MJ/h: absolute for every species with an enthalpy of formation, and
+    /// relative to [`crate::thermo::REFERENCE_K`] for the rest. See [`crate::Species::enthalpy`].
     ///
     /// # Panics
     /// If `registry` has a different species count than this stream.

@@ -55,18 +55,21 @@ pub fn registry() -> SpeciesRegistry {
         phase: Phase::Solid,
         molar_mass: 183.5,
         shomate: CHALCOPYRITE_CP,
+        enthalpy_of_formation: None,
     });
     r.insert(Species {
         name: "SiO2".into(),
         phase: Phase::Solid,
         molar_mass: 60.08,
         shomate: QUARTZ_CP,
+        enthalpy_of_formation: None,
     });
     r.insert(Species {
         name: "H2O".into(),
         phase: Phase::Liquid,
         molar_mass: 18.015,
         shomate: WATER_CP,
+        enthalpy_of_formation: None,
     });
     r
 }

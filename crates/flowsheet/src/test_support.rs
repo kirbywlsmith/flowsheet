@@ -26,6 +26,7 @@ pub fn combustion_registry(masses: [f64; 4]) -> SpeciesRegistry {
             phase: Phase::Gas,
             molar_mass,
             shomate: Shomate::constant(35.0),
+            enthalpy_of_formation: None,
         });
     }
     registry

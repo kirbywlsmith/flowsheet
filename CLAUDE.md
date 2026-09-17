@@ -160,11 +160,20 @@ Never mix severities in one unlabelled list.
   enthalpy needs each species' heat capacity. Not a context struct - there is one thing to pass - and not a registry
   reference inside `Stream`, whose lifetime would infect `Flowsheet`, `ValidFlowsheet`, `serial` and every test.
   `&SpeciesRegistry` is `Sync`, so the `Send + Sync` bound survives.
-- Heat capacity is **Shomate, per mole, five coefficients `A`-`E`** (`thermo::Shomate`). NIST's `F` and `H` only fix the
-  absolute zero of enthalpy, and every enthalpy is taken relative to `thermo::REFERENCE_K` (298.15 K), so they cancel;
-  `G` is entropy. Reactions need an absolute reference and will bring `F` and `H` back; until then a document that
-  pastes them is rejected by `deny_unknown_fields`. Constant cp is `B = C = D = E = 0` (`Shomate::constant`), so there
+- Heat capacity is **Shomate, per mole, five coefficients `A`-`E`** (`thermo::Shomate`). `F`, `G` and `H` are **not
+  stored**, and a document that pastes them is rejected by `deny_unknown_fields`. NIST's `H` *is* the standard enthalpy
+  of formation, which lives on `Species` instead; `F - H` only makes the antiderivative vanish at
+  `thermo::REFERENCE_K`, which `Shomate::enthalpy` already does exactly by subtracting it there, so storing `F` would
+  be a second, rounded source of the same number. `G` is entropy. Constant cp is `B = C = D = E = 0` (`Shomate::constant`), so there
   is no `Thermo` enum, and zero terms are dropped on save for the same reason zero flows are.
+- Enthalpy is **absolute once `Species::enthalpy_of_formation` is set**: `h(T) = ΔHf + ∫cp dT` from 298.15 K, in
+  kJ/mol, per phase. The field is **`Option<f64>`, and optional on the wire** - the one exception to "don't default a
+  property" below, because a species no reaction touches has the same offset on both sides of every balance and it
+  cancels, and a flotation plant should not have to look up chalcopyrite's. `None` reads as `0.0`, and `0.0 + x` is
+  `x` bit for bit, so every document and test without it gives identical numbers. The price is that a *missing*
+  value reads as zero too, so the reactor energy balance item has to reject a reaction whose participants lack one.
+  With it set, temperatures agree to 1e-9 rather than bit for bit: Newton subtracts enthalpy flows of millions of
+  MJ/h to find a few degrees, which costs about three digits.
 - `shomate` is **required** on the wire. A defaulted temperature is a guess at state; a defaulted cp would fabricate a
   property and give plausible, wrong temperatures. Loading checks cp > 0 at 298.15 K - one point, not the whole fit.
 - Units are picked so **no conversion factor appears**: `Shomate` is per mole, `Species::heat_capacity` / `enthalpy`

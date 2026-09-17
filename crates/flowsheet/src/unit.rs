@@ -474,7 +474,7 @@ const REACTANT_ROUND_OFF: f64 = 1e-12;
 ///
 /// **Isothermal, and so not energy-conserving.** The outlet leaves at the inlet temperature, so
 /// the heat an exothermic reaction releases, or an endothermic one absorbs, silently goes
-/// nowhere. That waits on an absolute enthalpy basis; see the reactor energy balance in TODO.md.
+/// nowhere. That waits on the reactor energy balance item in TODO.md.
 ///
 /// Mass is conserved exactly, even though the molar masses are rounded. Every product's mass
 /// change is scaled by `k = sum(-nu_i * M_i, reactants) / sum(nu_i * M_i, products)`, which is 1
@@ -1237,6 +1237,7 @@ mod tests {
                 phase: Phase::Liquid,
                 molar_mass,
                 shomate: Shomate::constant(1000.0),
+                enthalpy_of_formation: None,
             })
         })[0];
         let inlet = Stream::from_flows(&r, vec![100.0, 1.0, 0.0], AMBIENT_K, AMBIENT_KPA);
