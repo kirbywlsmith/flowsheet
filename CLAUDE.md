@@ -244,6 +244,32 @@ Never mix severities in one unlabelled list.
   every op that drops pressure would have to re-solve its temperature to hold `h`, and a heater's duty would stop
   coming back as its duty. The compressor has no such gap: an ideal gas's enthalpy depends on temperature alone,
   so its whole shaft work is enthalpy and its duty row *is* its power.
+- **There is no `enthalpy_of_vaporisation` field.** With both phases carrying an `enthalpy_of_formation`, the gap
+  between them at 298.15 K *is* the latent heat there - liquid water is -285.83 kJ/mol and steam -241.83, 44.0
+  apart - and each phase's Shomate fit carries it to any other temperature. A stored value would be a second,
+  rounded source of the same number, the argument that keeps Shomate's `F` off the wire. `species::latent_heat`
+  is that difference per mole; it lives in `species.rs`, not `thermo.rs`, because it takes two `Species` and
+  `thermo` sits below `species` in the layering. It panics on a phase without a formation enthalpy, the reactor's
+  rule for the same reason - a missing value reads as zero and invents a latent heat. Tested against the steam
+  table at 373.15 K: 40.86 kJ/mol from the fits against 40.65, and the 0.5% is steam's cp held at its 25 °C value
+  across 75 K because NIST's gas fit starts at 500 K, so the tolerance is 1% and the test says why.
+- **Vapour pressure is an Antoine fit on `Species`, in kPa and K.** `thermo::Antoine { a, b, c }` with
+  `vapour_pressure(T)` and its closed-form inverse `boiling_point(P)`, no iteration. Written in the crate's units
+  on the wire rather than converted in code, so that one system of units holds everywhere; the price is that
+  NIST's `A`, published in bar, needs `+2` on the way in, and the README says so in one line. The field is
+  optional and `None` for anything nothing evaporates, the same allowance as `density`, and it belongs on the
+  **liquid** entry of a name declared in two phases - vapour pressure is what the condensed phase exerts, and the
+  flash will pair `H2O(l)` with `H2O(g)` by name and read it from that side. The loader accepts it on any phase
+  (a solid has a sublimation pressure) and checks only that `b` is positive, the one coefficient whose sign the
+  physics fixes: negative would have vapour pressure fall with temperature. Nothing checks the fitted range, as
+  with Shomate. `demo::WATER_VAPOUR_PRESSURE` is NIST's 344-373 K fit, kept beside the Shomate constants though
+  the circuit never uses it, because it is what the steam-table tests are written against.
+- **The two fits are checked against each other through Clausius-Clapeyron**: `R T² d(ln Psat)/dT` from Antoine
+  against `latent_heat` from the enthalpies, at 373.15 K, within 2%. Antoine's slope gives 41.3 kJ/mol and the
+  enthalpies 40.9; the 1% between them is the ideal-gas vapour and negligible liquid volume the law assumes. Two
+  independent property sets and one law between them, so a fit with its `A` still in bar or a formation enthalpy
+  off by a phase lands far outside the tolerance. It is the "measured against the absolute basis" the TODO item
+  asked for, and the `GAS_CONSTANT` the compressor introduced is what makes it a one-line test.
 - **The compressor is isentropic with an efficiency over the ideal gas**, and needed no new property data:
   `Shomate::entropy` is `∫cp/T dT` from the same five coefficients, a difference only - NIST's `G` would make it
   absolute and is still not stored, because both ends of an isentropic path carry the same offset. Pressure enters

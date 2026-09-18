@@ -60,6 +60,7 @@ fn registry() -> SpeciesRegistry {
             shomate: Shomate::constant(CP[i]),
             enthalpy_of_formation: FORMATION[i],
             density: None,
+            vapour_pressure: None,
         });
     }
     r

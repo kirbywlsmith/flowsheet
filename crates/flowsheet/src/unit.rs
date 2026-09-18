@@ -1855,6 +1855,7 @@ mod tests {
                 shomate: Shomate::constant(1000.0),
                 enthalpy_of_formation: None,
                 density: None,
+                vapour_pressure: None,
             })
         })[0];
         let inlet = Stream::from_flows(&r, vec![100.0, 1.0, 0.0], AMBIENT_K, AMBIENT_KPA);

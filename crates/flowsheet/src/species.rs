@@ -1,6 +1,6 @@
 //! Species data structures.
 
-use crate::thermo::Shomate;
+use crate::thermo::{Antoine, Shomate};
 use serde::{Deserialize, Serialize};
 
 /// A distinct form in which matter can exist.
@@ -97,6 +97,50 @@ pub struct Species {
     /// e.g. `Some(997.0)` for liquid water at 25 °C
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub density: Option<f64>,
+    /// Vapour pressure, as an [`Antoine`] fit in kPa and K.
+    ///
+    /// `None` for a species nothing evaporates, the same allowance as `density`. It belongs on
+    /// the **liquid** entry of a name that appears in two phases - `H2O(l)`, not `H2O(g)` -
+    /// because vapour pressure is what the condensed phase exerts, and a flash will pair the
+    /// two entries by name and read it from that side.
+    ///
+    /// e.g. `Some(Antoine { a: 7.08354, b: 1663.125, c: -45.622 })` for water, 344-373 K
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vapour_pressure: Option<Antoine>,
+}
+
+/// The heat of vaporisation of `liquid` into `gas` at `temperature` (K), in kJ/mol: the gas's
+/// absolute molar enthalpy minus the liquid's.
+///
+/// Not a stored property. With both phases carrying an [`Species::enthalpy_of_formation`], the
+/// difference between them at [`crate::thermo::REFERENCE_K`] *is* the latent heat there - water
+/// is -285.83 as a liquid and -241.83 as steam, 44.0 kJ/mol apart - and each phase's Shomate fit
+/// carries it to any other temperature. A separate field would be a second, rounded source of
+/// the same number, which is the argument that keeps Shomate's `F` off the wire too.
+///
+/// # Panics
+/// If either species has no enthalpy of formation, the reactor's rule for the same reason: a
+/// missing value reads as zero and would invent a latent heat. Also if `liquid` is not a
+/// [`Phase::Liquid`], `gas` is not a [`Phase::Gas`], or the two are not the same substance by
+/// name.
+pub fn latent_heat(liquid: &Species, gas: &Species, temperature: f64) -> f64 {
+    assert_eq!(
+        liquid.name, gas.name,
+        "latent heat is between two phases of one substance"
+    );
+    assert_eq!(liquid.phase, Phase::Liquid, "`liquid` must be a liquid");
+    assert_eq!(gas.phase, Phase::Gas, "`gas` must be a gas");
+
+    let molar = |s: &Species| {
+        let formation = s.enthalpy_of_formation.unwrap_or_else(|| {
+            panic!(
+                "species `{}` ({:?}) has no enthalpy of formation, so its latent heat is unknown",
+                s.name, s.phase
+            )
+        });
+        formation + s.shomate.enthalpy(temperature)
+    };
+    molar(gas) - molar(liquid)
 }
 
 impl Species {
@@ -245,9 +289,109 @@ impl std::ops::Index<SpeciesId> for SpeciesRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::demo::{QUARTZ_CP, WATER_CP};
-    use crate::thermo::REFERENCE_K;
+    use crate::demo::{QUARTZ_CP, WATER_CP, WATER_VAPOUR_PRESSURE};
+    use crate::thermo::{GAS_CONSTANT, REFERENCE_K};
     use approx::assert_relative_eq;
+
+    /// Water as a liquid and as steam, each with its NIST enthalpy of formation. The liquid
+    /// carries the NIST-JANAF Shomate fit and the vapour pressure; steam is a constant
+    /// 33.6 J/(mol·K), because NIST's gas fit starts at 500 K.
+    fn water_phases() -> (Species, Species) {
+        let liquid = Species {
+            name: "H2O".into(),
+            phase: Phase::Liquid,
+            molar_mass: 18.015,
+            shomate: WATER_CP,
+            enthalpy_of_formation: Some(-285.83),
+            density: Some(997.0),
+            vapour_pressure: Some(WATER_VAPOUR_PRESSURE),
+        };
+        let gas = Species {
+            phase: Phase::Gas,
+            shomate: Shomate::constant(33.6),
+            enthalpy_of_formation: Some(-241.83),
+            density: None,
+            vapour_pressure: None,
+            ..liquid.clone()
+        };
+        (liquid, gas)
+    }
+
+    #[test]
+    fn the_formation_enthalpies_alone_give_the_latent_heat_at_the_reference_temperature() {
+        let (liquid, gas) = water_phases();
+        assert_relative_eq!(
+            latent_heat(&liquid, &gas, REFERENCE_K),
+            -241.83 - -285.83,
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn the_latent_heat_of_water_at_its_boiling_point_matches_the_steam_table() {
+        // 2256.4 kJ/kg at 373.15 K, which is 40.65 kJ/mol. The hand value from these fits is
+        // 40.86 - steam's cp is held constant at its 25 °C value across 75 K - so 1% is the
+        // honest tolerance, not a loose one.
+        let (liquid, gas) = water_phases();
+        assert_relative_eq!(
+            latent_heat(&liquid, &gas, 373.15),
+            40.65,
+            max_relative = 1e-2
+        );
+    }
+
+    #[test]
+    fn the_vapour_pressure_fit_agrees_with_the_absolute_basis_through_clausius_clapeyron() {
+        // Two independent sets of property data, one law between them: with an ideal-gas vapour
+        // and a negligible liquid volume, `R T² d(ln Psat)/dT` is the latent heat. Antoine's
+        // slope gives 41.3 kJ/mol at 373.15 K against 40.9 from the enthalpies - the 1% is the
+        // ideal-gas assumption, which overstates the vapour's volume at 1 atm - so a fit with
+        // its `A` still in bar, or a formation enthalpy off by a phase, would land far outside
+        // 2%.
+        let (liquid, gas) = water_phases();
+        let temperature = 373.15;
+        let dt = 1e-3;
+        let slope = (WATER_VAPOUR_PRESSURE.vapour_pressure(temperature + dt).ln()
+            - WATER_VAPOUR_PRESSURE.vapour_pressure(temperature - dt).ln())
+            / (2.0 * dt);
+        // J/mol over 1000 is kJ/mol.
+        let from_antoine = GAS_CONSTANT * temperature.powi(2) * slope / 1000.0;
+
+        assert_relative_eq!(
+            from_antoine,
+            latent_heat(&liquid, &gas, temperature),
+            max_relative = 2e-2
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "has no enthalpy of formation")]
+    fn a_phase_without_a_formation_enthalpy_has_no_latent_heat() {
+        let (liquid, gas) = water_phases();
+        let unknown = Species {
+            enthalpy_of_formation: None,
+            ..gas
+        };
+        latent_heat(&liquid, &unknown, 373.15);
+    }
+
+    #[test]
+    #[should_panic(expected = "two phases of one substance")]
+    fn latent_heat_between_two_substances_is_a_bug() {
+        let (liquid, gas) = water_phases();
+        let other = Species {
+            name: "D2O".into(),
+            ..gas
+        };
+        latent_heat(&liquid, &other, 373.15);
+    }
+
+    #[test]
+    #[should_panic(expected = "`liquid` must be a liquid")]
+    fn latent_heat_needs_the_phases_the_right_way_round() {
+        let (liquid, gas) = water_phases();
+        latent_heat(&gas, &liquid, 373.15);
+    }
 
     fn water() -> Species {
         Species {
@@ -257,6 +401,7 @@ mod tests {
             shomate: WATER_CP,
             enthalpy_of_formation: None,
             density: None,
+            vapour_pressure: None,
         }
     }
 
@@ -271,6 +416,7 @@ mod tests {
             shomate: QUARTZ_CP,
             enthalpy_of_formation: None,
             density: None,
+            vapour_pressure: None,
         });
         assert_eq!(a.as_usize(), 0);
         assert_eq!(b.as_usize(), 1);
@@ -361,6 +507,7 @@ mod tests {
         let formed = Species {
             enthalpy_of_formation: Some(-285.83),
             density: None,
+            vapour_pressure: None,
             ..water()
         };
 
@@ -411,6 +558,7 @@ mod tests {
                     shomate: Shomate::constant(1.0),
                     enthalpy_of_formation: None,
                     density: None,
+                    vapour_pressure: None,
                 })
                 .collect(),
         }
@@ -436,6 +584,7 @@ mod tests {
             shomate: Shomate::constant(1.0),
             enthalpy_of_formation: None,
             density: None,
+            vapour_pressure: None,
         };
         assert_eq!(registry.insert(duplicate).as_usize(), 0);
     }

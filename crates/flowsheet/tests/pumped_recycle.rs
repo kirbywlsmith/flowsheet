@@ -36,6 +36,7 @@ fn slurry_registry() -> SpeciesRegistry {
     for (species, density) in demo::registry().all().iter().zip([4200.0, 2650.0, 997.0]) {
         r.insert(Species {
             density: Some(density),
+            vapour_pressure: None,
             ..species.clone()
         });
     }
@@ -53,6 +54,7 @@ fn gas_registry() -> SpeciesRegistry {
             shomate: Shomate::constant(cp),
             enthalpy_of_formation: None,
             density: None,
+            vapour_pressure: None,
         });
     }
     r

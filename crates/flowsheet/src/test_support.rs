@@ -38,6 +38,7 @@ pub fn combustion_registry(masses: [f64; 4]) -> SpeciesRegistry {
             shomate: Shomate::constant(35.0),
             enthalpy_of_formation: Some(h_f),
             density: None,
+            vapour_pressure: None,
         });
     }
     registry
@@ -69,6 +70,7 @@ pub fn demo_registry_with_formation() -> SpeciesRegistry {
         r.insert(Species {
             enthalpy_of_formation: Some(h_f),
             density: None,
+            vapour_pressure: None,
             ..species.clone()
         });
     }
@@ -84,6 +86,7 @@ pub fn demo_registry_with_density() -> SpeciesRegistry {
     for (species, density) in demo_registry().all().iter().zip(DEMO_DENSITIES) {
         r.insert(Species {
             density: Some(density),
+            vapour_pressure: None,
             ..species.clone()
         });
     }
@@ -107,6 +110,7 @@ pub fn nitrogen_registry() -> SpeciesRegistry {
         },
         enthalpy_of_formation: None,
         density: None,
+        vapour_pressure: None,
     });
     r
 }

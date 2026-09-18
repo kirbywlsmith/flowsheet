@@ -6,7 +6,7 @@
 use crate::flowsheet::{Flowsheet, StreamId};
 use crate::species::{Phase, Species, SpeciesRegistry};
 use crate::stream::Stream;
-use crate::thermo::Shomate;
+use crate::thermo::{Antoine, Shomate};
 use crate::unit::{Feed, Flotation, Mixer, Product, Splitter};
 
 /// 25 °C in Kelvin.
@@ -47,6 +47,17 @@ pub const QUARTZ_CP: Shomate = Shomate {
 /// fit also stops at its melting point, 388 K.
 pub const CHALCOPYRITE_CP: Shomate = Shomate::constant(95.0);
 
+/// Water's vapour pressure over 344-373 K, from the NIST Chemistry WebBook (Stull, 1947), with
+/// NIST's `A` of 5.08354 in bar raised by 2 for kPa.
+///
+/// Not part of the demo registry - nothing in the circuit evaporates - but the fit the crate's
+/// steam-table tests are written against.
+pub const WATER_VAPOUR_PRESSURE: Antoine = Antoine {
+    a: 7.08354,
+    b: 1663.125,
+    c: -45.622,
+};
+
 /// The three [`Species`] of the demo circuit: the valuable mineral, the gangue, and water.
 pub fn registry() -> SpeciesRegistry {
     let mut r = SpeciesRegistry::default();
@@ -57,6 +68,7 @@ pub fn registry() -> SpeciesRegistry {
         shomate: CHALCOPYRITE_CP,
         enthalpy_of_formation: None,
         density: None,
+        vapour_pressure: None,
     });
     r.insert(Species {
         name: "SiO2".into(),
@@ -65,6 +77,7 @@ pub fn registry() -> SpeciesRegistry {
         shomate: QUARTZ_CP,
         enthalpy_of_formation: None,
         density: None,
+        vapour_pressure: None,
     });
     r.insert(Species {
         name: "H2O".into(),
@@ -73,6 +86,7 @@ pub fn registry() -> SpeciesRegistry {
         shomate: WATER_CP,
         enthalpy_of_formation: None,
         density: None,
+        vapour_pressure: None,
     });
     r
 }

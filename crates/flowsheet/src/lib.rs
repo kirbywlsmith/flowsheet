@@ -62,7 +62,7 @@ pub use crate::solver::{
 };
 pub use crate::species::{Phase, Species, SpeciesId, SpeciesRegistry};
 pub use crate::stream::Stream;
-pub use crate::thermo::Shomate;
+pub use crate::thermo::{Antoine, Shomate};
 pub use crate::unit::{
     Arity, Compressor, ConversionReactor, EvalError, Feed, Flotation, Heater, Mixer, Product, Pump,
     Reaction, ReactorEnergy, Splitter, SplitterN, Tank, Unit, UnitOp,

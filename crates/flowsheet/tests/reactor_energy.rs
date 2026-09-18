@@ -51,6 +51,7 @@ fn combustion_registry() -> SpeciesRegistry {
             shomate: Shomate::constant(CP[i]),
             enthalpy_of_formation: FORMATION[i],
             density: None,
+            vapour_pressure: None,
         });
     }
     r
@@ -208,6 +209,7 @@ fn butane_registry() -> SpeciesRegistry {
             shomate,
             enthalpy_of_formation: Some(h_f),
             density: None,
+            vapour_pressure: None,
         });
     }
     r

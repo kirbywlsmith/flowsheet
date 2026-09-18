@@ -658,6 +658,7 @@ mod tests {
             shomate: crate::thermo::Shomate::constant(75.3),
             enthalpy_of_formation: None,
             density: None,
+            vapour_pressure: None,
         });
         r.insert(Species {
             name: "H2O".into(),
@@ -666,6 +667,7 @@ mod tests {
             shomate: crate::thermo::Shomate::constant(33.6),
             enthalpy_of_formation: None,
             density: None,
+            vapour_pressure: None,
         });
 
         assert_eq!(Flowsheet::new(r).check(), vec![]);
@@ -682,6 +684,7 @@ mod tests {
             shomate: crate::thermo::Shomate::constant(75.3),
             enthalpy_of_formation: None,
             density: None,
+            vapour_pressure: None,
         });
 
         let errors = Flowsheet::new(r).check();

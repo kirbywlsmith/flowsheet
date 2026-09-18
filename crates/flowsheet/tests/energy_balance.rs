@@ -66,6 +66,7 @@ fn constant_cp_registry() -> SpeciesRegistry {
             shomate: Shomate::constant(CONSTANT_CP[i]),
             enthalpy_of_formation: None,
             density: None,
+            vapour_pressure: None,
         });
     }
     r
@@ -184,6 +185,7 @@ fn formation_registry() -> SpeciesRegistry {
         r.insert(Species {
             enthalpy_of_formation: Some(h_f),
             density: None,
+            vapour_pressure: None,
             ..species.clone()
         });
     }

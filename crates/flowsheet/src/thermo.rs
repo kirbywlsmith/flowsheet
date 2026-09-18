@@ -123,11 +123,86 @@ impl Shomate {
     }
 }
 
+/// Vapour pressure from the Antoine equation, in the crate's units:
+///
+/// ```text
+/// log10(P) = a - b / (c + T)    P in kPa, T in K
+/// ```
+///
+/// NIST publishes Antoine coefficients in **bar**, so their `A` needs `+2` on the way into a
+/// document (`log10(100)`); `B` and `C` carry over unchanged. Written in kPa here rather than
+/// converted in code, so that the one system of units the crate uses holds on the wire too.
+///
+/// Like [`Shomate`], a fit over a stated temperature range that is not stored, and nothing checks
+/// that a temperature stays inside it. Water alone has three NIST fits between 255 K and 573 K.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Antoine {
+    /// The constant term: `log10` of a pressure in kPa.
+    pub a: f64,
+    /// The temperature scale, in K. Positive, so that vapour pressure rises with temperature.
+    pub b: f64,
+    /// The temperature offset, in K. Negative for every published fit in Kelvin.
+    pub c: f64,
+}
+
+impl Antoine {
+    /// The vapour pressure at `temperature` (K), in kPa.
+    pub fn vapour_pressure(&self, temperature: f64) -> f64 {
+        10f64.powf(self.a - self.b / (self.c + temperature))
+    }
+
+    /// The temperature (K) at which the vapour pressure is `pressure` (kPa): the boiling point
+    /// at that pressure. The closed-form inverse of [`Antoine::vapour_pressure`], so no
+    /// iteration is needed.
+    pub fn boiling_point(&self, pressure: f64) -> f64 {
+        self.b / (self.a - pressure.log10()) - self.c
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::demo::{QUARTZ_CP, WATER_CP};
+    use crate::demo::{QUARTZ_CP, WATER_CP, WATER_VAPOUR_PRESSURE};
     use approx::assert_relative_eq;
+
+    #[test]
+    fn water_boils_at_one_atmosphere() {
+        // The steam table's 101.325 kPa at 373.15 K, from NIST's 344-373 K fit.
+        assert_relative_eq!(
+            WATER_VAPOUR_PRESSURE.vapour_pressure(373.15),
+            101.325,
+            max_relative = 5e-3
+        );
+    }
+
+    #[test]
+    fn boiling_point_inverts_vapour_pressure() {
+        for temperature in [350.0, 365.0, 373.15] {
+            let pressure = WATER_VAPOUR_PRESSURE.vapour_pressure(temperature);
+            assert_relative_eq!(
+                WATER_VAPOUR_PRESSURE.boiling_point(pressure),
+                temperature,
+                max_relative = 1e-12
+            );
+        }
+    }
+
+    #[test]
+    fn vapour_pressure_rises_with_temperature() {
+        assert!(
+            WATER_VAPOUR_PRESSURE.vapour_pressure(360.0)
+                > WATER_VAPOUR_PRESSURE.vapour_pressure(350.0)
+        );
+    }
+
+    #[test]
+    fn a_fourth_antoine_coefficient_is_rejected() {
+        let e =
+            serde_json::from_str::<Antoine>(r#"{ "a": 7.08, "b": 1663.1, "c": -45.6, "d": 1.0 }"#)
+                .unwrap_err();
+        assert!(e.to_string().contains("unknown field `d`"), "{e}");
+    }
 
     #[test]
     fn enthalpy_is_zero_at_the_reference_temperature() {

@@ -18,9 +18,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Latent heat. Enthalpy of vaporisation per species plus a vapour pressure correlation (Antoine is the usual
-  three-coefficient fit), measured against the absolute basis established above. No flash yet - this is the property
-  data and the `thermo` functions over it, testable on their own against steam-table values.
 - [ ] A shipped species library. Today every document pastes Shomate coefficients, a molar mass and a formation
   enthalpy by hand, so the user is the NIST lookup. Ship a few dozen common species as a JSON file embedded with
   `include_str!`, loadable by name from a document's `species` list (`{ "name": "H2O", "phase": "Liquid" }` with

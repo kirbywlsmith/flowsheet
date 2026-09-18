@@ -134,6 +134,7 @@ A document has three lists: `species`, `units`, `streams`.
 | `shomate`    | yes      | Heat capacity, [NIST Shomate](https://webbook.nist.gov/chemistry/) `a`-`e`. Only `a` is required; omitted terms are zero, so `{ "a": 75.3 }` is a constant 75.3 J/(mol·K). |
 | `enthalpy_of_formation` | no | Standard enthalpy of formation at 298.15 K, kJ/mol: NIST's `H`. Only needed by a species that a reaction creates or destroys. |
 | `density`    | no       | kg/m³, held constant. Only needed by a species that flows through a `pump`.                                                                              |
+| `vapour_pressure` | no  | Antoine fit `{ "a", "b", "c" }` with `log10(P kPa) = a - b / (c + T K)`. NIST publishes `A` in bar: add 2 to it. Put it on the **liquid** entry of a species declared in two phases. |
 
 ### `units`
 

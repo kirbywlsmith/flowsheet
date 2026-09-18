@@ -1079,6 +1079,18 @@ impl Flowsheet {
                 cp,
                 "a heat capacity at 298.15 K greater than 0.0 J/(mol·K)",
             )?;
+            if let Some(antoine) = s.vapour_pressure {
+                // `b` is the one coefficient with a sign the physics fixes: a negative one
+                // would have vapour pressure fall with temperature. `a` and `c` can be either
+                // sign, and JSON cannot write a non-finite one.
+                require(
+                    antoine.b > 0.0,
+                    &at,
+                    "vapour_pressure.b",
+                    antoine.b,
+                    "greater than 0.0 K",
+                )?;
+            }
             if let Some(density) = s.density {
                 require(
                     density.is_finite() && density > 0.0,
@@ -2296,6 +2308,49 @@ mod tests {
                 "{efficiency}"
             );
         }
+    }
+
+    #[test]
+    fn a_vapour_pressure_survives_a_round_trip_and_is_left_off_when_absent() {
+        let json = r#"{"species":[{"name":"H2O","phase":"Liquid","molar_mass":18.015,"shomate":{"a":75.3},"vapour_pressure":{"a":7.08354,"b":1663.125,"c":-45.622}},{"name":"H2O","phase":"Gas","molar_mass":18.015,"shomate":{"a":33.6}}],"units":[],"streams":[]}"#;
+
+        let fs = load(json).unwrap().validate().unwrap();
+        let antoine = fs.registry().all()[0]
+            .vapour_pressure
+            .expect("the liquid carries the fit");
+        assert_eq!(
+            (antoine.a, antoine.b, antoine.c),
+            (7.08354, 1663.125, -45.622)
+        );
+        assert!(fs.registry().all()[1].vapour_pressure.is_none());
+        assert_eq!(serde_json::to_string(&Flowsheet::from(&fs)).unwrap(), json);
+    }
+
+    #[test]
+    fn a_vapour_pressure_that_falls_with_temperature_is_rejected() {
+        let json = r#"{ "species": [
+            { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 },
+              "vapour_pressure": { "a": 7.08354, "b": -1663.125, "c": -45.622 } }
+          ], "units": [], "streams": [] }"#;
+        assert_eq!(
+            load(json).unwrap_err(),
+            LoadError::BadValue {
+                at: Location::Species("H2O".into()),
+                field: "vapour_pressure.b".into(),
+                value: -1663.125,
+                expected: "greater than 0.0 K".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_misspelt_antoine_coefficient_is_rejected() {
+        let json = r#"{ "species": [
+            { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 },
+              "vapour_pressure": { "a": 7.08354, "b": 1663.125, "C": -45.622 } }
+          ], "units": [], "streams": [] }"#;
+        let e = serde_json::from_str::<Flowsheet>(json).unwrap_err();
+        assert!(e.to_string().contains("unknown field `C`"), "{e}");
     }
 
     #[test]
