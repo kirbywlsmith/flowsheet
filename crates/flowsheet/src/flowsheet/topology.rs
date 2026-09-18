@@ -380,8 +380,14 @@ mod tests {
         let mut fs = Flowsheet::new(demo_registry());
 
         let u_feed = fs.add_unit("feed", Feed { stream: feed(&r) });
-        let u_split = fs.add_unit("split", Splitter { fraction: 0.5 });
-        let u_mix = fs.add_unit("mix", Mixer);
+        let u_split = fs.add_unit(
+            "split",
+            Splitter {
+                fraction: 0.5,
+                pressure_drop: 0.0,
+            },
+        );
+        let u_mix = fs.add_unit("mix", Mixer::default());
         let u_product = fs.add_unit("product", Product);
 
         fs.add_stream(u_feed, blank(&r), u_split);
@@ -459,14 +465,26 @@ mod tests {
         let mut fs = Flowsheet::new(demo_registry());
 
         let u_feed = fs.add_unit("feed", Feed { stream: feed(&r) });
-        let u_split = fs.add_unit("split", Splitter { fraction: 0.5 });
+        let u_split = fs.add_unit(
+            "split",
+            Splitter {
+                fraction: 0.5,
+                pressure_drop: 0.0,
+            },
+        );
         fs.add_stream(u_feed, blank(&r), u_split);
 
         let mut loops = Vec::new();
         for i in 0..2 {
-            let u_mix = fs.add_unit(format!("mix{i}"), Mixer);
+            let u_mix = fs.add_unit(format!("mix{i}"), Mixer::default());
             let u_tank = fs.add_unit(format!("tank{i}"), Tank);
-            let u_bleed = fs.add_unit(format!("bleed{i}"), Splitter { fraction: 0.4 });
+            let u_bleed = fs.add_unit(
+                format!("bleed{i}"),
+                Splitter {
+                    fraction: 0.4,
+                    pressure_drop: 0.0,
+                },
+            );
             let u_product = fs.add_unit(format!("product{i}"), Product);
 
             fs.add_stream(u_split, blank(&r), u_mix);
@@ -575,14 +593,21 @@ mod tests {
         let mut fs = Flowsheet::new(demo_registry());
 
         let u_feed = fs.add_unit("feed", Feed { stream: feed(&r) });
-        let bm = fs.add_unit("bm", Mixer);
-        let bs = fs.add_unit("bs", Splitter { fraction: 0.5 });
+        let bm = fs.add_unit("bm", Mixer::default());
+        let bs = fs.add_unit(
+            "bs",
+            Splitter {
+                fraction: 0.5,
+                pressure_drop: 0.0,
+            },
+        );
         let a = fs.add_unit("a", Tank);
-        let dm = fs.add_unit("dm", Mixer);
+        let dm = fs.add_unit("dm", Mixer::default());
         let ds = fs.add_unit(
             "ds",
             SplitterN {
                 ratios: vec![0.4, 0.3, 0.3],
+                pressure_drop: 0.0,
             },
         );
         let c = fs.add_unit("c", Tank);
@@ -626,13 +651,25 @@ mod tests {
         let mut fs = Flowsheet::new(demo_registry());
 
         let u_feed = fs.add_unit("feed", Feed { stream: feed(&r) });
-        let u_split = fs.add_unit("split", Splitter { fraction: 0.5 });
+        let u_split = fs.add_unit(
+            "split",
+            Splitter {
+                fraction: 0.5,
+                pressure_drop: 0.0,
+            },
+        );
         fs.add_stream(u_feed, blank(&r), u_split);
 
         for i in 0..2 {
-            let u_mix = fs.add_unit(format!("mix{i}"), Mixer);
+            let u_mix = fs.add_unit(format!("mix{i}"), Mixer::default());
             let u_tank = fs.add_unit(format!("tank{i}"), Tank);
-            let u_bleed = fs.add_unit(format!("bleed{i}"), Splitter { fraction: 0.4 });
+            let u_bleed = fs.add_unit(
+                format!("bleed{i}"),
+                Splitter {
+                    fraction: 0.4,
+                    pressure_drop: 0.0,
+                },
+            );
             let u_product = fs.add_unit(format!("product{i}"), Product);
 
             fs.add_stream(u_split, blank(&r), u_mix);

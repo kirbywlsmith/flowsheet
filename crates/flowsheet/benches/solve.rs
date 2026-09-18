@@ -61,11 +61,12 @@ fn loops(count: usize) -> ValidFlowsheet {
                 stream: feed.clone(),
             },
         );
-        let u_mixer = fs.add_unit(format!("mixer{i}"), Mixer);
+        let u_mixer = fs.add_unit(format!("mixer{i}"), Mixer::default());
         let u_split = fs.add_unit(
             format!("split{i}"),
             Splitter {
                 fraction: RECYCLE_FRACTION,
+                pressure_drop: 0.0,
             },
         );
         let u_product = fs.add_unit(format!("product{i}"), Product);

@@ -65,12 +65,19 @@ fn try_solve(
             stream: feed.clone(),
         },
     );
-    let u_mixer = fs.add_unit("mixer", Mixer);
-    let u_heater = fs.add_unit("heater", Heater { duty });
+    let u_mixer = fs.add_unit("mixer", Mixer::default());
+    let u_heater = fs.add_unit(
+        "heater",
+        Heater {
+            duty,
+            pressure_drop: 0.0,
+        },
+    );
     let u_split = fs.add_unit(
         "split",
         Splitter {
             fraction: recycle_fraction,
+            pressure_drop: 0.0,
         },
     );
     let u_product = fs.add_unit("product", Product);

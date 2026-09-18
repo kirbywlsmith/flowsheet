@@ -18,14 +18,10 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Pressure, declared per op and propagated. Nothing reads it and nothing solves it - `Stream::add_assign` says so,
-  and the field survives a whole solve untouched. Aspen Plus and HYSYS specify it at this level too: each op declares
-  a pressure drop, `evaluate` writes the outlet pressure, and a mixer takes the minimum inlet pressure rather than
-  the first. Solving pressure *properly* makes flows and pressures simultaneous unknowns - that is the hydraulic
-  network problem, and it waits for the dynamic item.
 - [ ] `Pump` and `Compressor`: add head, and account for the duty it costs. One inlet and one outlet each, sitting on
-  the pressure field the item above made meaningful. A pump on an incompressible stream is `V * dP / efficiency` and
-  is nearly free once pressure propagates. A compressor needs a compression path - isentropic with an efficiency is
+  the pressure field every op now propagates. A pump on an incompressible stream is `V * dP / efficiency` and is
+  nearly free now that pressure propagates - and it is what lets a recycle with a pressure drop converge at all,
+  since without one the loop falls by its drop every pass and fails (see the pressure entry in CLAUDE.md). A compressor needs a compression path - isentropic with an efficiency is
   the usual shape - and the ideal-gas case falls out of the Shomate `cp` already stored, so neither of them waits on
   new property data.
 - [ ] Latent heat. Enthalpy of vaporisation per species plus a vapour pressure correlation (Antoine is the usual
@@ -40,7 +36,7 @@ engineering, ordered so that no large item gates a small one.
   species rather than carry coefficients.
 - [ ] Isothermal flash, `T` and `P` specified. K-values from vapour pressure over system pressure (Raoult to start),
   vapour fraction from a Rachford-Rice solve, outlets vapour first then liquid. Needs the composite key, the latent
-  heat and the propagated pressure above. This is also the op that finally makes the rayon item measurable: CLAUDE.md
+  heat above, and reads the pressure every op now propagates. This is also the op that finally makes the rayon item measurable: CLAUDE.md
   puts a flash at ~20x a mixer ideal and ~200x with a cubic EOS, against the ~90 ns unit evaluation that currently
   makes parallelism pure overhead.
 - [ ] Adiabatic flash, `P` and `H` specified. Newton on temperature around the isothermal flash, so it is an outer
@@ -63,7 +59,7 @@ engineering, ordered so that no large item gates a small one.
 - [ ] Heat exchanger. Two inlets and two outlets with one duty shared between them, specified as a UA plus an
   arrangement (counter- or co-current LMTD), an outlet temperature, or a duty - the first op whose two sides are
   coupled only through energy and not through flows, which is a new shape for `evaluate`. Declares a pressure drop
-  per side, so it waits on the pressure item.
+  per side, the same `pressure_drop` every other op carries.
 - [ ] Distillation column. A stack of `N` equilibrium stages with a condenser and reboiler, specified by stage count,
   feed stage, reflux ratio and distillate rate - the op people judge a simulator by, and the one that makes a
   flowsheet look like a plant. Each stage is the isothermal flash above, coupled to its neighbours by the liquid

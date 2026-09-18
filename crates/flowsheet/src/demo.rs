@@ -135,13 +135,14 @@ pub fn recycle_circuit(fraction: f64) -> RecycleCircuit {
     let mut fs = Flowsheet::new(r);
 
     let u_feed = fs.add_unit("feed", Feed { stream: feed_flows });
-    let u_mixer = fs.add_unit("mixer", Mixer);
+    let u_mixer = fs.add_unit("mixer", Mixer::default());
     let feed = fs.add_stream(u_feed, blank.clone(), u_mixer);
 
     let u_cell = fs.add_unit(
         "flotation",
         Flotation {
             recovery: ROUGHER_RECOVERY.to_vec(),
+            pressure_drop: 0.0,
         },
     );
     let mixer_out = fs.add_stream(u_mixer, blank.clone(), u_cell);
@@ -150,7 +151,13 @@ pub fn recycle_circuit(fraction: f64) -> RecycleCircuit {
     let u_concentrate = fs.add_unit("concentrate", Product);
     let concentrate = fs.add_stream(u_cell, blank.clone(), u_concentrate);
 
-    let u_split = fs.add_unit("split", Splitter { fraction });
+    let u_split = fs.add_unit(
+        "split",
+        Splitter {
+            fraction,
+            pressure_drop: 0.0,
+        },
+    );
     let tails = fs.add_stream(u_cell, blank.clone(), u_split);
 
     // And the splitter's first outlet gets `fraction`.

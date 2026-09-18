@@ -93,7 +93,11 @@ fn solve(
     for (i, reactions) in stages.into_iter().enumerate() {
         let reactor = fs.add_unit(
             format!("reactor {i}"),
-            ConversionReactor { reactions, energy },
+            ConversionReactor {
+                reactions,
+                energy,
+                pressure_drop: 0.0,
+            },
         );
         fs.add_stream(upstream, blank.clone(), reactor);
         upstream = reactor;

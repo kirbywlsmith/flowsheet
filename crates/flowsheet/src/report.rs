@@ -370,8 +370,14 @@ mod tests {
         let mut fs = Flowsheet::new(r);
 
         let u_feed = fs.add_unit("feed", Feed { stream: feed_flows });
-        let u_split = fs.add_unit("split", Splitter { fraction: 0.3 });
-        let u_mixer = fs.add_unit("mixer", Mixer);
+        let u_split = fs.add_unit(
+            "split",
+            Splitter {
+                fraction: 0.3,
+                pressure_drop: 0.0,
+            },
+        );
+        let u_mixer = fs.add_unit("mixer", Mixer::default());
         let u_product = fs.add_unit("product", Product);
 
         fs.add_stream(u_feed, blank.clone(), u_split);
@@ -513,6 +519,7 @@ mod tests {
             ConversionReactor {
                 reactions: vec![reaction],
                 energy: ReactorEnergy::Isothermal,
+                pressure_drop: 0.0,
             },
         );
         let u_product = fs.add_unit("product", Product);
@@ -588,7 +595,10 @@ mod tests {
         let (fs, heater, _) = through(
             demo_registry,
             vec![40.0, 360.0, 600.0],
-            Heater { duty: 50_000.0 },
+            Heater {
+                duty: 50_000.0,
+                pressure_drop: 0.0,
+            },
         );
         assert_relative_eq!(duty(&fs, heater), 50_000.0, max_relative = 1e-9);
     }
@@ -599,6 +609,7 @@ mod tests {
         let reactor = ConversionReactor {
             reactions: vec![combustion(&r, 0.9)],
             energy: ReactorEnergy::Isothermal,
+            pressure_drop: 0.0,
         };
         let (fs, unit, _) = through(
             exact_combustion_registry,
@@ -625,6 +636,7 @@ mod tests {
         let reactor = ConversionReactor {
             reactions: vec![combustion(&r, 0.9)],
             energy: ReactorEnergy::Adiabatic,
+            pressure_drop: 0.0,
         };
         let (fs, unit, inlet) = through(
             exact_combustion_registry,
@@ -639,7 +651,7 @@ mod tests {
 
     #[test]
     fn a_mixer_takes_no_duty() {
-        let (fs, mixer, inlet) = through(demo_registry, vec![40.0, 360.0, 600.0], Mixer);
+        let (fs, mixer, inlet) = through(demo_registry, vec![40.0, 360.0, 600.0], Mixer::default());
         let scale = inlet.enthalpy(fs.registry()).abs().max(1.0);
         assert!(
             duty(&fs, mixer).abs() <= 1e-9 * scale,
@@ -653,7 +665,10 @@ mod tests {
         let (fs, _, _) = through(
             demo_registry,
             vec![40.0, 360.0, 600.0],
-            Heater { duty: 50_000.0 },
+            Heater {
+                duty: 50_000.0,
+                pressure_drop: 0.0,
+            },
         );
         let text = table(&fs, &report(1, 0.0));
         let lines: Vec<&str> = text.lines().collect();
@@ -675,7 +690,10 @@ mod tests {
         let (fs, _, _) = through(
             demo_registry,
             vec![40.0, 360.0, 600.0],
-            Heater { duty: -1234.5 },
+            Heater {
+                duty: -1234.5,
+                pressure_drop: 0.0,
+            },
         );
         for line in table(&fs, &report(1, 0.0)).lines() {
             assert_eq!(line, line.trim_end(), "trailing space on `{line}`");

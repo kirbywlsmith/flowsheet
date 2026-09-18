@@ -84,6 +84,7 @@ fn burner(r: &SpeciesRegistry) -> (Stream, ConversionReactor) {
             conversion: CONVERSION,
         }],
         energy: ReactorEnergy::Adiabatic,
+        pressure_drop: 0.0,
     };
     (feed, reactor)
 }
@@ -103,9 +104,15 @@ fn solve_burner(fraction: f64) -> Solved {
 
     let mut fs = Flowsheet::new(combustion_registry());
     let u_feed = fs.add_unit("feed", Feed { stream: feed });
-    let u_mixer = fs.add_unit("mixer", Mixer);
+    let u_mixer = fs.add_unit("mixer", Mixer::default());
     let u_reactor = fs.add_unit("reactor", reactor);
-    let u_split = fs.add_unit("split", Splitter { fraction });
+    let u_split = fs.add_unit(
+        "split",
+        Splitter {
+            fraction,
+            pressure_drop: 0.0,
+        },
+    );
     let u_product = fs.add_unit("product", Product);
 
     fs.add_stream(u_feed, blank.clone(), u_mixer);
@@ -228,6 +235,7 @@ fn a_cycle_of_reactions_returns_to_the_temperature_it_started_at() {
                 conversion: 0.7,
             }],
             energy: ReactorEnergy::Adiabatic,
+            pressure_drop: 0.0,
         },
     );
     let u_back = fs.add_unit(
@@ -239,6 +247,7 @@ fn a_cycle_of_reactions_returns_to_the_temperature_it_started_at() {
                 conversion: 1.0,
             }],
             energy: ReactorEnergy::Adiabatic,
+            pressure_drop: 0.0,
         },
     );
     let u_product = fs.add_unit("product", Product);

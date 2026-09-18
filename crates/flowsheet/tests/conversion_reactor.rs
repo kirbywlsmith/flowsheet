@@ -80,15 +80,22 @@ fn solve(fraction: f64, method: ConvergenceMethod) -> Solved {
             stream: Stream::from_flows(&r, FEED.to_vec(), AMBIENT_K, AMBIENT_KPA),
         },
     );
-    let u_mixer = fs.add_unit("mixer", Mixer);
+    let u_mixer = fs.add_unit("mixer", Mixer::default());
     let u_reactor = fs.add_unit(
         "reactor",
         ConversionReactor {
             reactions: vec![reaction],
             energy: ReactorEnergy::Isothermal,
+            pressure_drop: 0.0,
         },
     );
-    let u_split = fs.add_unit("split", Splitter { fraction });
+    let u_split = fs.add_unit(
+        "split",
+        Splitter {
+            fraction,
+            pressure_drop: 0.0,
+        },
+    );
     let u_product = fs.add_unit("product", Product);
 
     fs.add_stream(u_feed, blank.clone(), u_mixer);

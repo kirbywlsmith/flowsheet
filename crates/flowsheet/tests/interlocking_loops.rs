@@ -26,14 +26,21 @@ fn circuit() -> (ValidFlowsheet, flowsheet::StreamId) {
             stream: feed_stream(&r),
         },
     );
-    let bm = fs.add_unit("bm", Mixer);
-    let bs = fs.add_unit("bs", Splitter { fraction: 0.5 });
+    let bm = fs.add_unit("bm", Mixer::default());
+    let bs = fs.add_unit(
+        "bs",
+        Splitter {
+            fraction: 0.5,
+            pressure_drop: 0.0,
+        },
+    );
     let a = fs.add_unit("a", Tank);
-    let dm = fs.add_unit("dm", Mixer);
+    let dm = fs.add_unit("dm", Mixer::default());
     let ds = fs.add_unit(
         "ds",
         SplitterN {
             ratios: vec![0.4, 0.3, 0.3],
+            pressure_drop: 0.0,
         },
     );
     let c = fs.add_unit("c", Tank);

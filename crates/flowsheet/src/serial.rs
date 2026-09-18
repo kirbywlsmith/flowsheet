@@ -121,12 +121,30 @@ pub struct FeedSpec {
     pub state: State,
 }
 
+/// `skip_serializing_if` hands its predicate a reference, hence `&f64`.
+fn is_zero(x: &f64) -> bool {
+    *x == 0.0
+}
+
+/// The parameters of a `mixer`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MixerSpec {
+    /// Pressure lost across the unit, in kPa. Optional; an omitted or zero drop is left off on
+    /// save, so a document written before the field existed reads back byte for byte.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pressure_drop: f64,
+}
+
 /// The parameters of a `splitter`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SplitterSpec {
     /// The fraction sent to the first outlet.
     pub fraction: f64,
+    /// Pressure lost across the unit, in kPa. See [`MixerSpec::pressure_drop`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pressure_drop: f64,
 }
 
 /// The parameters of a `splitter_n`.
@@ -135,6 +153,9 @@ pub struct SplitterSpec {
 pub struct SplitterNSpec {
     /// The ratios, one per outlet.
     pub ratios: Vec<f64>,
+    /// Pressure lost across the unit, in kPa. See [`MixerSpec::pressure_drop`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pressure_drop: f64,
 }
 
 /// The parameters of a `flotation`.
@@ -147,6 +168,9 @@ pub struct SplitterNSpec {
 pub struct FlotationSpec {
     /// The fraction of each species reporting to the concentrate, keyed by species name.
     pub recovery: BTreeMap<String, f64>,
+    /// Pressure lost across the unit, in kPa. See [`MixerSpec::pressure_drop`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pressure_drop: f64,
 }
 
 /// One reaction, as a document writes it.
@@ -174,6 +198,9 @@ pub struct ConversionReactorSpec {
     pub energy: unit::ReactorEnergy,
     /// The reactions the reactor runs, in the order it runs them. At least one.
     pub reactions: Vec<ReactionSpec>,
+    /// Pressure lost across the unit, in kPa. See [`MixerSpec::pressure_drop`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pressure_drop: f64,
 }
 
 /// The parameters of a `heater`.
@@ -186,10 +213,13 @@ pub struct ConversionReactorSpec {
 pub struct HeaterSpec {
     /// Heat added, in MJ/h. Negative removes it.
     pub duty: f64,
+    /// Pressure lost across the unit, in kPa. See [`MixerSpec::pressure_drop`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pressure_drop: f64,
 }
 
 /// The parameters of a unit operation that takes none. Empty, but not omitted: it is what rejects
-/// a stray field on a `mixer`, `tank` or `product`.
+/// a stray field on a `tank` or `product`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NoSpec {}
@@ -495,12 +525,14 @@ impl State {
             self.temperature,
             "greater than 0.0 K",
         )?;
+        // Strictly positive, like temperature: kPa is absolute, and the solver's pressure
+        // residual divides by it.
         require(
-            self.pressure.is_finite() && self.pressure >= 0.0,
+            self.pressure.is_finite() && self.pressure > 0.0,
             at,
             "pressure",
             self.pressure,
-            "0.0 kPa or greater",
+            "greater than 0.0 kPa",
         )?;
 
         let flows = species_vector(registry, &self.flows, at, |name, value| {
@@ -546,6 +578,23 @@ impl<'a> Spec<'a> {
     /// [`LoadError::AmbiguousSpecies`] for a bare name more than one phase shares.
     pub fn species(&self, key: &str) -> Result<SpeciesId, LoadError> {
         resolve_species(self.registry, key, self.at)
+    }
+
+    /// Checks a `pressure_drop` parameter: the one value [`unit::drop_pressure`] panics on,
+    /// caught here so it cannot reach the solver. A drop is never negative - a rise is a pump.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::BadValue`] for a negative drop. A non-finite one cannot be written: JSON has
+    /// no `NaN` or `Infinity`.
+    pub fn pressure_drop(&self, drop: f64) -> Result<(), LoadError> {
+        require(
+            drop.is_finite() && drop >= 0.0,
+            self.at,
+            "pressure_drop",
+            drop,
+            "0.0 kPa or greater",
+        )
     }
 
     /// Deserialises the parameters into an operation's own spec type.
@@ -659,12 +708,16 @@ impl OpRegistry {
         });
 
         ops.register(unit::Mixer::TAG, |s| {
-            s.parse::<NoSpec>(unit::Mixer::TAG)?;
-            Ok(Box::new(unit::Mixer))
+            let MixerSpec { pressure_drop } = s.parse(unit::Mixer::TAG)?;
+            s.pressure_drop(pressure_drop)?;
+            Ok(Box::new(unit::Mixer { pressure_drop }))
         });
 
         ops.register(unit::Splitter::TAG, |s| {
-            let SplitterSpec { fraction } = s.parse(unit::Splitter::TAG)?;
+            let SplitterSpec {
+                fraction,
+                pressure_drop,
+            } = s.parse(unit::Splitter::TAG)?;
             require(
                 (0.0..=1.0).contains(&fraction),
                 s.at,
@@ -672,11 +725,19 @@ impl OpRegistry {
                 fraction,
                 "between 0.0 and 1.0",
             )?;
-            Ok(Box::new(unit::Splitter { fraction }))
+            s.pressure_drop(pressure_drop)?;
+            Ok(Box::new(unit::Splitter {
+                fraction,
+                pressure_drop,
+            }))
         });
 
         ops.register(unit::SplitterN::TAG, |s| {
-            let SplitterNSpec { ratios } = s.parse(unit::SplitterN::TAG)?;
+            let SplitterNSpec {
+                ratios,
+                pressure_drop,
+            } = s.parse(unit::SplitterN::TAG)?;
+            s.pressure_drop(pressure_drop)?;
             for &r in &ratios {
                 require(
                     r.is_finite() && r >= 0.0,
@@ -689,11 +750,18 @@ impl OpRegistry {
             // An empty `ratios` sums to zero, so this catches that case too.
             let sum: f64 = ratios.iter().sum();
             require(sum > 0.0, s.at, "ratios", sum, "a sum greater than 0.0")?;
-            Ok(Box::new(unit::SplitterN { ratios }))
+            Ok(Box::new(unit::SplitterN {
+                ratios,
+                pressure_drop,
+            }))
         });
 
         ops.register(unit::Flotation::TAG, |s| {
-            let FlotationSpec { recovery } = s.parse(unit::Flotation::TAG)?;
+            let FlotationSpec {
+                recovery,
+                pressure_drop,
+            } = s.parse(unit::Flotation::TAG)?;
+            s.pressure_drop(pressure_drop)?;
             // Resolved into a dense `SpeciesId`-ordered vector, the same shape as a stream's
             // flows. A species the map leaves out recovers nothing.
             let recovery = species_vector(s.registry, &recovery, s.at, |name, value| {
@@ -705,12 +773,19 @@ impl OpRegistry {
                     "between 0.0 and 1.0",
                 )
             })?;
-            Ok(Box::new(unit::Flotation { recovery }))
+            Ok(Box::new(unit::Flotation {
+                recovery,
+                pressure_drop,
+            }))
         });
 
         ops.register(unit::ConversionReactor::TAG, |s| {
-            let ConversionReactorSpec { energy, reactions } =
-                s.parse(unit::ConversionReactor::TAG)?;
+            let ConversionReactorSpec {
+                energy,
+                reactions,
+                pressure_drop,
+            } = s.parse(unit::ConversionReactor::TAG)?;
+            s.pressure_drop(pressure_drop)?;
 
             // The one panic in `ConversionReactor::evaluate` itself. A count is not an `f64`, but
             // `BadValue` prints it as one without trouble and a variant of its own would buy nothing.
@@ -784,12 +859,20 @@ impl OpRegistry {
             Ok(Box::new(unit::ConversionReactor {
                 reactions: domain,
                 energy,
+                pressure_drop,
             }))
         });
 
         ops.register(unit::Heater::TAG, |s| {
-            let HeaterSpec { duty } = s.parse(unit::Heater::TAG)?;
-            Ok(Box::new(unit::Heater { duty }))
+            let HeaterSpec {
+                duty,
+                pressure_drop,
+            } = s.parse(unit::Heater::TAG)?;
+            s.pressure_drop(pressure_drop)?;
+            Ok(Box::new(unit::Heater {
+                duty,
+                pressure_drop,
+            }))
         });
 
         ops.register(unit::Tank::TAG, |s| {
@@ -1056,7 +1139,9 @@ impl ToDocument for unit::Mixer {
     }
 
     fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
-        spec_of(&NoSpec {})
+        spec_of(&MixerSpec {
+            pressure_drop: self.pressure_drop,
+        })
     }
 }
 
@@ -1073,6 +1158,7 @@ impl ToDocument for unit::Splitter {
     fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
         spec_of(&SplitterSpec {
             fraction: self.fraction,
+            pressure_drop: self.pressure_drop,
         })
     }
 }
@@ -1090,6 +1176,7 @@ impl ToDocument for unit::SplitterN {
     fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
         spec_of(&SplitterNSpec {
             ratios: self.ratios.clone(),
+            pressure_drop: self.pressure_drop,
         })
     }
 }
@@ -1125,7 +1212,10 @@ impl ToDocument for unit::Flotation {
             .map(|(&r, key)| (key, r))
             .collect();
 
-        spec_of(&FlotationSpec { recovery })
+        spec_of(&FlotationSpec {
+            recovery,
+            pressure_drop: self.pressure_drop,
+        })
     }
 }
 
@@ -1175,6 +1265,7 @@ impl ToDocument for unit::ConversionReactor {
         spec_of(&ConversionReactorSpec {
             energy: self.energy,
             reactions,
+            pressure_drop: self.pressure_drop,
         })
     }
 }
@@ -1190,7 +1281,10 @@ impl ToDocument for unit::Heater {
     }
 
     fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
-        spec_of(&HeaterSpec { duty: self.duty })
+        spec_of(&HeaterSpec {
+            duty: self.duty,
+            pressure_drop: self.pressure_drop,
+        })
     }
 }
 
@@ -1874,6 +1968,7 @@ mod tests {
             "cell",
             unit::Flotation {
                 recovery: vec![0.85],
+                pressure_drop: 0.0,
             },
         );
         let conc = fs.add_unit("conc", unit::Product);
@@ -1907,6 +2002,66 @@ mod tests {
         let doc = Flowsheet::from(&fs);
         let heater: HeaterSpec = spec(&doc, 1, unit::Heater::TAG);
         assert_eq!(heater.duty, -500.0);
+    }
+
+    #[test]
+    fn a_pressure_drop_survives_a_round_trip_and_a_zero_one_is_left_off() {
+        let json = minimal(
+            r#"{ "name": "f", "op": { "type": "feed", "state": { "flows": { "H2O": 10.0 }, "pressure": 300.0 } } },
+               { "name": "m", "op": { "type": "mixer", "pressure_drop": 20.0 } },
+               { "name": "h", "op": { "type": "heater", "duty": 0.0 } },
+               { "name": "p", "op": { "type": "product" } }"#,
+            r#"{ "from": "f", "to": "m" }, { "from": "m", "to": "h" }, { "from": "h", "to": "p" }"#,
+        );
+        let mut fs = load(&json).unwrap().validate().unwrap();
+        crate::solver::Solver::default().solve(&mut fs).unwrap();
+        assert_eq!(fs.streams()[1].pressure(), 280.0);
+        assert_eq!(fs.streams()[2].pressure(), 280.0);
+
+        let doc = Flowsheet::from(&fs);
+        assert_eq!(doc.units[1].op.spec["pressure_drop"], 20.0);
+        assert!(
+            !doc.units[2].op.spec.contains_key("pressure_drop"),
+            "a zero drop is the default and should not be written: {:?}",
+            doc.units[2].op.spec
+        );
+        // The mixer's saved form is exactly the hand-written one.
+        assert_eq!(
+            serde_json::to_string(&doc.units[1].op).unwrap(),
+            r#"{"type":"mixer","pressure_drop":20.0}"#
+        );
+    }
+
+    #[test]
+    fn a_negative_pressure_drop_is_rejected() {
+        let json = minimal(
+            r#"{ "name": "s", "op": { "type": "splitter", "fraction": 0.3, "pressure_drop": -5.0 } }"#,
+            "",
+        );
+        let e = load(&json).unwrap_err();
+        assert_eq!(
+            e,
+            LoadError::BadValue {
+                at: Location::Unit("s".into()),
+                field: "pressure_drop".into(),
+                value: -5.0,
+                expected: "0.0 kPa or greater".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_zero_stream_pressure_is_rejected() {
+        let json = minimal(
+            r#"{ "name": "f", "op": { "type": "feed", "state": { "pressure": 0.0 } } }"#,
+            "",
+        );
+        let e = load(&json).unwrap_err();
+        assert!(
+            e.to_string()
+                .ends_with("`pressure` is 0, expected greater than 0.0 kPa"),
+            "{e}"
+        );
     }
 
     /// Why `to_domain` has no `require` for a heater: JSON cannot express the only duty the domain

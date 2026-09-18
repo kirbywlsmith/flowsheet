@@ -93,15 +93,22 @@ fn solve(registry: fn() -> SpeciesRegistry) -> Solved {
             stream: cold.clone(),
         },
     );
-    let u_mixer = fs.add_unit("mixer", Mixer);
+    let u_mixer = fs.add_unit("mixer", Mixer::default());
     let u_cell = fs.add_unit(
         "flotation",
         Flotation {
             recovery: ROUGHER_RECOVERY.to_vec(),
+            pressure_drop: 0.0,
         },
     );
     let u_concentrate = fs.add_unit("concentrate", Product);
-    let u_split = fs.add_unit("split", Splitter { fraction: 0.3 });
+    let u_split = fs.add_unit(
+        "split",
+        Splitter {
+            fraction: 0.3,
+            pressure_drop: 0.0,
+        },
+    );
     let u_tailings = fs.add_unit("tailings", Product);
 
     fs.add_stream(u_hot, blank.clone(), u_mixer);

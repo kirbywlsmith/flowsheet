@@ -190,8 +190,29 @@ Never mix severities in one unlabelled list.
   outright, not kept as an alias, so there is one way to write a reactor; a test pins that the old key is rejected.
   Load errors name the reaction in the field, `reactions[1].conversion`, which `BadValue`'s `String` field already
   allowed.
-- **The energy balance solves temperature and nothing else.** `pressure` is still a carried label (see TODO.md), and
-  there is no phase change.
+- **The energy balance solves temperature and nothing else.** Pressure is declared and propagated, not solved (the
+  entry below), and there is no phase change.
+- **Pressure is a per-op `pressure_drop`, kPa, never negative**, on `Mixer`, `Splitter`, `SplitterN`, `Flotation`,
+  `Heater` and `ConversionReactor`; `Feed` sets a pressure outright, `Product` has no outlet, and `Tank` is a
+  placeholder. Each op takes its drop off every outlet through `unit::drop_pressure`, and `mix` starts from the
+  **lowest pressure among the inlets that carry flow** - lowest because the pipes meet at one pressure and the others
+  would flow backwards at anything higher; flowing only because a recycle's first pass hands the mixer an empty
+  placeholder at whatever pressure it was built with, and letting that set the outlet held the loop at 101.325 kPa
+  forever in the first version. `drop_pressure` likewise leaves an empty outlet alone, the same guard as `heat`
+  ignoring its duty. A drop that would take a flowing outlet to 0 kPa or below is an `EvalError` (the `EvalError`
+  entry: user input the numerics cannot answer), a negative drop is a panic with `LoadError::BadValue` at the
+  boundary, and a stream pressure must now be **strictly positive** on load, because the residual divides by it.
+  On the wire `pressure_drop` is **optional, default 0, and left off on save when 0** (`serial::is_zero`, the same
+  rule as Shomate's zero terms), so every existing document saves byte for byte; `Mixer` gained a `MixerSpec` and
+  stopped being a unit struct, which is why every call site reads `Mixer::default()`. **A recycle that loses
+  pressure has no steady state**: the recycle re-enters the mixer below the feed, the mixer takes the recycle's
+  pressure, and the loop falls by its total drop every pass. So the solver's convergence check includes
+  `Stream::pressure_residual` - without it the flows settle in ~17 passes and the solve reports success at whatever
+  pressure the loop had reached - and `tests/pressure.rs` pins that such a loop fails on the pass the drop reaches
+  0 kPa (pass 50 for 500 kPa in and 10 off), naming the mixer, rather than converging. A pump in the loop is what
+  fixes that, which is the next TODO item. Wegstein still copies pressure from the result rather than extrapolating
+  it: on a converging loop pressure settles in one pass, and on a diverging one there is nothing to extrapolate
+  towards. The report table has no pressure column yet; adding one moves every layout test.
 - `UnitOp::evaluate` takes **`&SpeciesRegistry`** as a plain second parameter. A `Stream` is a bare vector of flows and
   enthalpy needs each species' heat capacity. Not a context struct - there is one thing to pass - and not a registry
   reference inside `Stream`, whose lifetime would infect `Flowsheet`, `ValidFlowsheet`, `serial` and every test.
@@ -222,8 +243,7 @@ Never mix severities in one unlabelled list.
   `unit::solve_temperature`: Newton on `H(T) - target`, whose slope is the heat capacity flow and therefore positive,
   so there is exactly one root. It is seeded with the heat-capacity-weighted mean temperature, exact for constant cp,
   and takes 2-3 steps from there. Its 1e-9 K tolerance sits far inside the solver's, or the outer loop would converge
-  on inner-solve noise. All-empty inlets keep the first inlet's temperature; the outlet takes the first inlet's
-  pressure.
+  on inner-solve noise. All-empty inlets keep the first inlet's temperature and pressure.
 - `Heater { duty }` is **duty-specified, MJ/h, negative cools** - no separate `Cooler`, and no outlet-temperature
   spec yet. `unit::heat` hands `H_in + duty` to `solve_temperature` starting from the inlet temperature, so Newton's
   first step is `T + Q/C`, exact for constant cp. An **empty inlet passes through with the duty ignored**, because a

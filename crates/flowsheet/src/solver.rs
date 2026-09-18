@@ -27,9 +27,9 @@ pub enum ConvergenceMethod {
 pub struct SolverConfig {
     /// The tolerance of what counts as convergence during [`Solver::solve`].
     ///
-    /// Every tear stream's flow residual ([`Stream::max_flow_residual`]) and temperature residual
-    /// ([`Stream::temperature_residual`]) must be at or below it. Both are relative, so one
-    /// tolerance serves both.
+    /// Every tear stream's flow residual ([`Stream::max_flow_residual`]), temperature residual
+    /// ([`Stream::temperature_residual`]) and pressure residual ([`Stream::pressure_residual`])
+    /// must be at or below it. All three are relative, so one tolerance serves them all.
     pub tolerance: f64,
     /// The maximum number of passes [`Solver::solve`] makes before giving up.
     ///
@@ -223,7 +223,10 @@ impl Solver {
                 .zip(&tears_snapshot)
                 .map(|(&s, old)| {
                     let new = &flowsheet[s];
-                    nan_max(new.max_flow_residual(old), new.temperature_residual(old))
+                    nan_max(
+                        nan_max(new.max_flow_residual(old), new.temperature_residual(old)),
+                        new.pressure_residual(old),
+                    )
                 })
                 .fold(0.0, nan_max);
 
@@ -377,7 +380,10 @@ mod tests {
     /// flowsheet. The wiring is irrelevant here — only the count reaches the message.
     fn two_unit_ids() -> Vec<UnitId> {
         let mut fs = Flowsheet::new(demo_registry());
-        vec![fs.add_unit("mixer", Mixer), fs.add_unit("product", Product)]
+        vec![
+            fs.add_unit("mixer", Mixer::default()),
+            fs.add_unit("product", Product),
+        ]
     }
 
     #[test]
@@ -483,8 +489,14 @@ mod tests {
 
         let mut fs = Flowsheet::new(demo_registry());
         let u_feed = fs.add_unit("feed", Feed { stream: hot });
-        let mixer = fs.add_unit("mixer", Mixer);
-        let split = fs.add_unit("split", Splitter { fraction: 0.5 });
+        let mixer = fs.add_unit("mixer", Mixer::default());
+        let split = fs.add_unit(
+            "split",
+            Splitter {
+                fraction: 0.5,
+                pressure_drop: 0.0,
+            },
+        );
         let u_product = fs.add_unit("product", Product);
         fs.add_stream(u_feed, feed(&r), mixer);
         fs.add_stream(mixer, feed(&r).scaled(2.0), split);

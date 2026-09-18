@@ -1,6 +1,6 @@
 //! [`Heater`] - the only operation that exchanges heat with its surroundings.
 
-use super::{Arity, EvalError, UnitOp, heat};
+use super::{Arity, EvalError, UnitOp, drop_pressure, heat};
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
@@ -17,6 +17,8 @@ use crate::stream::Stream;
 pub struct Heater {
     /// Heat added to the stream, in MJ/h. Negative removes it.
     pub duty: f64,
+    /// Pressure lost across the unit, in kPa. Never negative.
+    pub pressure_drop: f64,
 }
 
 impl UnitOp for Heater {
@@ -38,7 +40,9 @@ impl UnitOp for Heater {
         registry: &SpeciesRegistry,
         inlets: &[&Stream],
     ) -> Result<Vec<Stream>, EvalError> {
-        Ok(vec![heat(registry, inlets[0], self.duty)?])
+        let mut outlet = heat(registry, inlets[0], self.duty)?;
+        drop_pressure(&mut outlet, self.pressure_drop)?;
+        Ok(vec![outlet])
     }
 }
 
@@ -53,7 +57,12 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = Heater { duty: 20_000.0 }.evaluate(&r, &[&inlet]).unwrap();
+        let outs = Heater {
+            duty: 20_000.0,
+            pressure_drop: 0.0,
+        }
+        .evaluate(&r, &[&inlet])
+        .unwrap();
 
         assert_eq!(outs.len(), 1);
         assert_relative_eq!(
@@ -68,7 +77,12 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = Heater { duty: -20_000.0 }.evaluate(&r, &[&inlet]).unwrap();
+        let outs = Heater {
+            duty: -20_000.0,
+            pressure_drop: 0.0,
+        }
+        .evaluate(&r, &[&inlet])
+        .unwrap();
 
         assert!(outs[0].temperature() < inlet.temperature());
     }
@@ -78,9 +92,12 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let e = Heater { duty: -1e9 }
-            .evaluate(&r, &[&inlet])
-            .expect_err("1e9 MJ/h is a thousand times what it takes to reach 0 K");
+        let e = Heater {
+            duty: -1e9,
+            pressure_drop: 0.0,
+        }
+        .evaluate(&r, &[&inlet])
+        .expect_err("1e9 MJ/h is a thousand times what it takes to reach 0 K");
 
         assert!(
             e.to_string().contains("no positive temperature holds"),

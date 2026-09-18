@@ -1,6 +1,8 @@
 //! [`ConversionReactor`] - the first operation that turns one species into another.
 
-use super::{Arity, EvalError, Reaction, ReactorEnergy, UnitOp, react, solve_temperature};
+use super::{
+    Arity, EvalError, Reaction, ReactorEnergy, UnitOp, drop_pressure, react, solve_temperature,
+};
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
@@ -27,6 +29,8 @@ pub struct ConversionReactor {
     pub reactions: Vec<Reaction>,
     /// Whether the outlet holds the inlet's temperature or its enthalpy.
     pub energy: ReactorEnergy,
+    /// Pressure lost across the unit, in kPa. Never negative.
+    pub pressure_drop: f64,
 }
 
 impl UnitOp for ConversionReactor {
@@ -72,6 +76,7 @@ impl UnitOp for ConversionReactor {
             // Newton starts from the inlet temperature, which `react` left on the outlet.
             solve_temperature(registry, &mut outlet, inlet.enthalpy(registry))?;
         }
+        drop_pressure(&mut outlet, self.pressure_drop)?;
 
         Ok(vec![outlet])
     }
@@ -94,6 +99,7 @@ mod tests {
         ConversionReactor {
             reactions: vec![combustion(r, 0.9)],
             energy,
+            pressure_drop: 0.0,
         }
     }
 
@@ -154,6 +160,7 @@ mod tests {
                 conversion: 0.9,
             }],
             energy: ReactorEnergy::Adiabatic,
+            pressure_drop: 0.0,
         };
 
         let e = unburn
@@ -171,6 +178,7 @@ mod tests {
         let empty = ConversionReactor {
             reactions: Vec::new(),
             energy: ReactorEnergy::Isothermal,
+            pressure_drop: 0.0,
         };
         let _ = empty.evaluate(&r, &[&inlet]);
     }

@@ -64,6 +64,11 @@ impl Stream {
         self.pressure
     }
 
+    /// Sets the pressure of the stream, in kPa.
+    pub fn set_pressure(&mut self, pressure: f64) {
+        self.pressure = pressure;
+    }
+
     /// Number of species slots, matching the [`SpeciesRegistry`] this stream was built from.
     pub fn species_count(&self) -> usize {
         self.flows.len()
@@ -138,8 +143,8 @@ impl Stream {
     /// Largest per-species flow difference, normalised by the larger stream total.
     ///
     /// A result of 1e-6 means every species agrees to within 1 ppm of the stream's
-    /// total mass flow. Compares flows only: [`Stream::temperature_residual`] covers temperature,
-    /// and nothing compares pressure.
+    /// total mass flow. Compares flows only: [`Stream::temperature_residual`] and
+    /// [`Stream::pressure_residual`] cover the other two.
     ///
     /// Returns `NaN` if either stream contains `NaN`.
     ///
@@ -187,6 +192,18 @@ impl Stream {
     /// Returns `NaN` if either temperature is `NaN`.
     pub fn temperature_residual(&self, other: &Stream) -> f64 {
         (self.temperature - other.temperature).abs() / self.temperature.max(other.temperature)
+    }
+
+    /// Pressure difference, normalised by the higher of the two streams.
+    ///
+    /// Relative for the same reason [`Stream::temperature_residual`] is, and it works for the
+    /// same reason: kPa is absolute, so a stream at 0 kPa is a vacuum and not a legal state.
+    /// Loading rejects one, and every operation only ever lowers pressure by a finite drop from a
+    /// positive value or fails - so there is no zero to divide by.
+    ///
+    /// Returns `NaN` if either pressure is `NaN`.
+    pub fn pressure_residual(&self, other: &Stream) -> f64 {
+        (self.pressure - other.pressure).abs() / self.pressure.max(other.pressure)
     }
 
     /// Multiplies every flow by `factor`, returning a new stream.
@@ -416,6 +433,19 @@ mod tests {
             max_relative = 1e-12
         );
         assert_relative_eq!(a.temperature_residual(&a), 0.0);
+    }
+
+    #[test]
+    fn pressure_residual_is_relative_to_the_higher_stream() {
+        let r = demo_registry();
+        let mut a = feed(&r);
+        let mut b = feed(&r);
+        a.set_pressure(400.0);
+        b.set_pressure(500.0);
+
+        assert_relative_eq!(a.pressure_residual(&b), 0.2, max_relative = 1e-12);
+        assert_relative_eq!(b.pressure_residual(&a), 0.2, max_relative = 1e-12);
+        assert_relative_eq!(a.pressure_residual(&a), 0.0);
     }
 
     #[test]

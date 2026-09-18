@@ -45,9 +45,15 @@ fn build(fraction: f64) -> Circuit {
             stream: feed_stream,
         },
     );
-    let u_mixer = fs.add_unit("mixer", Mixer);
+    let u_mixer = fs.add_unit("mixer", Mixer::default());
     let u_tank = fs.add_unit("tank", Tank);
-    let u_split = fs.add_unit("split", Splitter { fraction });
+    let u_split = fs.add_unit(
+        "split",
+        Splitter {
+            fraction,
+            pressure_drop: 0.0,
+        },
+    );
     let u_bleed = fs.add_unit("bleed", Product);
     let u_product = fs.add_unit("product", Product);
 
@@ -160,7 +166,13 @@ fn a_miswired_flowsheet_never_reaches_the_solver() {
     let mut fs = Flowsheet::new(r);
 
     let u_feed = fs.add_unit("feed", Feed { stream: feed });
-    let u_split = fs.add_unit("split", Splitter { fraction: 0.3 });
+    let u_split = fs.add_unit(
+        "split",
+        Splitter {
+            fraction: 0.3,
+            pressure_drop: 0.0,
+        },
+    );
     let u_product = fs.add_unit("product", Product);
 
     fs.add_stream(u_feed, blank.clone(), u_split);

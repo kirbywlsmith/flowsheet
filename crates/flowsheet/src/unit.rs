@@ -187,11 +187,17 @@ pub struct Unit {
 /// Mixes a number of inlets into a single combined [`Stream`].
 ///
 /// Flows add. Mixing is adiabatic (no heat enters or leaves), so the outlet's enthalpy flow is
-/// the sum of the inlets', and [`solve_temperature`] finds the temperature that makes that true. The outlet takes the first inlet's pressure, because nothing solves
-/// pressure yet.
+/// the sum of the inlets', and [`solve_temperature`] finds the temperature that makes that true.
 ///
-/// If every inlet is empty there is no mass to put a temperature on, so the first inlet's
-/// temperature is kept.
+/// The outlet takes the **lowest pressure of the inlets that carry flow**. Lowest, because the
+/// pipes physically meet at one pressure and the others would flow backwards at anything
+/// higher - Aspen and HYSYS do the same. Only the inlets carrying flow count, because on a
+/// recycle's first pass the tear stream is an empty placeholder at whatever pressure it was
+/// built with; an empty pipe pushes back on nothing, so letting it set the outlet pressure would
+/// hold the whole loop at the placeholder's value forever.
+///
+/// If every inlet is empty there is no mass to put a temperature or pressure on, so the first
+/// inlet's are kept.
 ///
 /// Returns `Ok(None)` if `inlets` is empty.
 ///
@@ -218,6 +224,7 @@ pub fn mix<'a>(
     // when it varies it is close enough that Newton needs a step or two.
     let mut heat_capacity = 0.0;
     let mut weighted_temperature = 0.0;
+    let mut pressure = f64::INFINITY;
 
     for inlet in inlets {
         outlet += inlet;
@@ -225,12 +232,16 @@ pub fn mix<'a>(
         enthalpy += inlet.enthalpy(registry);
         heat_capacity += c;
         weighted_temperature += c * inlet.temperature();
+        if inlet.total() > 0.0 {
+            pressure = pressure.min(inlet.pressure());
+        }
     }
 
     if heat_capacity == 0.0 {
         return Ok(Some(outlet)); // exact-zero guard: every inlet is empty
     }
 
+    outlet.set_pressure(pressure);
     outlet.set_temperature(weighted_temperature / heat_capacity);
     solve_temperature(registry, &mut outlet, enthalpy)?;
     Ok(Some(outlet))
@@ -326,6 +337,54 @@ pub fn heat(registry: &SpeciesRegistry, inlet: &Stream, duty: f64) -> Result<Str
     // exact when cp is constant, and within a step or two of the answer otherwise.
     solve_temperature(registry, &mut outlet, inlet.enthalpy(registry) + duty)?;
     Ok(outlet)
+}
+
+/// Lowers `outlet`'s pressure by `drop` (kPa), the pressure an operation costs the material
+/// passing through it.
+///
+/// An empty outlet is left alone. It carries no material to lose pressure, and its pressure is
+/// whatever placeholder it was built with - on a recycle's first pass that is the tear stream's,
+/// which a drop larger than the placeholder would push below zero on a loop that is perfectly
+/// well posed once it fills. The same reasoning as [`heat`] ignoring its duty on an empty inlet.
+///
+/// # Errors
+/// If the drop would take a flowing outlet to 0 kPa or below. A drop is a property of the
+/// equipment and a pressure is a property of the stream, so the two only meet once material
+/// arrives, which makes this the solver's to report and not a panic - the same line
+/// [`solve_temperature`] draws for a duty no positive temperature absorbs.
+///
+/// # Panics
+/// If `drop` is negative or not finite. A negative drop would be a pump, and loading rejects
+/// one, so reaching this is a bug in the calling code.
+pub fn drop_pressure(outlet: &mut Stream, drop: f64) -> Result<(), EvalError> {
+    assert!(
+        drop.is_finite() && drop >= 0.0,
+        "pressure drop must be finite and not negative, got {drop}"
+    );
+    if outlet.total() == 0.0 {
+        return Ok(()); // exact-zero guard: an empty stream has no pressure to lose
+    }
+
+    let pressure = outlet.pressure() - drop;
+    if pressure <= 0.0 {
+        return Err(EvalError::new(format!(
+            "a pressure drop of {drop} kPa takes the outlet from {} kPa to {pressure} kPa",
+            outlet.pressure()
+        )));
+    }
+    outlet.set_pressure(pressure);
+    Ok(())
+}
+
+/// [`drop_pressure`] over every outlet of an operation, which is what every shipped operation
+/// with a drop does.
+///
+/// # Errors
+/// See [`drop_pressure`].
+pub fn drop_pressures(outlets: &mut [Stream], drop: f64) -> Result<(), EvalError> {
+    outlets
+        .iter_mut()
+        .try_for_each(|outlet| drop_pressure(outlet, drop))
 }
 
 /// Splits an inlet into a (`fraction`, `1.0 - fraction`) scaled [`Stream`] tuple.
@@ -745,15 +804,74 @@ mod tests {
     }
 
     #[test]
-    fn mixing_keeps_the_first_inlets_pressure() {
-        // Nothing solves pressure yet. See the pressure item in TODO.md.
+    fn mixing_takes_the_lowest_inlet_pressure() {
         let r = demo_registry();
         let low = feed(&r);
         let high = Stream::from_flows(&r, vec![10.0, 20.0, 30.0], AMBIENT_K, 500.0);
 
-        let out = mixed(&r, [&low, &high]);
+        assert_relative_eq!(mixed(&r, [&low, &high]).pressure(), AMBIENT_KPA);
+        assert_relative_eq!(mixed(&r, [&high, &low]).pressure(), AMBIENT_KPA);
+    }
+
+    #[test]
+    fn an_empty_inlet_does_not_set_the_mixed_pressure() {
+        // A recycle's first pass: the tear is an empty placeholder at ambient, and the feed is
+        // at 500 kPa. Taking the placeholder's pressure would hold the loop at ambient forever.
+        let r = demo_registry();
+        let empty = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
+        let feed = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], AMBIENT_K, 500.0);
+
+        assert_relative_eq!(mixed(&r, [&empty, &feed]).pressure(), 500.0);
+    }
+
+    #[test]
+    fn mixing_only_empty_inlets_keeps_the_first_pressure() {
+        let r = demo_registry();
+        let a = Stream::zeros(&r, AMBIENT_K, 300.0);
+        let b = Stream::zeros(&r, AMBIENT_K, 200.0);
+
+        assert_relative_eq!(mixed(&r, [&a, &b]).pressure(), 300.0);
+    }
+
+    #[test]
+    fn a_pressure_drop_comes_off_the_outlet() {
+        let r = demo_registry();
+        let mut out = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], AMBIENT_K, 500.0);
+
+        drop_pressure(&mut out, 20.0).unwrap();
+
+        assert_relative_eq!(out.pressure(), 480.0);
+    }
+
+    #[test]
+    fn a_pressure_drop_leaves_an_empty_stream_alone() {
+        let r = demo_registry();
+        let mut out = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
+
+        drop_pressure(&mut out, 1e6).unwrap();
 
         assert_relative_eq!(out.pressure(), AMBIENT_KPA);
+    }
+
+    #[test]
+    fn a_pressure_drop_that_reaches_zero_is_an_error_not_a_panic() {
+        let r = demo_registry();
+        let mut out = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], AMBIENT_K, 500.0);
+
+        let e = drop_pressure(&mut out, 500.0).unwrap_err();
+
+        assert_eq!(
+            e.to_string(),
+            "a pressure drop of 500 kPa takes the outlet from 500 kPa to 0 kPa"
+        );
+        assert_relative_eq!(out.pressure(), 500.0, epsilon = 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "pressure drop must be finite and not negative")]
+    fn a_negative_pressure_drop_is_a_bug() {
+        let r = demo_registry();
+        let _ = drop_pressure(&mut feed(&r), -1.0);
     }
 
     #[test]
@@ -1397,21 +1515,28 @@ mod tests {
                 (1, Some(1)),
             ),
             // The mixer is the only unbounded side in the model.
-            (Box::new(Mixer), (1, None), (1, Some(1))),
+            (Box::new(Mixer::default()), (1, None), (1, Some(1))),
             (Box::new(Tank), (1, Some(1)), (1, Some(1))),
             (
-                Box::new(Heater { duty: 1000.0 }),
+                Box::new(Heater {
+                    duty: 1000.0,
+                    pressure_drop: 0.0,
+                }),
                 (1, Some(1)),
                 (1, Some(1)),
             ),
             (
-                Box::new(Splitter { fraction: 0.3 }),
+                Box::new(Splitter {
+                    fraction: 0.3,
+                    pressure_drop: 0.0,
+                }),
                 (1, Some(1)),
                 (2, Some(2)),
             ),
             (
                 Box::new(SplitterN {
                     ratios: vec![1.0, 1.0, 2.0],
+                    pressure_drop: 0.0,
                 }),
                 (1, Some(1)),
                 (3, Some(3)),
@@ -1419,6 +1544,7 @@ mod tests {
             (
                 Box::new(Flotation {
                     recovery: vec![0.85, 0.05, 0.30],
+                    pressure_drop: 0.0,
                 }),
                 (1, Some(1)),
                 (2, Some(2)),
@@ -1434,6 +1560,7 @@ mod tests {
                         conversion: 0.5,
                     }],
                     energy: ReactorEnergy::Isothermal,
+                    pressure_drop: 0.0,
                 }),
                 (1, Some(1)),
                 (1, Some(1)),

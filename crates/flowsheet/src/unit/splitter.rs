@@ -1,6 +1,6 @@
 //! [`Splitter`] and [`SplitterN`] - composition-preserving flow division.
 
-use super::{Arity, EvalError, UnitOp, split, split_n};
+use super::{Arity, EvalError, UnitOp, drop_pressures, split, split_n};
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
@@ -9,6 +9,8 @@ use crate::stream::Stream;
 pub struct Splitter {
     /// The `fraction` to pass to [`split`].
     pub fraction: f64,
+    /// Pressure lost across the unit, in kPa, by both outlets. Never negative.
+    pub pressure_drop: f64,
 }
 
 /// One inlet, one outlet per ratio.
@@ -16,6 +18,8 @@ pub struct Splitter {
 pub struct SplitterN {
     /// The `ratios` to pass to [`split_n`].
     pub ratios: Vec<f64>,
+    /// Pressure lost across the unit, in kPa, by every outlet. Never negative.
+    pub pressure_drop: f64,
 }
 
 impl UnitOp for Splitter {
@@ -37,7 +41,9 @@ impl UnitOp for Splitter {
         inlets: &[&Stream],
     ) -> Result<Vec<Stream>, EvalError> {
         let (a, b) = split(inlets[0], self.fraction);
-        Ok(vec![a, b])
+        let mut outlets = vec![a, b];
+        drop_pressures(&mut outlets, self.pressure_drop)?;
+        Ok(outlets)
     }
 }
 
@@ -57,7 +63,9 @@ impl UnitOp for SplitterN {
         _registry: &SpeciesRegistry,
         inlets: &[&Stream],
     ) -> Result<Vec<Stream>, EvalError> {
-        Ok(split_n(inlets[0], &self.ratios))
+        let mut outlets = split_n(inlets[0], &self.ratios);
+        drop_pressures(&mut outlets, self.pressure_drop)?;
+        Ok(outlets)
     }
 }
 
@@ -72,7 +80,12 @@ mod tests {
         let r = demo_registry();
         let inlet = feed(&r);
 
-        let outs = Splitter { fraction: 0.3 }.evaluate(&r, &[&inlet]).unwrap();
+        let outs = Splitter {
+            fraction: 0.3,
+            pressure_drop: 0.0,
+        }
+        .evaluate(&r, &[&inlet])
+        .unwrap();
 
         assert_eq!(outs.len(), 2);
         assert_relative_eq!(outs[0].total(), 300.0, max_relative = 1e-12);
@@ -85,6 +98,7 @@ mod tests {
         let inlet = feed(&r);
         let op = SplitterN {
             ratios: vec![1.0, 1.0, 2.0],
+            pressure_drop: 0.0,
         };
 
         let outs = op.evaluate(&r, &[&inlet]).unwrap();

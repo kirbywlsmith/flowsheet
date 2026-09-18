@@ -1,6 +1,6 @@
 //! [`Flotation`] - the first operation that changes a stream's composition.
 
-use super::{Arity, EvalError, UnitOp, recover};
+use super::{Arity, EvalError, UnitOp, drop_pressures, recover};
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
@@ -18,6 +18,8 @@ use crate::stream::Stream;
 pub struct Flotation {
     /// The fraction of each species reporting to the concentrate, in `SpeciesId` order.
     pub recovery: Vec<f64>,
+    /// Pressure lost across the unit, in kPa, by both outlets. Never negative.
+    pub pressure_drop: f64,
 }
 
 impl UnitOp for Flotation {
@@ -38,7 +40,9 @@ impl UnitOp for Flotation {
         inlets: &[&Stream],
     ) -> Result<Vec<Stream>, EvalError> {
         let (concentrate, tails) = recover(inlets[0], &self.recovery);
-        Ok(vec![concentrate, tails])
+        let mut outlets = vec![concentrate, tails];
+        drop_pressures(&mut outlets, self.pressure_drop)?;
+        Ok(outlets)
     }
 }
 
@@ -52,6 +56,7 @@ mod tests {
     fn rougher() -> Flotation {
         Flotation {
             recovery: vec![0.85, 0.05, 0.30],
+            pressure_drop: 0.0,
         }
     }
 
@@ -101,6 +106,7 @@ mod tests {
 
         let outs = Flotation {
             recovery: vec![0.0; 3],
+            pressure_drop: 0.0,
         }
         .evaluate(&r, &[&inlet])
         .unwrap();
@@ -117,6 +123,7 @@ mod tests {
         // it ever produces one, but the unused-result lint is a static check.
         let _ = Flotation {
             recovery: vec![0.85, 0.05],
+            pressure_drop: 0.0,
         }
         .evaluate(&r, &[&feed(&r)]);
     }
@@ -127,6 +134,7 @@ mod tests {
         let r = demo_registry();
         let _ = Flotation {
             recovery: vec![1.5, 0.05, 0.30],
+            pressure_drop: 0.0,
         }
         .evaluate(&r, &[&feed(&r)]);
     }
