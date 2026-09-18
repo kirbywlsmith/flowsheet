@@ -1,0 +1,26 @@
+{
+  "species": [
+    {
+      "name": "H2O", "phase": "Liquid", "molar_mass": 18.015,
+      "shomate": { "a": -203.606, "b": 1523.29, "c": -3196.413, "d": 2474.455, "e": 3.855326 },
+      "density": 997.0
+    }
+  ],
+  "units": [
+    {
+      "name": "feed",
+      "op": { "type": "feed", "state": { "flows": { "H2O": 100.0 }, "pressure": 300.0 } }
+    },
+    { "name": "mixer", "op": { "type": "mixer", "pressure_drop": 200.0 } },
+    { "name": "split", "op": { "type": "splitter", "fraction": 0.5 } },
+    { "name": "pump", "op": { "type": "pump", "pressure_rise": 200.0, "efficiency": 0.5 } },
+    { "name": "product", "op": { "type": "product" } }
+  ],
+  "streams": [
+    { "from": "feed", "to": "mixer" },
+    { "from": "mixer", "to": "split" },
+    { "from": "split", "to": "pump" },
+    { "from": "pump", "to": "mixer" },
+    { "from": "split", "to": "product" }
+  ]
+}

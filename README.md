@@ -103,8 +103,9 @@ flowsheet blend.json
 
 Below the footer, every unit that takes heat in or gives it out is listed with its duty: its
 outlets' enthalpy flow minus its inlets'. For a heater that is the duty it was given; for an
-isothermal reactor it is the heat of reaction it had to shed. Units that only mix or split are
-left out.
+isothermal reactor it is the heat of reaction it had to shed; for a compressor it is its whole
+shaft work, and for a pump only the part of its shaft work that became heat rather than pressure.
+Units that only mix or split are left out.
 
 ## The JSON format
 
@@ -118,8 +119,10 @@ A document has three lists: `species`, `units`, `streams`.
 | Temperature   | K                 |
 | Pressure      | kPa               |
 | Heater duty   | MJ/h              |
+| Pressure drop, pressure rise | kPa |
 | Molar mass    | g/mol             |
 | Enthalpy of formation | kJ/mol    |
+| Density       | kg/m³             |
 
 ### `species`
 
@@ -130,6 +133,7 @@ A document has three lists: `species`, `units`, `streams`.
 | `molar_mass` | yes      | g/mol                                                                                                                                                                    |
 | `shomate`    | yes      | Heat capacity, [NIST Shomate](https://webbook.nist.gov/chemistry/) `a`-`e`. Only `a` is required; omitted terms are zero, so `{ "a": 75.3 }` is a constant 75.3 J/(mol·K). |
 | `enthalpy_of_formation` | no | Standard enthalpy of formation at 298.15 K, kJ/mol: NIST's `H`. Only needed by a species that a reaction creates or destroys. |
+| `density`    | no       | kg/m³, held constant. Only needed by a species that flows through a `pump`.                                                                              |
 
 ### `units`
 
@@ -144,6 +148,8 @@ Each unit has a unique `name` and an `op`. The `op` has a `type` plus that opera
 | `flotation`  | 1      | 2       | `recovery`: species map, share of each to the concentrate (omitted = 0). Outlets: concentrate, then tails. `pressure_drop`: kPa, optional |
 | `heater`     | 1      | 1       | `duty`: MJ/h, negative cools. `pressure_drop`: kPa, optional                  |
 | `conversion_reactor` | 1 | 1   | `energy`: `isothermal` or `adiabatic`. `reactions`: a list, run in order, each with `stoichiometry` (species map of molar coefficients, negative consumed), `limiting` (a reactant's name) and `conversion` (0 to 1, a share of what reaches that reaction). `pressure_drop`: kPa, optional |
+| `pump`       | 1      | 1       | `pressure_rise`: kPa, added to the stream as an incompressible fluid. `efficiency`: 0 to 1, optional, default 1; the inefficient share of `V * dP / efficiency` warms the stream. Every species that flows through needs a `density` |
+| `compressor` | 1      | 1       | `pressure_rise`: kPa, added to the stream as an ideal gas along an isentropic path. `efficiency`: isentropic, 0 to 1, optional, default 1. Every species that flows through must be a `Gas` |
 | `tank`       | 1      | 1       | none                                                                           |
 | `product`    | 1      | 0       | none                                                                           |
 

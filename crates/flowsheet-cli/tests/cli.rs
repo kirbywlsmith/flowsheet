@@ -324,6 +324,51 @@ fn units_that_take_heat_in_or_give_it_out_are_listed_below_the_footer() {
     );
 }
 
+/// `pumped_recycle.json` is a water loop that loses 200 kPa in its mixer and gets it back from
+/// a pump at 50% efficiency on the recycle. The table has no pressure column, so what shows is
+/// the energy side: the pump's duty is the half of its shaft work that became heat, and the
+/// loop warms by it.
+#[test]
+fn a_pump_on_a_recycle_closes_the_loop_and_lists_the_heat_it_wastes() {
+    let run = flowsheet(&["tests/fixtures/pumped_recycle.json"]);
+    assert!(run.ok, "{}", run.stderr);
+
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines[..6],
+        [
+            "  #  stream             H2O    total   T (K)",
+            "  0  feed.mixer     100.000  100.000  298.15",
+            "  1  mixer.split    200.000  200.000  298.20",
+            "  2  split.pump     100.000  100.000  298.20",
+            "  3  pump.mixer     100.000  100.000  298.25",
+            "  4  split.product  100.000  100.000  298.20",
+        ]
+    );
+    assert_eq!(
+        lines[7..],
+        ["", "  unit  type  duty (MJ/h)", "  pump  pump         20.1",]
+    );
+
+    // By hand: 100 t/h of water at 997 kg/m³ is 0.1003 thousand m³/h, which raised 200 kPa is
+    // 20.06 MJ/h of ideal work; at 50% efficiency the shaft takes twice that and the other
+    // 20.06 MJ/h is friction, which is the duty printed.
+    let printed: f64 = lines[9]
+        .split_whitespace()
+        .last()
+        .expect("a duty column")
+        .parse()
+        .expect("a number");
+    assert!((printed - 100.0 / 997.0 * 200.0).abs() <= 0.05, "{printed}");
+
+    // And the loop really did hold its pressure: the saved document shows the recycle back at
+    // the feed's 300 kPa and the mixer outlet 200 below it.
+    let run = flowsheet(&["--json", "tests/fixtures/pumped_recycle.json"]);
+    let doc: serial::Flowsheet = serde_json::from_str(&run.stdout).expect("a document");
+    assert_relative_eq!(doc.streams[3].state.pressure, 300.0);
+    assert_relative_eq!(doc.streams[1].state.pressure, 100.0);
+}
+
 #[test]
 fn a_flowsheet_that_only_mixes_and_splits_prints_no_duty_section() {
     // The demo circuit is all at 25 °C, so every duty is float noise and none is shown - not

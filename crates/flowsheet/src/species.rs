@@ -87,6 +87,16 @@ pub struct Species {
     /// e.g. `Some(-285.83)` for liquid water
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enthalpy_of_formation: Option<f64>,
+    /// Density, in kg/m³, held constant: the one property that turns a mass flow into a volume.
+    ///
+    /// `None` for a species nothing pumps. Only a [`crate::unit::Pump`] asks - its work is the
+    /// volume it moves times the pressure it adds - so a flotation plant with no pump need not
+    /// look up chalcopyrite's, the same allowance as `enthalpy_of_formation`. A species that
+    /// *does* flow through a pump has to carry one, and the pump says so if it does not.
+    ///
+    /// e.g. `Some(997.0)` for liquid water at 25 °C
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density: Option<f64>,
 }
 
 impl Species {
@@ -106,6 +116,14 @@ impl Species {
         let formation = self.enthalpy_of_formation.unwrap_or(0.0);
         // kJ/mol over g/mol is kJ/g, and a kilogram is a thousand grams.
         1000.0 * (formation + self.shomate.enthalpy(temperature)) / self.molar_mass
+    }
+
+    /// Specific entropy at `temperature` (K) relative to [`crate::thermo::REFERENCE_K`], in
+    /// kJ/(kg·K). A difference only, like [`crate::thermo::Shomate::entropy`] it is built on.
+    pub fn entropy(&self, temperature: f64) -> f64 {
+        // J/(mol·K) over g/mol is J/(g·K), which is already kJ/(kg·K) - the same arithmetic as
+        // `heat_capacity`.
+        self.shomate.entropy(temperature) / self.molar_mass
     }
 }
 
@@ -238,6 +256,7 @@ mod tests {
             molar_mass: 18.015,
             shomate: WATER_CP,
             enthalpy_of_formation: None,
+            density: None,
         }
     }
 
@@ -251,6 +270,7 @@ mod tests {
             molar_mass: 60.08,
             shomate: QUARTZ_CP,
             enthalpy_of_formation: None,
+            density: None,
         });
         assert_eq!(a.as_usize(), 0);
         assert_eq!(b.as_usize(), 1);
@@ -340,6 +360,7 @@ mod tests {
         let plain = water();
         let formed = Species {
             enthalpy_of_formation: Some(-285.83),
+            density: None,
             ..water()
         };
 
@@ -389,6 +410,7 @@ mod tests {
                     molar_mass: 1.0,
                     shomate: Shomate::constant(1.0),
                     enthalpy_of_formation: None,
+                    density: None,
                 })
                 .collect(),
         }
@@ -413,6 +435,7 @@ mod tests {
             molar_mass: 1.0,
             shomate: Shomate::constant(1.0),
             enthalpy_of_formation: None,
+            density: None,
         };
         assert_eq!(registry.insert(duplicate).as_usize(), 0);
     }

@@ -18,12 +18,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] `Pump` and `Compressor`: add head, and account for the duty it costs. One inlet and one outlet each, sitting on
-  the pressure field every op now propagates. A pump on an incompressible stream is `V * dP / efficiency` and is
-  nearly free now that pressure propagates - and it is what lets a recycle with a pressure drop converge at all,
-  since without one the loop falls by its drop every pass and fails (see the pressure entry in CLAUDE.md). A compressor needs a compression path - isentropic with an efficiency is
-  the usual shape - and the ideal-gas case falls out of the Shomate `cp` already stored, so neither of them waits on
-  new property data.
 - [ ] Latent heat. Enthalpy of vaporisation per species plus a vapour pressure correlation (Antoine is the usual
   three-coefficient fit), measured against the absolute basis established above. No flash yet - this is the property
   data and the `thermo` functions over it, testable on their own against steam-table values.

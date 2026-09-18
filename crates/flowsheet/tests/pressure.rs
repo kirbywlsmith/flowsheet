@@ -4,8 +4,8 @@
 //! it, and a mixer starts from the lowest of its flowing inlets, so along a straight line the
 //! drops simply add up. Around a recycle they do not add up to anything: the recycle re-enters
 //! the mixer below the feed, so the mixer takes the recycle's pressure, the loop lowers it again,
-//! and there is no steady state. That is what a pump in the loop is for, and until one exists a
-//! loop with a drop has to fail rather than converge on a wrong number.
+//! and there is no steady state. That is what a pump in the loop is for (`tests/pumped_recycle.rs`),
+//! and a loop with a drop and no pump has to fail rather than converge on a wrong number.
 
 use approx::assert_relative_eq;
 use flowsheet::demo::{self, AMBIENT_K};

@@ -51,6 +51,7 @@ fn registry() -> SpeciesRegistry {
             molar_mass,
             shomate: Shomate::constant(35.0),
             enthalpy_of_formation: Some(h_f),
+            density: None,
         });
     }
     r

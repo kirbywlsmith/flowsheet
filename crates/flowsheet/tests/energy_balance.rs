@@ -65,6 +65,7 @@ fn constant_cp_registry() -> SpeciesRegistry {
             molar_mass: MOLAR_MASS[i],
             shomate: Shomate::constant(CONSTANT_CP[i]),
             enthalpy_of_formation: None,
+            density: None,
         });
     }
     r
@@ -182,6 +183,7 @@ fn formation_registry() -> SpeciesRegistry {
     for (species, h_f) in demo::registry().all().iter().zip(formation) {
         r.insert(Species {
             enthalpy_of_formation: Some(h_f),
+            density: None,
             ..species.clone()
         });
     }

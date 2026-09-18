@@ -2,8 +2,9 @@
 
 use crate::flowsheet::StreamId;
 use crate::serial::ToDocument;
-use crate::species::{Species, SpeciesId, SpeciesRegistry};
+use crate::species::{Phase, Species, SpeciesId, SpeciesRegistry};
 use crate::stream::Stream;
+use crate::thermo::GAS_CONSTANT;
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug};
 
@@ -154,24 +155,28 @@ impl Arity {
     }
 }
 
+mod compressor;
 mod conversion_reactor;
 mod feed;
 mod flotation;
 mod heater;
 mod mixer;
 mod product;
+mod pump;
 mod splitter;
 mod tank;
 
 // Re-exported flat, so every call site keeps writing `unit::Mixer` rather than
 // `unit::mixer::Mixer`. The submodules stay private: they are a file-layout detail, and one
 // operation per file is the only thing they buy.
+pub use compressor::Compressor;
 pub use conversion_reactor::ConversionReactor;
 pub use feed::Feed;
 pub use flotation::Flotation;
 pub use heater::Heater;
 pub use mixer::Mixer;
 pub use product::Product;
+pub use pump::Pump;
 pub use splitter::{Splitter, SplitterN};
 pub use tank::Tank;
 
@@ -281,20 +286,46 @@ pub fn solve_temperature(
     stream: &mut Stream,
     enthalpy: f64,
 ) -> Result<(), EvalError> {
+    solve_for_temperature(
+        stream,
+        enthalpy,
+        |s| s.enthalpy(registry),
+        |s| s.heat_capacity(registry),
+        "enthalpy flow",
+        "MJ/h",
+    )
+}
+
+/// Newton's method on `stream`'s temperature until `property` of the stream reaches `target`.
+/// `slope` is that property's derivative with respect to temperature, and must be positive.
+///
+/// The loop under [`solve_temperature`], where the property is enthalpy and the slope is heat
+/// capacity, and under the isentropic step of [`compress`], where the property is entropy and
+/// the slope is heat capacity over temperature. Both slopes are positive wherever cp is, so in
+/// both cases the property only rises and Newton has one root to find. `quantity` and `unit`
+/// name the target in the error, so a failed compression does not talk about enthalpy.
+fn solve_for_temperature(
+    stream: &mut Stream,
+    target: f64,
+    property: impl Fn(&Stream) -> f64,
+    slope: impl Fn(&Stream) -> f64,
+    quantity: &str,
+    unit: &str,
+) -> Result<(), EvalError> {
     for _ in 0..MAX_NEWTON_STEPS {
-        let slope = stream.heat_capacity(registry);
+        let slope = slope(stream);
         assert!(
             slope > 0.0,
             "cannot solve the temperature of a stream with no heat capacity"
         );
 
-        let step = (stream.enthalpy(registry) - enthalpy) / slope;
+        let step = (property(stream) - target) / slope;
         let next = stream.temperature() - step;
         if !next.is_finite() || next <= 0.0 {
             // The user-facing half first; the iterate is a diagnostic and reads as noise if it
             // leads. `{:e}` so a huge or tiny value stays short.
             return Err(EvalError::new(format!(
-                "no positive temperature holds an enthalpy flow of {enthalpy:e} MJ/h \
+                "no positive temperature holds an {quantity} of {target:e} {unit} \
                  (Newton reached {next:e} K)"
             )));
         }
@@ -385,6 +416,185 @@ pub fn drop_pressures(outlets: &mut [Stream], drop: f64) -> Result<(), EvalError
     outlets
         .iter_mut()
         .try_for_each(|outlet| drop_pressure(outlet, drop))
+}
+
+/// Panics unless `rise` and `efficiency` are values a pump or compressor can be built with:
+/// a finite rise of 0 kPa or more, and an efficiency in `(0.0, 1.0]`.
+///
+/// Loading rejects both, so a caller who gets here has a bug. A zero rise is allowed for the
+/// same reason a zero drop is - it is the ideal case, and it does nothing.
+fn assert_rise(rise: f64, efficiency: f64) {
+    assert!(
+        rise.is_finite() && rise >= 0.0,
+        "pressure rise must be finite and not negative, got {rise}"
+    );
+    assert!(
+        efficiency > 0.0 && efficiency <= 1.0,
+        "efficiency must be greater than 0.0 and at most 1.0, got {efficiency}"
+    );
+}
+
+/// A [`Phase`] with its article, for an error that says what a species is rather than naming
+/// the variant.
+fn describe(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Solid => "a solid",
+        Phase::Liquid => "a liquid",
+        Phase::Gas => "a gas",
+    }
+}
+
+/// The shaft work a pump takes to raise `inlet` by `rise` (kPa) at `efficiency`, in MJ/h.
+///
+/// `V * dP / efficiency`, with `V` the volume the inlet's mass occupies: each species' flow over
+/// its [`Species::density`], summed. The units cancel with no factor - t/h over kg/m³ is a
+/// thousand m³/h, and a thousand m³ raised a kPa is a MJ.
+///
+/// # Errors
+/// If a species flowing through is a gas, which a pump cannot move, or has no density, which a
+/// pump cannot do without. Neither is caught at the JSON boundary, because which species reach
+/// a pump is a property of the solved flows and not of the document: a gas that never flows
+/// through the pump, and a species with no density that never does, are both fine. That is why
+/// these are errors the solver reports rather than panics.
+///
+/// # Panics
+/// If `rise` is negative or not finite, or `efficiency` is outside `(0.0, 1.0]`. Loading rejects
+/// both, so reaching either is a bug in the calling code.
+pub fn pump_work(
+    registry: &SpeciesRegistry,
+    inlet: &Stream,
+    rise: f64,
+    efficiency: f64,
+) -> Result<f64, EvalError> {
+    assert_rise(rise, efficiency);
+
+    let mut volume = 0.0;
+    for (&flow, s) in inlet.flows().iter().zip(registry.all()) {
+        if flow == 0.0 {
+            continue; // exact-zero guard: a species that is not there needs no density
+        }
+        if s.phase == Phase::Gas {
+            return Err(EvalError::new(format!(
+                "species `{}` is a gas, and a pump moves a liquid or a slurry - a compressor \
+                 moves a gas",
+                s.name
+            )));
+        }
+        let Some(density) = s.density else {
+            return Err(EvalError::new(format!(
+                "species `{}` flows through the pump but has no `density`, so its volume is \
+                 unknown",
+                s.name
+            )));
+        };
+        volume += flow / density;
+    }
+    Ok(volume * rise / efficiency)
+}
+
+/// Raises an inlet's pressure by `rise` (kPa) as an incompressible fluid and returns the outlet,
+/// warmed by the part of [`pump_work`] that did not become pressure.
+///
+/// Where the work goes: `V * dP` of it is the pressure the outlet now carries, and the rest -
+/// `work * (1 - efficiency)` - is friction, which is heat. The library's enthalpy is thermal,
+/// `h(T)` with nothing of pressure in it (see [`Species::enthalpy`]), so the pressure part has
+/// nowhere to land and only the heat reaches the stream, through [`heat`]. That is the right
+/// temperature - a perfectly efficient pump warms nothing - and it means the enthalpy a pump
+/// adds is its loss, not its shaft power. [`crate::report::duty`] reports the former;
+/// [`pump_work`] is the latter.
+///
+/// An empty inlet passes through unchanged, pressure included, for the reason [`heat`] and
+/// [`drop_pressure`] give: a recycle's first pass hands a pump downstream of the tear nothing,
+/// and nothing has no volume to work on.
+///
+/// # Errors
+/// See [`pump_work`].
+///
+/// # Panics
+/// See [`pump_work`].
+pub fn pump(
+    registry: &SpeciesRegistry,
+    inlet: &Stream,
+    rise: f64,
+    efficiency: f64,
+) -> Result<Stream, EvalError> {
+    let work = pump_work(registry, inlet, rise, efficiency)?;
+    if inlet.total() == 0.0 {
+        return Ok(inlet.clone()); // exact-zero guard: the inlet is empty
+    }
+
+    // `work * (1 - efficiency)` rather than `work - volume * rise`, so that at an efficiency of
+    // exactly 1 the duty is exactly 0 and `heat` leaves the temperature bit for bit alone.
+    let mut outlet = heat(registry, inlet, work * (1.0 - efficiency))?;
+    outlet.set_pressure(inlet.pressure() + rise);
+    Ok(outlet)
+}
+
+/// Raises an inlet's pressure by `rise` (kPa) as an ideal gas along an isentropic path and
+/// returns the outlet, carrying `1 / efficiency` times the enthalpy that path cost.
+///
+/// An ideal gas's entropy per mole is `s(T) - R ln P`. Holding it fixed while the pressure rises
+/// means the sensible part has to climb by `R ln(P2 / P1)` per mole - [`GAS_CONSTANT`] times the
+/// inlet's [`Stream::molar_flow`], as an entropy flow - and Newton on temperature finds where
+/// the Shomate fit ([`Stream::entropy`]) has climbed that far. The enthalpy from the inlet
+/// temperature to there is the least work that compresses the gas; over the isentropic
+/// `efficiency`, it is the work a real machine does. All of it ends up in the gas, because an
+/// ideal gas's enthalpy depends on temperature alone, so [`heat`] finds the outlet from it. A
+/// compressor is a heater that works out its own duty.
+///
+/// The Newton seed is the constant-cp answer, `T1 * (P2 / P1) ^ (nR / C)`, with `C` the heat
+/// capacity flow at the inlet: exact when cp is constant, a step or two away otherwise.
+///
+/// An empty inlet passes through unchanged, as in [`pump`].
+///
+/// # Errors
+/// If a species flowing through is not a gas - the path assumes an ideal gas, and a liquid
+/// would come out at a temperature that means nothing - or if either temperature solve fails.
+///
+/// # Panics
+/// If `rise` is negative or not finite, or `efficiency` is outside `(0.0, 1.0]`. Loading rejects
+/// both, so reaching either is a bug in the calling code.
+pub fn compress(
+    registry: &SpeciesRegistry,
+    inlet: &Stream,
+    rise: f64,
+    efficiency: f64,
+) -> Result<Stream, EvalError> {
+    assert_rise(rise, efficiency);
+    if inlet.total() == 0.0 {
+        return Ok(inlet.clone()); // exact-zero guard: the inlet is empty
+    }
+    for (&flow, s) in inlet.flows().iter().zip(registry.all()) {
+        if flow > 0.0 && s.phase != Phase::Gas {
+            return Err(EvalError::new(format!(
+                "species `{}` is {}, and a compressor runs on an ideal gas - a pump moves a \
+                 liquid or a slurry",
+                s.name,
+                describe(s.phase)
+            )));
+        }
+    }
+
+    let ratio = (inlet.pressure() + rise) / inlet.pressure();
+    // Mmol/h times J/(mol·K) is MJ/(h·K), the unit of `Stream::entropy`.
+    let n_r = inlet.molar_flow(registry) * GAS_CONSTANT;
+
+    let mut isentropic = inlet.clone();
+    isentropic
+        .set_temperature(inlet.temperature() * ratio.powf(n_r / inlet.heat_capacity(registry)));
+    solve_for_temperature(
+        &mut isentropic,
+        inlet.entropy(registry) + n_r * ratio.ln(),
+        |s| s.entropy(registry),
+        |s| s.heat_capacity(registry) / s.temperature(),
+        "entropy flow",
+        "MJ/(h·K)",
+    )?;
+
+    let ideal = isentropic.enthalpy(registry) - inlet.enthalpy(registry);
+    let mut outlet = heat(registry, inlet, ideal / efficiency)?;
+    outlet.set_pressure(inlet.pressure() + rise);
+    Ok(outlet)
 }
 
 /// Splits an inlet into a (`fraction`, `1.0 - fraction`) scaled [`Stream`] tuple.
@@ -690,8 +900,9 @@ mod tests {
     use super::*;
     use crate::species::{Phase, Species};
     use crate::test_support::{
-        AMBIENT_K, AMBIENT_KPA, COMBUSTION_MASSES, ROUNDED_COMBUSTION_MASSES, all_ids, combustion,
-        combustion_registry, demo_registry, demo_registry_with_formation, feed,
+        AMBIENT_K, AMBIENT_KPA, COMBUSTION_MASSES, DEMO_DENSITIES, ROUNDED_COMBUSTION_MASSES,
+        all_ids, combustion, combustion_registry, demo_registry, demo_registry_with_density,
+        demo_registry_with_formation, feed, nitrogen_registry,
     };
     use crate::thermo::Shomate;
     use approx::assert_relative_eq;
@@ -988,6 +1199,236 @@ mod tests {
 
         assert!(
             e.to_string().contains("no positive temperature holds"),
+            "{e}"
+        );
+    }
+
+    // ---- pump ----
+
+    /// The demo feed's volume, in thousands of m³/h: each species' flow over its density.
+    fn feed_volume() -> f64 {
+        [40.0, 360.0, 600.0]
+            .iter()
+            .zip(DEMO_DENSITIES)
+            .map(|(m, rho)| m / rho)
+            .sum()
+    }
+
+    #[test]
+    fn pump_work_is_volume_times_rise_over_efficiency() {
+        let r = demo_registry_with_density();
+
+        let work = pump_work(&r, &feed(&r), 500.0, 0.7).unwrap();
+
+        assert_relative_eq!(work, feed_volume() * 500.0 / 0.7, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn pumping_raises_the_pressure_by_the_rise() {
+        let r = demo_registry_with_density();
+        let inlet = feed(&r);
+
+        let out = pump(&r, &inlet, 500.0, 0.7).unwrap();
+
+        assert_relative_eq!(out.pressure(), AMBIENT_KPA + 500.0);
+        assert!(inlet.flows_approx_eq(&out, 0.0));
+    }
+
+    #[test]
+    fn pumping_heats_the_stream_by_the_work_it_wastes() {
+        // The library's enthalpy is thermal, so of `V * dP / eta` only the `1 - eta` share that
+        // is friction reaches the stream; the `V * dP` that became pressure is not in `h(T)`.
+        let r = demo_registry_with_density();
+        let inlet = feed(&r);
+
+        let out = pump(&r, &inlet, 500.0, 0.7).unwrap();
+
+        let work = pump_work(&r, &inlet, 500.0, 0.7).unwrap();
+        assert_relative_eq!(
+            out.enthalpy(&r) - inlet.enthalpy(&r),
+            work * 0.3,
+            max_relative = 1e-6
+        );
+        assert!(out.temperature() > inlet.temperature());
+    }
+
+    #[test]
+    fn an_ideal_pump_keeps_the_inlet_temperature_bit_for_bit() {
+        let r = demo_registry_with_density();
+        let inlet = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 350.0, AMBIENT_KPA);
+
+        let out = pump(&r, &inlet, 500.0, 1.0).unwrap();
+
+        assert_eq!(out.temperature(), 350.0);
+    }
+
+    #[test]
+    fn pumping_an_empty_stream_passes_it_through_at_its_own_pressure() {
+        // The tear's first-pass placeholder: no volume to work on, and its pressure is not
+        // real, so neither is touched. The demo registry has no densities and that is fine
+        // too, because nothing flows.
+        let r = demo_registry();
+        let empty = Stream::zeros(&r, 310.0, AMBIENT_KPA);
+
+        let out = pump(&r, &empty, 500.0, 0.7).unwrap();
+
+        assert_relative_eq!(out.total(), 0.0);
+        assert_relative_eq!(out.pressure(), AMBIENT_KPA);
+        assert_relative_eq!(out.temperature(), 310.0);
+    }
+
+    #[test]
+    fn pumping_a_species_without_a_density_is_an_error_naming_it() {
+        let r = demo_registry();
+
+        let e = pump(&r, &feed(&r), 500.0, 0.7).expect_err("no density, no volume");
+
+        assert_eq!(
+            e.to_string(),
+            "species `CuFeS2` flows through the pump but has no `density`, so its volume is \
+             unknown"
+        );
+    }
+
+    #[test]
+    fn a_species_without_a_density_that_does_not_flow_is_no_obstacle() {
+        // Only the water flows, and only the water has a density.
+        let mut r = SpeciesRegistry::default();
+        for (species, density) in demo_registry().all().iter().zip([None, None, Some(997.0)]) {
+            r.insert(Species {
+                density,
+                ..species.clone()
+            });
+        }
+        let inlet = Stream::from_flows(&r, vec![0.0, 0.0, 600.0], AMBIENT_K, AMBIENT_KPA);
+
+        let work = pump_work(&r, &inlet, 500.0, 1.0).unwrap();
+
+        assert_relative_eq!(work, 600.0 / 997.0 * 500.0, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn pumping_a_gas_is_an_error_naming_it() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let inlet = Stream::from_flows(&r, vec![1.0, 4.0, 0.0, 0.0], AMBIENT_K, AMBIENT_KPA);
+
+        let e = pump(&r, &inlet, 500.0, 0.7).expect_err("a pump does not move a gas");
+
+        assert!(e.to_string().starts_with("species `CH4` is a gas"), "{e}");
+    }
+
+    #[test]
+    #[should_panic(expected = "pressure rise must be finite and not negative")]
+    fn a_negative_pressure_rise_is_a_bug() {
+        let r = demo_registry_with_density();
+        let _ = pump(&r, &feed(&r), -5.0, 0.7);
+    }
+
+    #[test]
+    #[should_panic(expected = "efficiency must be greater than 0.0 and at most 1.0")]
+    fn a_zero_efficiency_is_a_bug() {
+        let r = demo_registry_with_density();
+        let _ = pump(&r, &feed(&r), 5.0, 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "efficiency must be greater than 0.0 and at most 1.0")]
+    fn an_efficiency_above_one_is_a_bug() {
+        let r = demo_registry_with_density();
+        let _ = compress(&r, &feed(&r), 5.0, 1.5);
+    }
+
+    // ---- compress ----
+
+    /// Methane and oxygen at 1 and 4 t/h: every combustion species has the same constant cp of
+    /// 35 J/(mol·K), so the isentropic outlet has a closed form.
+    fn gas(r: &SpeciesRegistry, temperature: f64) -> Stream {
+        Stream::from_flows(r, vec![1.0, 4.0, 0.0, 0.0], temperature, AMBIENT_KPA)
+    }
+
+    #[test]
+    fn an_isentropic_compression_of_a_constant_cp_gas_matches_the_textbook_exponent() {
+        // `T2 / T1 = (P2 / P1) ^ (R / cp)` per mole, and with every species at the same cp the
+        // mixture is no different.
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let inlet = gas(&r, 300.0);
+
+        let out = compress(&r, &inlet, 3.0 * AMBIENT_KPA, 1.0).unwrap();
+
+        let ratio: f64 = 4.0;
+        assert_relative_eq!(
+            out.temperature(),
+            300.0 * ratio.powf(GAS_CONSTANT / 35.0),
+            max_relative = 1e-9
+        );
+        assert_relative_eq!(out.pressure(), 4.0 * AMBIENT_KPA);
+        assert!(inlet.flows_approx_eq(&out, 0.0));
+    }
+
+    #[test]
+    fn an_isentropic_compression_holds_the_entropy_over_a_temperature_dependent_cp() {
+        // Nitrogen over its Shomate fit, so the seed is only a guess and Newton has to work: the
+        // outlet's sensible entropy must have climbed by exactly `n R ln(P2 / P1)`.
+        let r = nitrogen_registry();
+        let inlet = Stream::from_flows(&r, vec![10.0], 300.0, AMBIENT_KPA);
+
+        let out = compress(&r, &inlet, 2.0 * AMBIENT_KPA, 1.0).unwrap();
+
+        let n_r = 10.0 / 28.0134 * GAS_CONSTANT;
+        assert_relative_eq!(
+            out.entropy(&r) - inlet.entropy(&r),
+            n_r * 3.0_f64.ln(),
+            max_relative = 1e-9
+        );
+    }
+
+    #[test]
+    fn an_inefficient_compression_costs_the_ideal_work_over_the_efficiency() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let inlet = gas(&r, 300.0);
+
+        let ideal = compress(&r, &inlet, 3.0 * AMBIENT_KPA, 1.0).unwrap();
+        let real = compress(&r, &inlet, 3.0 * AMBIENT_KPA, 0.8).unwrap();
+
+        assert_relative_eq!(
+            real.enthalpy(&r) - inlet.enthalpy(&r),
+            (ideal.enthalpy(&r) - inlet.enthalpy(&r)) / 0.8,
+            max_relative = 1e-9
+        );
+        assert!(real.temperature() > ideal.temperature());
+    }
+
+    #[test]
+    fn a_zero_rise_compresses_nothing() {
+        let r = combustion_registry(COMBUSTION_MASSES);
+        let inlet = gas(&r, 300.0);
+
+        let out = compress(&r, &inlet, 0.0, 0.8).unwrap();
+
+        assert_eq!(out.temperature(), 300.0);
+        assert_relative_eq!(out.pressure(), AMBIENT_KPA);
+    }
+
+    #[test]
+    fn compressing_an_empty_stream_passes_it_through() {
+        let r = demo_registry();
+        let empty = Stream::zeros(&r, 310.0, AMBIENT_KPA);
+
+        let out = compress(&r, &empty, 500.0, 0.8).unwrap();
+
+        assert_relative_eq!(out.total(), 0.0);
+        assert_relative_eq!(out.pressure(), AMBIENT_KPA);
+    }
+
+    #[test]
+    fn compressing_a_liquid_is_an_error_naming_it() {
+        let r = demo_registry();
+        let inlet = Stream::from_flows(&r, vec![0.0, 0.0, 600.0], AMBIENT_K, AMBIENT_KPA);
+
+        let e = compress(&r, &inlet, 500.0, 0.8).expect_err("water is not an ideal gas");
+
+        assert!(
+            e.to_string().starts_with("species `H2O` is a liquid"),
             "{e}"
         );
     }
@@ -1413,6 +1854,7 @@ mod tests {
                 molar_mass,
                 shomate: Shomate::constant(1000.0),
                 enthalpy_of_formation: None,
+                density: None,
             })
         })[0];
         let inlet = Stream::from_flows(&r, vec![100.0, 1.0, 0.0], AMBIENT_K, AMBIENT_KPA);
@@ -1568,25 +2010,61 @@ mod tests {
         ];
 
         for (op, inlets, outlets) in cases {
-            assert_eq!(
-                (op.inlet_arity().min, op.inlet_arity().max),
-                inlets,
-                "inlet arity of {op:?}"
-            );
-            assert_eq!(
-                (op.outlet_arity().min, op.outlet_arity().max),
-                outlets,
-                "outlet arity of {op:?}"
-            );
-
-            let stream = feed(&r);
-            let supplied: Vec<&Stream> = vec![&stream; op.inlet_arity().min];
-            assert_eq!(
-                op.evaluate(&r, &supplied).unwrap().len(),
-                op.outlet_arity().min,
-                "{op:?} returned an outlet count its arity does not declare"
-            );
+            assert_declared_arity(&*op, &r, &feed(&r), inlets, outlets);
         }
+
+        // The two that cannot run on the demo feed as it stands: a pump needs densities, and a
+        // compressor needs a gas.
+        let pumped = demo_registry_with_density();
+        assert_declared_arity(
+            &Pump {
+                pressure_rise: 100.0,
+                efficiency: 0.7,
+            },
+            &pumped,
+            &feed(&pumped),
+            (1, Some(1)),
+            (1, Some(1)),
+        );
+        let gases = combustion_registry(COMBUSTION_MASSES);
+        assert_declared_arity(
+            &Compressor {
+                pressure_rise: 100.0,
+                efficiency: 0.8,
+            },
+            &gases,
+            &Stream::from_flows(&gases, vec![1.0, 4.0, 0.0, 0.0], AMBIENT_K, AMBIENT_KPA),
+            (1, Some(1)),
+            (1, Some(1)),
+        );
+    }
+
+    /// Checks `op` declares `inlets` and `outlets`, and that `evaluate` over the minimum inlet
+    /// count returns the minimum outlet count.
+    fn assert_declared_arity(
+        op: &dyn UnitOp,
+        r: &SpeciesRegistry,
+        stream: &Stream,
+        inlets: (usize, Option<usize>),
+        outlets: (usize, Option<usize>),
+    ) {
+        assert_eq!(
+            (op.inlet_arity().min, op.inlet_arity().max),
+            inlets,
+            "inlet arity of {op:?}"
+        );
+        assert_eq!(
+            (op.outlet_arity().min, op.outlet_arity().max),
+            outlets,
+            "outlet arity of {op:?}"
+        );
+
+        let supplied: Vec<&Stream> = vec![stream; op.inlet_arity().min];
+        assert_eq!(
+            op.evaluate(r, &supplied).unwrap().len(),
+            op.outlet_arity().min,
+            "{op:?} returned an outlet count its arity does not declare"
+        );
     }
 
     /// The `Send + Sync` supertraits on [`UnitOp`] exist only to keep this true; nothing else

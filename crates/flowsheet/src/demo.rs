@@ -56,6 +56,7 @@ pub fn registry() -> SpeciesRegistry {
         molar_mass: 183.5,
         shomate: CHALCOPYRITE_CP,
         enthalpy_of_formation: None,
+        density: None,
     });
     r.insert(Species {
         name: "SiO2".into(),
@@ -63,6 +64,7 @@ pub fn registry() -> SpeciesRegistry {
         molar_mass: 60.08,
         shomate: QUARTZ_CP,
         enthalpy_of_formation: None,
+        density: None,
     });
     r.insert(Species {
         name: "H2O".into(),
@@ -70,6 +72,7 @@ pub fn registry() -> SpeciesRegistry {
         molar_mass: 18.015,
         shomate: WATER_CP,
         enthalpy_of_formation: None,
+        density: None,
     });
     r
 }

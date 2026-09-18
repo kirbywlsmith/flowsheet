@@ -37,6 +37,7 @@ pub fn combustion_registry(masses: [f64; 4]) -> SpeciesRegistry {
             molar_mass,
             shomate: Shomate::constant(35.0),
             enthalpy_of_formation: Some(h_f),
+            density: None,
         });
     }
     registry
@@ -67,9 +68,46 @@ pub fn demo_registry_with_formation() -> SpeciesRegistry {
     for (species, h_f) in demo_registry().all().iter().zip([-190.8, -910.86, -285.83]) {
         r.insert(Species {
             enthalpy_of_formation: Some(h_f),
+            density: None,
             ..species.clone()
         });
     }
+    r
+}
+
+/// Densities of chalcopyrite, quartz and water in kg/m³, for a test that pumps the demo slurry.
+pub const DEMO_DENSITIES: [f64; 3] = [4200.0, 2650.0, 997.0];
+
+/// The demo species with [`DEMO_DENSITIES`], so a pump can find the volume it moves.
+pub fn demo_registry_with_density() -> SpeciesRegistry {
+    let mut r = SpeciesRegistry::default();
+    for (species, density) in demo_registry().all().iter().zip(DEMO_DENSITIES) {
+        r.insert(Species {
+            density: Some(density),
+            ..species.clone()
+        });
+    }
+    r
+}
+
+/// Nitrogen as a gas over the NIST-JANAF Shomate fit for 100-500 K (Chase, 1998), so that a
+/// compression has a temperature-dependent cp to integrate.
+pub fn nitrogen_registry() -> SpeciesRegistry {
+    let mut r = SpeciesRegistry::default();
+    r.insert(Species {
+        name: "N2".into(),
+        phase: Phase::Gas,
+        molar_mass: 28.0134,
+        shomate: Shomate {
+            a: 28.98641,
+            b: 1.853978,
+            c: -9.647459,
+            d: 16.63537,
+            e: 0.000117,
+        },
+        enthalpy_of_formation: None,
+        density: None,
+    });
     r
 }
 

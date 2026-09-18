@@ -50,6 +50,7 @@ fn combustion_registry() -> SpeciesRegistry {
             molar_mass: MOLAR_MASS[i],
             shomate: Shomate::constant(CP[i]),
             enthalpy_of_formation: FORMATION[i],
+            density: None,
         });
     }
     r
@@ -206,6 +207,7 @@ fn butane_registry() -> SpeciesRegistry {
             molar_mass: BUTANE_MOLAR_MASS,
             shomate,
             enthalpy_of_formation: Some(h_f),
+            density: None,
         });
     }
     r

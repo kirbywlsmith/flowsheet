@@ -210,9 +210,53 @@ Never mix severities in one unlabelled list.
   `Stream::pressure_residual` - without it the flows settle in ~17 passes and the solve reports success at whatever
   pressure the loop had reached - and `tests/pressure.rs` pins that such a loop fails on the pass the drop reaches
   0 kPa (pass 50 for 500 kPa in and 10 off), naming the mixer, rather than converging. A pump in the loop is what
-  fixes that, which is the next TODO item. Wegstein still copies pressure from the result rather than extrapolating
+  fixes that (the entries below). Wegstein still copies pressure from the result rather than extrapolating
   it: on a converging loop pressure settles in one pass, and on a diverging one there is nothing to extrapolate
   towards. The report table has no pressure column yet; adding one moves every layout test.
+- **`Pump` and `Compressor` are sized by a `pressure_rise` in kPa**, never an outlet pressure or a ratio, though
+  Aspen offers all three. One way to write it, the mirror of `pressure_drop`, and it keeps the loop honest: a pump
+  that puts back less than the loop loses still has no steady state and fails on the pass the shortfall reaches
+  0 kPa (`tests/pumped_recycle.rs` pins pass 99 for half of a 10 kPa drop, against pass 50 for the bare loop),
+  whereas a discharge-pressure spec would silently hold any loop at its set point. A pump that puts back *more*
+  is harmless - the recycle comes round above the feed and the mixer takes the lower of its inlets. `efficiency`
+  is optional, default 1, and left off on save when 1 (`serial::is_one`, the same rule as a zero drop), so the
+  common `{ "type": "pump", "pressure_rise": 20 }` reads as it should. The two ops share one `PumpSpec` because
+  they read the same two fields the same way; the tag alone tells them apart. Both pass an empty inlet through
+  untouched, pressure included, like `heat` and `drop_pressure`: a pump on the recycle branch sits downstream of
+  the tear and sees nothing on pass 1.
+- A pump needs a volume, so **`Species` gained `density: Option<f64>`**, kg/m³, held constant, optional on the wire
+  and `None` for anything nothing pumps - the same allowance as `enthalpy_of_formation`, and for the same reason: a
+  flotation plant with no pump should not have to look up chalcopyrite's. The difference is where a missing one
+  is caught. A reaction names its participants in the document, so the loader can demand their formation
+  enthalpies; which species reach a pump is a property of the solved flows, not of the document, so
+  `unit::pump_work` reports a flowing species with no density as an **`EvalError` naming it**, and a species with
+  no density that never flows through the pump is fine. The loader only checks that a density that *is* given is
+  positive. The phase checks sit on the same side of the line for the same reason: a pump rejects a flowing gas
+  and a compressor a flowing solid or liquid, both `EvalError`s that say which machine the species wanted.
+- **Only the friction reaches the stream from a pump.** The library's enthalpy is `h(T)` with no pressure term, so
+  of the shaft work `W = V·ΔP/η` the `V·ΔP` that became pressure has nowhere to land and `unit::pump` hands
+  `W(1 - η)` to `heat`. That is the right temperature - a perfectly efficient pump warms nothing - and it costs
+  the accounting: `report::duty` on a pump is its loss, not its power, and the duty table says so (the
+  `pumped_recycle.json` fixture prints 20.1 MJ/h for a pump whose shaft takes 40.1). `unit::pump_work` is the
+  power. Two alternatives were rejected. Putting all of `W` into temperature closes the books but has an ideal
+  pump heating its fluid, which is what efficiency is supposed to rule out. Adding `P/ρ` to `Species::enthalpy`
+  is physically right for a liquid but means every `drop_pressure` changes enthalpy at constant temperature, so
+  every op that drops pressure would have to re-solve its temperature to hold `h`, and a heater's duty would stop
+  coming back as its duty. The compressor has no such gap: an ideal gas's enthalpy depends on temperature alone,
+  so its whole shaft work is enthalpy and its duty row *is* its power.
+- **The compressor is isentropic with an efficiency over the ideal gas**, and needed no new property data:
+  `Shomate::entropy` is `∫cp/T dT` from the same five coefficients, a difference only - NIST's `G` would make it
+  absolute and is still not stored, because both ends of an isentropic path carry the same offset. Pressure enters
+  once, as the `nR ln(P2/P1)` an ideal gas's sensible entropy has to climb to hold total entropy fixed, which is
+  what `thermo::GAS_CONSTANT` is for. `Stream::entropy` is MJ/(h·K) and `Stream::molar_flow` is Mmol/h, so
+  Mmol/h times J/(mol·K) lands in the same unit with no factor. The Newton solve for the isentropic temperature
+  shares its loop with `solve_temperature` through a private `solve_for_temperature` that takes the property and
+  its slope as closures - enthalpy and heat capacity for one, entropy and heat capacity over temperature for the
+  other, both positive wherever cp is, so both have one root. The seed is the constant-cp closed form
+  `T1 (P2/P1)^(nR/C)`, exact when cp is constant and a step or two off otherwise; a nitrogen Shomate fit in
+  `unit.rs`'s tests is what proves Newton does the rest. Benched against the saved baseline, `solve/tears`
+  moved between -9% and +2% (improved or unchanged at every size), so the closures monomorphise away and sharing
+  the loop cost `mix` nothing.
 - `UnitOp::evaluate` takes **`&SpeciesRegistry`** as a plain second parameter. A `Stream` is a bare vector of flows and
   enthalpy needs each species' heat capacity. Not a context struct - there is one thing to pass - and not a registry
   reference inside `Stream`, whose lifetime would infect `Flowsheet`, `ValidFlowsheet`, `serial` and every test.

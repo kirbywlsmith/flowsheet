@@ -15,6 +15,13 @@ use serde::{Deserialize, Serialize};
 /// it, so the two add to an absolute enthalpy. It is the temperature NIST publishes both against.
 pub const REFERENCE_K: f64 = 298.15;
 
+/// The molar gas constant, in J/(mol·K). CODATA 2018, which made it exact.
+///
+/// What an ideal gas's entropy gains per mole for a fall in pressure: `R ln(P1 / P2)`. That is
+/// the one place pressure enters the thermodynamics, and it is why a compressor can be built
+/// from the Shomate fit alone (see [`crate::unit::compress`]).
+pub const GAS_CONSTANT: f64 = 8.314_462_618;
+
 /// Heat capacity coefficients for the Shomate equation, as published by the NIST Chemistry
 /// WebBook.
 ///
@@ -84,6 +91,19 @@ impl Shomate {
         self.antiderivative(temperature / 1000.0) - self.antiderivative(REFERENCE_K / 1000.0)
     }
 
+    /// Entropy at `temperature` (K) relative to [`REFERENCE_K`], in J/(mol·K): the integral of
+    /// `cp / T`, at constant pressure.
+    ///
+    /// NIST's `G` is the constant that makes this absolute, and it is not stored, so this is a
+    /// difference only. That is all an isentropic path needs: it asks where the stream's entropy
+    /// returns to what it was, and the offset is the same at both ends. Pressure is not in here.
+    /// An ideal gas gains `R ln(P1 / P2)` per mole for a fall in pressure, and that term is the
+    /// caller's ([`crate::unit::compress`]), because the coefficients know nothing about it.
+    pub fn entropy(&self, temperature: f64) -> f64 {
+        self.entropy_antiderivative(temperature / 1000.0)
+            - self.entropy_antiderivative(REFERENCE_K / 1000.0)
+    }
+
     /// An antiderivative of [`Shomate::heat_capacity`] with respect to `t`, in kJ/mol.
     ///
     /// Integrating over `t` rather than `T` is what turns J into kJ: `dT = 1000 dt`, so the
@@ -91,6 +111,15 @@ impl Shomate {
     fn antiderivative(&self, t: f64) -> f64 {
         self.a * t + self.b * t.powi(2) / 2.0 + self.c * t.powi(3) / 3.0 + self.d * t.powi(4) / 4.0
             - self.e / t
+    }
+
+    /// An antiderivative of `cp / t` with respect to `t`, in J/(mol·K).
+    ///
+    /// No factor of 1000 this time: `dT / T` is `dt / t`, since the scale cancels. The Shomate
+    /// entropy equation NIST publishes is this plus `G`.
+    fn entropy_antiderivative(&self, t: f64) -> f64 {
+        self.a * t.ln() + self.b * t + self.c * t.powi(2) / 2.0 + self.d * t.powi(3) / 3.0
+            - self.e / (2.0 * t.powi(2))
     }
 }
 
@@ -141,6 +170,40 @@ mod tests {
                 assert_relative_eq!(
                     1000.0 * slope,
                     cp.heat_capacity(temperature),
+                    max_relative = 1e-6
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn entropy_is_zero_at_the_reference_temperature() {
+        assert_relative_eq!(WATER_CP.entropy(REFERENCE_K), 0.0);
+        assert_relative_eq!(QUARTZ_CP.entropy(REFERENCE_K), 0.0);
+    }
+
+    #[test]
+    fn a_constant_heat_capacity_gives_an_entropy_logarithmic_in_temperature() {
+        let cp = Shomate::constant(75.0);
+        assert_relative_eq!(
+            cp.entropy(2.0 * REFERENCE_K),
+            75.0 * 2.0_f64.ln(),
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn entropy_is_the_integral_of_heat_capacity_over_temperature() {
+        // The same central difference as for enthalpy, and this time no 1000: `dT / T` is
+        // scale-free, so the antiderivative over `t` is already in J/(mol·K).
+        let dt = 1e-3;
+        for cp in [WATER_CP, QUARTZ_CP] {
+            for temperature in [300.0, 350.0, 450.0] {
+                let slope =
+                    (cp.entropy(temperature + dt) - cp.entropy(temperature - dt)) / (2.0 * dt);
+                assert_relative_eq!(
+                    slope,
+                    cp.heat_capacity(temperature) / temperature,
                     max_relative = 1e-6
                 );
             }

@@ -218,6 +218,28 @@ pub struct HeaterSpec {
     pub pressure_drop: f64,
 }
 
+/// The parameters of a `pump` or a `compressor`: the same two fields, read the same way, so one
+/// spec type serves both and the tag alone tells them apart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PumpSpec {
+    /// Pressure added, in kPa. Never negative.
+    pub pressure_rise: f64,
+    /// The efficiency, in `(0.0, 1.0]`. Optional, defaulting to the ideal machine, and left off
+    /// on save when it is 1 - the same rule as a zero `pressure_drop`.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub efficiency: f64,
+}
+
+/// `serde(default = ..)` wants a function, not a literal.
+fn one() -> f64 {
+    1.0
+}
+
+fn is_one(x: &f64) -> bool {
+    *x == 1.0
+}
+
 /// The parameters of a unit operation that takes none. Empty, but not omitted: it is what rejects
 /// a stray field on a `tank` or `product`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -597,6 +619,39 @@ impl<'a> Spec<'a> {
         )
     }
 
+    /// Checks a `pressure_rise` parameter, the mirror of [`Spec::pressure_drop`]: never
+    /// negative, because a fall is a drop and every other operation already has one.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::BadValue`] for a negative rise.
+    pub fn pressure_rise(&self, rise: f64) -> Result<(), LoadError> {
+        require(
+            rise.is_finite() && rise >= 0.0,
+            self.at,
+            "pressure_rise",
+            rise,
+            "0.0 kPa or greater",
+        )
+    }
+
+    /// Checks an `efficiency` parameter: the values [`unit::pump`] and [`unit::compress`] panic
+    /// on, caught here so they cannot reach the solver. Zero would divide the work by nothing,
+    /// and more than one would make a machine that gives back more than it takes.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::BadValue`] for an efficiency outside `(0.0, 1.0]`.
+    pub fn efficiency(&self, efficiency: f64) -> Result<(), LoadError> {
+        require(
+            efficiency > 0.0 && efficiency <= 1.0,
+            self.at,
+            "efficiency",
+            efficiency,
+            "greater than 0.0 and at most 1.0",
+        )
+    }
+
     /// Deserialises the parameters into an operation's own spec type.
     ///
     /// Where a spec type's `deny_unknown_fields` fires - see [`Op`] for why it cannot fire at
@@ -875,6 +930,32 @@ impl OpRegistry {
             }))
         });
 
+        ops.register(unit::Pump::TAG, |s| {
+            let PumpSpec {
+                pressure_rise,
+                efficiency,
+            } = s.parse(unit::Pump::TAG)?;
+            s.pressure_rise(pressure_rise)?;
+            s.efficiency(efficiency)?;
+            Ok(Box::new(unit::Pump {
+                pressure_rise,
+                efficiency,
+            }))
+        });
+
+        ops.register(unit::Compressor::TAG, |s| {
+            let PumpSpec {
+                pressure_rise,
+                efficiency,
+            } = s.parse(unit::Compressor::TAG)?;
+            s.pressure_rise(pressure_rise)?;
+            s.efficiency(efficiency)?;
+            Ok(Box::new(unit::Compressor {
+                pressure_rise,
+                efficiency,
+            }))
+        });
+
         ops.register(unit::Tank::TAG, |s| {
             s.parse::<NoSpec>(unit::Tank::TAG)?;
             Ok(Box::new(unit::Tank))
@@ -998,6 +1079,15 @@ impl Flowsheet {
                 cp,
                 "a heat capacity at 298.15 K greater than 0.0 J/(mol·K)",
             )?;
+            if let Some(density) = s.density {
+                require(
+                    density.is_finite() && density > 0.0,
+                    &at,
+                    "density",
+                    density,
+                    "greater than 0.0 kg/m³",
+                )?;
+            }
             if Phase::split_suffix(&s.name).is_some() {
                 return Err(LoadError::ReservedSpeciesName {
                     name: s.name.clone(),
@@ -1288,6 +1378,42 @@ impl ToDocument for unit::Heater {
     }
 }
 
+impl unit::Pump {
+    /// The `type` a pump writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "pump";
+}
+
+impl ToDocument for unit::Pump {
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
+    fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
+        spec_of(&PumpSpec {
+            pressure_rise: self.pressure_rise,
+            efficiency: self.efficiency,
+        })
+    }
+}
+
+impl unit::Compressor {
+    /// The `type` a compressor writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "compressor";
+}
+
+impl ToDocument for unit::Compressor {
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
+    fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
+        spec_of(&PumpSpec {
+            pressure_rise: self.pressure_rise,
+            efficiency: self.efficiency,
+        })
+    }
+}
+
 impl unit::Tank {
     /// The `type` a tank writes, and the [`OpRegistry`] key it loads back from.
     pub const TAG: &'static str = "tank";
@@ -1564,12 +1690,14 @@ mod tests {
         assert_eq!(
             tags,
             [
+                "compressor",
                 "conversion_reactor",
                 "feed",
                 "flotation",
                 "heater",
                 "mixer",
                 "product",
+                "pump",
                 "splitter",
                 "splitter_n",
                 "tank"
@@ -2060,6 +2188,145 @@ mod tests {
         assert!(
             e.to_string()
                 .ends_with("`pressure` is 0, expected greater than 0.0 kPa"),
+            "{e}"
+        );
+    }
+
+    /// A pumped loop: feed -> mixer -> splitter, the first outlet back through a pump to the
+    /// mixer and the second to product. `pump` is the body of the pump's op object after its
+    /// `type`.
+    fn pumped_json(pump: &str) -> String {
+        format!(
+            r#"{{ "species": [{{ "name": "H2O", "phase": "Liquid", "molar_mass": 18.015,
+                   "shomate": {{ "a": 75.3 }}, "density": 997.0 }}],
+                  "units": [
+                    {{ "name": "f", "op": {{ "type": "feed",
+                       "state": {{ "flows": {{ "H2O": 100.0 }}, "pressure": 300.0 }} }} }},
+                    {{ "name": "m", "op": {{ "type": "mixer", "pressure_drop": 20.0 }} }},
+                    {{ "name": "s", "op": {{ "type": "splitter", "fraction": 0.5 }} }},
+                    {{ "name": "pump", "op": {{ "type": "pump", {pump} }} }},
+                    {{ "name": "p", "op": {{ "type": "product" }} }}
+                  ],
+                  "streams": [
+                    {{ "from": "f", "to": "m" }}, {{ "from": "m", "to": "s" }},
+                    {{ "from": "s", "to": "pump" }}, {{ "from": "pump", "to": "m" }},
+                    {{ "from": "s", "to": "p" }}
+                  ] }}"#
+        )
+    }
+
+    #[test]
+    fn a_pump_survives_load_solve_save_and_a_unit_efficiency_is_left_off() {
+        let json = pumped_json(r#""pressure_rise": 20.0, "efficiency": 0.7"#);
+        let mut fs = load(&json).unwrap().validate().unwrap();
+        crate::solver::Solver::default().solve(&mut fs).unwrap();
+        // The pump puts back what the mixer takes, so the loop holds the feed pressure.
+        assert_eq!(fs.streams()[3].pressure(), 300.0);
+        assert!(
+            fs.streams()[3].temperature() > AMBIENT_K,
+            "an inefficient pump should warm the recycle"
+        );
+
+        let doc = Flowsheet::from(&fs);
+        let pump: PumpSpec = spec(&doc, 3, unit::Pump::TAG);
+        assert_eq!(pump.pressure_rise, 20.0);
+        assert_eq!(pump.efficiency, 0.7);
+        assert_eq!(doc.species[0].density, Some(997.0));
+
+        // And the ideal pump writes only its rise, the way an ideal mixer writes nothing.
+        let json = pumped_json(r#""pressure_rise": 20.0"#);
+        let fs = load(&json).unwrap().validate().unwrap();
+        let doc = Flowsheet::from(&fs);
+        assert_eq!(
+            serde_json::to_string(&doc.units[3].op).unwrap(),
+            r#"{"type":"pump","pressure_rise":20.0}"#
+        );
+    }
+
+    #[test]
+    fn a_compressor_reads_the_same_two_fields() {
+        // Wired but not solved: the one species is liquid water, which a compressor refuses,
+        // and this is about the document and not the numbers.
+        let json = minimal(
+            r#"{ "name": "f", "op": { "type": "feed", "state": {} } },
+               { "name": "c", "op": { "type": "compressor", "pressure_rise": 200.0, "efficiency": 0.75 } },
+               { "name": "p", "op": { "type": "product" } }"#,
+            r#"{ "from": "f", "to": "c" }, { "from": "c", "to": "p" }"#,
+        );
+        let fs = load(&json).unwrap().validate().unwrap();
+        let doc = Flowsheet::from(&fs);
+        let c: PumpSpec = spec(&doc, 1, unit::Compressor::TAG);
+        assert_eq!((c.pressure_rise, c.efficiency), (200.0, 0.75));
+    }
+
+    #[test]
+    fn a_negative_pressure_rise_is_rejected() {
+        let json = minimal(
+            r#"{ "name": "c", "op": { "type": "compressor", "pressure_rise": -5.0 } }"#,
+            "",
+        );
+        assert_eq!(
+            load(&json).unwrap_err(),
+            LoadError::BadValue {
+                at: Location::Unit("c".into()),
+                field: "pressure_rise".into(),
+                value: -5.0,
+                expected: "0.0 kPa or greater".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn an_efficiency_outside_the_unit_interval_is_rejected() {
+        for efficiency in [0.0, -0.5, 1.5] {
+            let json = minimal(
+                &format!(
+                    r#"{{ "name": "pump", "op": {{ "type": "pump", "pressure_rise": 5.0, "efficiency": {efficiency} }} }}"#
+                ),
+                "",
+            );
+            assert_eq!(
+                load(&json).unwrap_err(),
+                LoadError::BadValue {
+                    at: Location::Unit("pump".into()),
+                    field: "efficiency".into(),
+                    value: efficiency,
+                    expected: "greater than 0.0 and at most 1.0".into(),
+                },
+                "{efficiency}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_positive_density_is_rejected() {
+        let json = r#"{ "species": [
+            { "name": "H2O", "phase": "Liquid", "molar_mass": 18.015, "shomate": { "a": 75.3 }, "density": 0.0 }
+          ], "units": [], "streams": [] }"#;
+        assert_eq!(
+            load(json).unwrap_err(),
+            LoadError::BadValue {
+                at: Location::Species("H2O".into()),
+                field: "density".into(),
+                value: 0.0,
+                expected: "greater than 0.0 kg/m³".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_pump_on_a_species_without_a_density_fails_the_solve_not_the_load() {
+        // Which species reach a pump is a property of the flows, so this cannot be a
+        // `LoadError`; it is the solver that reports it, naming the pump.
+        let json = pumped_json(r#""pressure_rise": 20.0"#).replace(r#", "density": 997.0"#, "");
+        let mut fs = load(&json).unwrap().validate().unwrap();
+        let e = crate::solver::Solver::default()
+            .solve(&mut fs)
+            .expect_err("water without a density cannot be pumped");
+        assert!(
+            e.to_string().starts_with(
+                "unit 'pump' failed on pass 1: species `H2O` flows through the pump but has no `density`"
+            ),
             "{e}"
         );
     }

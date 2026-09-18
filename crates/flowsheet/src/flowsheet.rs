@@ -657,6 +657,7 @@ mod tests {
             molar_mass: 18.015,
             shomate: crate::thermo::Shomate::constant(75.3),
             enthalpy_of_formation: None,
+            density: None,
         });
         r.insert(Species {
             name: "H2O".into(),
@@ -664,6 +665,7 @@ mod tests {
             molar_mass: 18.015,
             shomate: crate::thermo::Shomate::constant(33.6),
             enthalpy_of_formation: None,
+            density: None,
         });
 
         assert_eq!(Flowsheet::new(r).check(), vec![]);
@@ -679,6 +681,7 @@ mod tests {
             molar_mass: 18.015,
             shomate: crate::thermo::Shomate::constant(75.3),
             enthalpy_of_formation: None,
+            density: None,
         });
 
         let errors = Flowsheet::new(r).check();

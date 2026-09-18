@@ -109,6 +109,26 @@ impl Stream {
         self.species_sum(registry, |species| species.heat_capacity(self.temperature))
     }
 
+    /// Entropy flow at the stream's temperature, in MJ/(h·K), relative to
+    /// [`crate::thermo::REFERENCE_K`] and blind to pressure - see [`crate::Species::entropy`].
+    /// Two streams' difference is meaningful; one stream's value on its own is not.
+    ///
+    /// # Panics
+    /// If `registry` has a different species count than this stream.
+    pub fn entropy(&self, registry: &SpeciesRegistry) -> f64 {
+        // t/h times kJ/(kg·K) is MJ/(h·K), by the same arithmetic as `enthalpy`.
+        self.species_sum(registry, |species| species.entropy(self.temperature))
+    }
+
+    /// Molar flow across every species, in Mmol/h.
+    ///
+    /// # Panics
+    /// If `registry` has a different species count than this stream.
+    pub fn molar_flow(&self, registry: &SpeciesRegistry) -> f64 {
+        // t/h over g/mol: a tonne is a million grams, so the quotient is a million mol/h.
+        self.species_sum(registry, |species| 1.0 / species.molar_mass)
+    }
+
     /// Sums `flow * property(species)` over every species.
     ///
     /// # Panics
@@ -411,6 +431,45 @@ mod tests {
             (above - below) / (2.0 * dt),
             s.heat_capacity(&r),
             max_relative = 1e-6
+        );
+    }
+
+    #[test]
+    fn a_stream_at_the_reference_temperature_carries_no_entropy() {
+        let r = demo_registry();
+        let s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], REFERENCE_K, AMBIENT_KPA);
+        assert_relative_eq!(s.entropy(&r), 0.0);
+    }
+
+    #[test]
+    fn heat_capacity_over_temperature_is_the_slope_of_entropy() {
+        let r = demo_registry();
+        let mut s = Stream::from_flows(&r, vec![40.0, 360.0, 600.0], 350.0, AMBIENT_KPA);
+        let dt = 1e-3;
+
+        s.set_temperature(350.0 + dt);
+        let above = s.entropy(&r);
+        s.set_temperature(350.0 - dt);
+        let below = s.entropy(&r);
+        s.set_temperature(350.0);
+
+        assert_relative_eq!(
+            (above - below) / (2.0 * dt),
+            s.heat_capacity(&r) / 350.0,
+            max_relative = 1e-6
+        );
+    }
+
+    #[test]
+    fn molar_flow_divides_each_species_by_its_molar_mass() {
+        // 40 t/h of chalcopyrite at 183.5 g/mol is 0.218 Mmol/h, and so on: the units cancel
+        // to a million mol/h with no factor.
+        let r = demo_registry();
+        let s = feed(&r);
+        assert_relative_eq!(
+            s.molar_flow(&r),
+            40.0 / 183.5 + 360.0 / 60.08 + 600.0 / 18.015,
+            max_relative = 1e-12
         );
     }
 

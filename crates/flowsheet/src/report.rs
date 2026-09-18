@@ -147,7 +147,9 @@ pub fn imbalance(fs: &ValidFlowsheet) -> f64 {
 /// [`crate::UnitOp`] nothing. For a heater it hands the duty back. For an isothermal
 /// [`crate::ConversionReactor`] it is the heat of reaction at the inlet temperature, which is
 /// what the reactor had to shed or be given; for an adiabatic one it is zero to rounding. A unit
-/// that only mixes or splits gives zero to rounding too.
+/// that only mixes or splits gives zero to rounding too. For a [`crate::Compressor`] it is the
+/// whole shaft work, and for a [`crate::Pump`] only the share of it that became heat - see
+/// [`crate::unit::pump`] for why the rest does not appear.
 ///
 /// Only meaningful for a unit with both inlets and outlets. A feed has no inlets, so this is its
 /// outlet's enthalpy flow, and a product's is minus its inlet's: stream enthalpies, not heat.
