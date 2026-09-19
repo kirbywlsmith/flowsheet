@@ -18,9 +18,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Adiabatic flash, `P` and `H` specified. Newton on temperature around the isothermal flash, so it is an outer
-  loop over an inner loop inside one `evaluate` - the same structure as `mix` over `solve_temperature`, one level
-  deeper. A flash drum on a recycle is the test that proves the three tolerances compose.
 - [ ] Non-ideal vapour-liquid equilibrium. Raoult's law is wrong for almost every mixture anyone flashes - ethanol
   and water form an azeotrope it cannot see. Add an activity-coefficient model for the liquid, Wilson or NRTL, with
   binary interaction parameters declared per species pair in the document, so `K_i = gamma_i * Psat_i / P`. The

@@ -148,7 +148,16 @@ pub struct Antoine {
 
 impl Antoine {
     /// The vapour pressure at `temperature` (K), in kPa.
+    ///
+    /// Zero at and below `T = -c`. The equation has a pole there: as `T` falls towards it the
+    /// pressure falls to zero, and past it `c + T` turns negative and the formula climbs back to
+    /// an absurd pressure - water's `c` of -45.6 K would boil it at 45 K. Zero is the equation's
+    /// own limit from above, so the extension keeps vapour pressure rising with temperature
+    /// everywhere, which a search over temperature, like the adiabatic flash's, depends on.
     pub fn vapour_pressure(&self, temperature: f64) -> f64 {
+        if self.c + temperature <= 0.0 {
+            return 0.0;
+        }
         10f64.powf(self.a - self.b / (self.c + temperature))
     }
 
@@ -174,6 +183,15 @@ mod tests {
             101.325,
             max_relative = 5e-3
         );
+    }
+
+    #[test]
+    fn vapour_pressure_is_zero_below_the_pole_rather_than_absurd() {
+        // Water's pole is at 45.622 K. Just above it the pressure is vanishingly small; below it
+        // the raw formula would give 10^79 kPa at 22 K.
+        assert!(WATER_VAPOUR_PRESSURE.vapour_pressure(46.0) < 1e-300);
+        assert_eq!(WATER_VAPOUR_PRESSURE.vapour_pressure(45.622), 0.0);
+        assert_eq!(WATER_VAPOUR_PRESSURE.vapour_pressure(22.0), 0.0);
     }
 
     #[test]

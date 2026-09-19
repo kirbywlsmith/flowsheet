@@ -1,25 +1,27 @@
 //! [`Flash`] - the operation that splits a stream into its vapour and its liquid.
 
-use super::{Arity, EvalError, UnitOp, flash};
+use super::{Arity, EvalError, FlashEnergy, UnitOp, flash, flash_with_duty};
 use crate::species::SpeciesRegistry;
 use crate::stream::Stream;
 
-/// One inlet, two outlets: brings the inlet to `temperature` and `pressure` and splits it into
-/// the vapour and liquid in equilibrium there, with [`flash`]. Outlets are positional, **vapour
-/// first, liquid second** - the same order Aspen's `Flash2` lists them.
+/// One inlet, two outlets: brings the inlet to `pressure` and splits it into the vapour and liquid
+/// in equilibrium there. Outlets are positional, **vapour first, liquid second** - the same order
+/// Aspen's `Flash2` lists them.
 ///
-/// Isothermal: both outlets leave at `temperature`, and the heat that took - mostly the latent
-/// heat of whatever evaporated - is what [`crate::report::duty`] reports.
+/// `energy` says what else is fixed. At a [`FlashEnergy::Temperature`] both outlets leave at it,
+/// with [`flash`], and the heat that took - mostly the latent heat of whatever evaporated - is
+/// what [`crate::report::duty`] reports. At a [`FlashEnergy::Duty`] the heat is fixed instead and
+/// the temperature is found, with [`flash_with_duty`]; a duty of zero is the adiabatic flash.
 ///
 /// `pressure` is set outright, like a feed's, rather than dropped by a `pressure_drop`: a flash
 /// drum is specified by the pressure it runs at, and that pressure is the other half of what
 /// decides the split.
 #[derive(Debug, Clone, Copy)]
 pub struct Flash {
-    /// The temperature both outlets leave at, in K. Positive.
-    pub temperature: f64,
     /// The pressure both outlets leave at, in kPa. Positive.
     pub pressure: f64,
+    /// The temperature both outlets leave at, or the heat added.
+    pub energy: FlashEnergy,
 }
 
 impl UnitOp for Flash {
@@ -32,16 +34,20 @@ impl UnitOp for Flash {
     }
 
     /// # Errors
-    /// If a flowing species cannot be placed: see [`flash`].
+    /// If a flowing species cannot be placed (see [`flash`]), or, at a duty, if no positive
+    /// temperature holds the enthalpy (see [`flash_with_duty`]).
     ///
     /// # Panics
-    /// If `temperature` or `pressure` is not finite and positive. See [`flash`].
+    /// If the temperature or pressure is not finite and positive, or the duty is not finite.
     fn evaluate(
         &self,
         registry: &SpeciesRegistry,
         inlets: &[&Stream],
     ) -> Result<Vec<Stream>, EvalError> {
-        let (vapour, liquid) = flash(registry, inlets[0], self.temperature, self.pressure)?;
+        let (vapour, liquid) = match self.energy {
+            FlashEnergy::Temperature(t) => flash(registry, inlets[0], t, self.pressure)?,
+            FlashEnergy::Duty(q) => flash_with_duty(registry, inlets[0], q, self.pressure)?,
+        };
         Ok(vec![vapour, liquid])
     }
 
@@ -64,8 +70,8 @@ mod tests {
         let inlet = Stream::from_flows(&r, vec![100.0, 0.0, 28.0], 350.0, AMBIENT_KPA);
 
         let outs = Flash {
-            temperature: 350.0,
             pressure: AMBIENT_KPA,
+            energy: FlashEnergy::Temperature(350.0),
         }
         .evaluate(&r, &[&inlet])
         .unwrap();
@@ -89,8 +95,8 @@ mod tests {
         let inlet = feed(&r);
 
         let outs = Flash {
-            temperature: AMBIENT_K,
             pressure: AMBIENT_KPA,
+            energy: FlashEnergy::Temperature(AMBIENT_K),
         }
         .evaluate(&r, &[&inlet])
         .unwrap();
@@ -102,8 +108,8 @@ mod tests {
     #[test]
     fn a_flash_does_not_conserve_species() {
         let flash = Flash {
-            temperature: AMBIENT_K,
             pressure: AMBIENT_KPA,
+            energy: FlashEnergy::Temperature(AMBIENT_K),
         };
         assert!(!flash.conserves_species());
     }

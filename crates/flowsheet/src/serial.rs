@@ -356,16 +356,25 @@ fn is_one(x: &f64) -> bool {
     *x == 1.0
 }
 
-/// The parameters of a `flash`: the temperature and pressure both outlets leave at. Both
-/// required - a flash drum is specified by where it runs, and a default would be a guess at the
-/// very two numbers that decide the split.
+/// The parameters of a `flash`: the pressure, and **exactly one** of `temperature` or `duty`.
+///
+/// Two optional keys rather than a tagged [`unit::FlashEnergy`], so that a flash written before
+/// the duty existed - `{ "temperature": 350, "pressure": 101.325 }` - still reads, and saves, byte
+/// for byte. Which one is present is checked on load, where both or neither is a
+/// [`LoadError::BadOp`]; there is no default, because a default is a guess at one of the two
+/// numbers that decide the split. A duty of `0` is written out, not dropped: it is the statement
+/// that the drum is adiabatic, the way a zero recovery is a statement that a species sinks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlashSpec {
-    /// K. Positive.
-    pub temperature: f64,
+    /// Heat added, MJ/h. Negative removes it, and zero is the adiabatic flash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duty: Option<f64>,
     /// kPa. Positive.
     pub pressure: f64,
+    /// K. Positive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
 }
 
 /// The parameters of a unit operation that takes none. Empty, but not omitted: it is what rejects
@@ -1101,17 +1110,32 @@ impl OpRegistry {
 
         ops.register(unit::Flash::TAG, |s| {
             let FlashSpec {
-                temperature,
+                duty,
                 pressure,
-            } = s.parse(unit::Flash::TAG)?;
-            // The same two checks, in the same words, as a stream's state.
-            require(
-                temperature.is_finite() && temperature > 0.0,
-                s.at,
-                "temperature",
                 temperature,
-                "greater than 0.0 K",
-            )?;
+            } = s.parse(unit::Flash::TAG)?;
+            let energy = match (temperature, duty) {
+                (Some(t), None) => {
+                    // The same check, in the same words, as a stream's state.
+                    require(
+                        t.is_finite() && t > 0.0,
+                        s.at,
+                        "temperature",
+                        t,
+                        "greater than 0.0 K",
+                    )?;
+                    unit::FlashEnergy::Temperature(t)
+                }
+                // No check: JSON cannot write a non-finite duty, the heater's reasoning.
+                (None, Some(q)) => unit::FlashEnergy::Duty(q),
+                _ => {
+                    return Err(LoadError::BadOp {
+                        at: s.at.clone(),
+                        tag: unit::Flash::TAG.to_string(),
+                        message: "give exactly one of `temperature` or `duty`".to_string(),
+                    });
+                }
+            };
             require(
                 pressure.is_finite() && pressure > 0.0,
                 s.at,
@@ -1119,10 +1143,7 @@ impl OpRegistry {
                 pressure,
                 "greater than 0.0 kPa",
             )?;
-            Ok(Box::new(unit::Flash {
-                temperature,
-                pressure,
-            }))
+            Ok(Box::new(unit::Flash { pressure, energy }))
         });
 
         ops.register(unit::Tank::TAG, |s| {
@@ -1609,9 +1630,14 @@ impl ToDocument for unit::Flash {
     }
 
     fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
+        let (temperature, duty) = match self.energy {
+            unit::FlashEnergy::Temperature(t) => (Some(t), None),
+            unit::FlashEnergy::Duty(q) => (None, Some(q)),
+        };
         spec_of(&FlashSpec {
-            temperature: self.temperature,
+            duty,
             pressure: self.pressure,
+            temperature,
         })
     }
 }
@@ -2522,6 +2548,36 @@ mod tests {
     fn a_flash_needs_both_its_temperature_and_its_pressure() {
         let e = load(&flash_json(r#""temperature": 350.0"#)).unwrap_err();
         assert!(e.to_string().contains("pressure"), "{e}");
+    }
+
+    #[test]
+    fn an_adiabatic_flash_survives_load_solve_and_save_with_its_zero_duty_written_out() {
+        let json = flash_json(r#""duty": 0, "pressure": 101.325"#);
+        let mut fs = load(&json).unwrap().validate().unwrap();
+        crate::solver::Solver::default().solve(&mut fs).unwrap();
+        // The feed is at 25 °C and some of it evaporates, so the drum cools below it.
+        assert!(fs.streams()[1].temperature() < AMBIENT_K);
+
+        let doc = Flowsheet::from(&fs);
+        assert_eq!(
+            serde_json::to_string(&doc.units[1].op).unwrap(),
+            r#"{"type":"flash","duty":0.0,"pressure":101.325}"#
+        );
+    }
+
+    #[test]
+    fn a_flash_takes_a_temperature_or_a_duty_but_not_both_and_not_neither() {
+        for params in [
+            r#""temperature": 350.0, "duty": 0, "pressure": 101.325"#,
+            r#""pressure": 101.325"#,
+        ] {
+            let e = load(&flash_json(params)).unwrap_err();
+            assert!(
+                matches!(e, LoadError::BadOp { ref message, .. }
+                    if message == "give exactly one of `temperature` or `duty`"),
+                "{params}: {e}"
+            );
+        }
     }
 
     #[test]

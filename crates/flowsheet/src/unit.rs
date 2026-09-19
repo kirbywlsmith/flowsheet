@@ -4,7 +4,7 @@ use crate::flowsheet::StreamId;
 use crate::serial::ToDocument;
 use crate::species::{Phase, Species, SpeciesId, SpeciesRegistry};
 use crate::stream::Stream;
-use crate::thermo::GAS_CONSTANT;
+use crate::thermo::{Antoine, GAS_CONSTANT};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug};
 
@@ -929,6 +929,247 @@ pub fn flash(
     }
 
     Ok((vapour, liquid))
+}
+
+/// How many times [`flash_with_duty`] may double its step while looking for a temperature on
+/// the far side of the answer, and how many regula falsi steps it may take once it has one.
+/// Sixty doublings of a step of a kelvin or more pass any temperature a `f64` can hold.
+const MAX_FLASH_TEMPERATURE_STEPS: usize = 60;
+
+/// The pair of entries - liquid, then gas - of the one substance flowing through `inlet`, with
+/// the liquid's vapour pressure, if exactly one substance that can change phase flows. Solids do not count: they take no part in
+/// the split.
+///
+/// `None` when two substances flow, when nothing but solids does, and when the one substance is
+/// declared in a single phase - pure nitrogen has a smooth `H(T)`, so it needs no special case -
+/// and when the liquid has no vapour pressure, which [`flash`] then reports as an error.
+fn single_substance(registry: &SpeciesRegistry, inlet: &Stream) -> Option<(usize, usize, Antoine)> {
+    let mut name = None;
+    for (s, &flow) in registry.all().iter().zip(inlet.flows()) {
+        if flow == 0.0 || s.phase == Phase::Solid {
+            continue;
+        }
+        match name {
+            None => name = Some(&s.name),
+            Some(n) if *n == s.name => {}
+            Some(_) => return None, // a second substance: a mixture
+        }
+    }
+    let name = name?;
+    let liquid = registry.find(name, Phase::Liquid)?;
+    let gas = registry.find(name, Phase::Gas)?;
+    let antoine = registry[liquid].vapour_pressure?;
+    Some((liquid.as_usize(), gas.as_usize(), antoine))
+}
+
+/// Brings `inlet` to `pressure` (kPa), adds `duty` (MJ/h), and splits it into a (vapour, liquid)
+/// pair in equilibrium at whatever temperature holds that enthalpy. A duty of zero is the
+/// adiabatic flash - a let-down drum, where the pressure falls and some liquid boils using its
+/// own heat.
+///
+/// The temperature is found by searching over [`flash`]: each trial runs the isothermal flash
+/// and sums its outlets' enthalpy, `H(T)`, which only rises with `T`. Rachford-Rice therefore
+/// runs inside this search, which runs inside the flowsheet solver - three nested loops, at
+/// 1e-12 relative, 1e-9 K and the solver's own tolerance.
+///
+/// **The search needs no derivative.** `dH/dT` is the heat capacity plus a latent heat times
+/// `dV/dT`, and the second has no tidy formula and a kink at the bubble and dew points, so
+/// Newton's slope is exactly what is hard to get. Instead:
+///
+/// 1. From the inlet temperature, step by the constant-cp guess `-residual / C` - which
+///    *overshoots* whenever a phase changes, because latent heat absorbs part of the duty - and
+///    keep doubling the step until the residual changes sign, so the answer is bracketed.
+/// 2. Close the bracket by regula falsi (the secant through its two ends), with the Illinois
+///    fix: whenever the same end survives twice, its residual is halved, so a lopsided bracket
+///    cannot stall with one end fixed.
+///
+/// **One substance is the exception.** Pure water at a fixed pressure boils at one temperature,
+/// so `H(T)` does not rise through the latent heat, it *jumps*, and no temperature lands inside
+/// the jump. When only one substance declared in both phases flows (solids aside), the answer is
+/// closed-form instead: if the enthalpy lies between all-liquid and all-vapour at the boiling
+/// point ([`crate::thermo::Antoine::boiling_point`]), the drum sits there with the vapour share
+/// given by where it lies between the two - the lever rule, exact because enthalpy is linear in
+/// the split. Outside that range the outlet is one phase, and [`solve_temperature`] finds it.
+///
+/// An empty inlet returns two empty outlets at the inlet temperature and `pressure`, with the
+/// duty ignored, as [`heat`] does: no temperature absorbs a duty into nothing.
+///
+/// # Errors
+/// Whatever [`flash`] reports at a trial temperature; if no positive temperature holds the
+/// target enthalpy, as for a duty that cools past absolute zero; or if a pure substance has no
+/// boiling point at `pressure`, which Antoine gives when the pressure is above `10^a` kPa.
+///
+/// # Panics
+/// If `duty` is not finite, or `pressure` is not finite and positive. Loading rejects both.
+pub fn flash_with_duty(
+    registry: &SpeciesRegistry,
+    inlet: &Stream,
+    duty: f64,
+    pressure: f64,
+) -> Result<(Stream, Stream), EvalError> {
+    assert!(duty.is_finite(), "flash duty must be finite, got {duty}");
+    if inlet.total() == 0.0 {
+        // exact-zero guard: nothing to hold the duty. `flash` checks the pressure.
+        return flash(registry, inlet, inlet.temperature(), pressure);
+    }
+    let target = inlet.enthalpy(registry) + duty;
+
+    if let Some((liquid, gas, antoine)) = single_substance(registry, inlet) {
+        return flash_one_substance(registry, inlet, target, pressure, antoine, liquid, gas);
+    }
+
+    // The residual and the outlets it came from, so the last trial is the answer and does not
+    // have to be flashed a second time.
+    let trial = |t: f64| -> Result<(f64, (Stream, Stream)), EvalError> {
+        let outlets = flash(registry, inlet, t, pressure)?;
+        let h = outlets.0.enthalpy(registry) + outlets.1.enthalpy(registry);
+        Ok((h - target, outlets))
+    };
+
+    // ---- bracket ----
+    let t0 = inlet.temperature();
+    let (r0, outlets) = trial(t0)?;
+    if r0 == 0.0 {
+        return Ok(outlets);
+    }
+    // `H` rises with `T`, so a positive residual means the answer is colder.
+    let mut step = -r0 / inlet.heat_capacity(registry);
+    let (mut near, mut near_r) = (t0, r0);
+    let (mut far, mut far_r, mut far_outlets) = (t0, r0, outlets);
+    for _ in 0..MAX_FLASH_TEMPERATURE_STEPS {
+        // Never at or below 0 K: halve the distance to it instead.
+        let t = if near + step > 0.0 {
+            near + step
+        } else {
+            near / 2.0
+        };
+        let (r, outlets) = trial(t)?;
+        (far, far_r, far_outlets) = (t, r, outlets);
+        if r.signum() != near_r.signum() {
+            break;
+        }
+        (near, near_r) = (t, r);
+        step *= 2.0;
+    }
+    if far_r.signum() == near_r.signum() {
+        return Err(EvalError::new(format!(
+            "no positive temperature holds an enthalpy flow of {target:e} MJ/h at {pressure} \
+             kPa (the search reached {far:e} K)"
+        )));
+    }
+    if far_r == 0.0 {
+        return Ok(far_outlets);
+    }
+
+    // ---- regula falsi, Illinois ----
+    // `lo` has a negative residual and `hi` a positive one, whichever way the bracket was found.
+    let ((mut lo, mut lo_r), (mut hi, mut hi_r)) = if near_r < 0.0 {
+        ((near, near_r), (far, far_r))
+    } else {
+        ((far, far_r), (near, near_r))
+    };
+    let mut last = far;
+    // Which end the last step left in place: -1 for `lo`, 1 for `hi`, 0 before the first.
+    let mut kept: i8 = 0;
+    for _ in 0..MAX_FLASH_TEMPERATURE_STEPS {
+        let t = (lo * hi_r - hi * lo_r) / (hi_r - lo_r);
+        let (r, outlets) = trial(t)?;
+        if r == 0.0 || (t - last).abs() <= TEMPERATURE_TOLERANCE_K {
+            return Ok(outlets);
+        }
+        last = t;
+        if r < 0.0 {
+            (lo, lo_r) = (t, r);
+            if kept == 1 {
+                hi_r /= 2.0;
+            }
+            kept = 1;
+        } else {
+            (hi, hi_r) = (t, r);
+            if kept == -1 {
+                lo_r /= 2.0;
+            }
+            kept = -1;
+        }
+    }
+    Err(EvalError::new(format!(
+        "no flash temperature converged after {MAX_FLASH_TEMPERATURE_STEPS} steps"
+    )))
+}
+
+/// [`flash_with_duty`] for a feed whose only substance that can change phase is the pair at
+/// `liquid` and `gas`: the closed form described there.
+fn flash_one_substance(
+    registry: &SpeciesRegistry,
+    inlet: &Stream,
+    target: f64,
+    pressure: f64,
+    antoine: Antoine,
+    liquid: usize,
+    gas: usize,
+) -> Result<(Stream, Stream), EvalError> {
+    let boiling = antoine.boiling_point(pressure);
+    if !(boiling.is_finite() && boiling > 0.0) {
+        return Err(EvalError::new(format!(
+            "species `{}` has no boiling point at {pressure} kPa - its vapour pressure never \
+             reaches it (Antoine gives {boiling:e} K)",
+            registry.all()[liquid].name
+        )));
+    }
+
+    // The whole substance in one phase, solids unchanged, at the boiling point.
+    let mass = inlet.flows()[liquid] + inlet.flows()[gas];
+    let all_in = |into: usize, from: usize| {
+        let mut s = inlet.clone();
+        s.flows_mut()[into] = mass;
+        s.flows_mut()[from] = 0.0;
+        s.set_temperature(boiling);
+        s.set_pressure(pressure);
+        s
+    };
+    let mut all_liquid = all_in(liquid, gas);
+    let mut all_vapour = all_in(gas, liquid);
+    let (h_liquid, h_vapour) = (all_liquid.enthalpy(registry), all_vapour.enthalpy(registry));
+
+    // Subcooled or superheated: one phase, and a temperature solve on it. Newton starts at the
+    // boiling point, and `H` is monotonic, so it lands on the side it should - where `flash`
+    // then puts every molecule in the one phase, exactly.
+    if target <= h_liquid || target >= h_vapour {
+        let single = if target <= h_liquid {
+            &mut all_liquid
+        } else {
+            &mut all_vapour
+        };
+        solve_temperature(registry, single, target)?;
+        return flash(registry, single, single.temperature(), pressure);
+    }
+
+    // Boiling: the lever rule. `H` is linear in the share that boiled, so this is exact.
+    let share = (target - h_liquid) / (h_vapour - h_liquid);
+    let mut vapour = Stream::zeros(registry, boiling, pressure);
+    vapour.flows_mut()[gas] = mass * share;
+    let mut bottoms = all_liquid; // the solids, and the liquid entry to overwrite
+    bottoms.flows_mut()[liquid] = mass * (1.0 - share);
+    Ok((vapour, bottoms))
+}
+
+/// Which of its two energy specs a [`Flash`] holds: the temperature it runs at, or the heat it
+/// takes in. Aspen's `Flash2` offers the same pair beside the pressure.
+///
+/// An enum rather than two `Option` fields, so a flash cannot hold both or neither - the
+/// document's two optional keys are checked into one of these on load.
+///
+/// Not `serde`, unlike [`ReactorEnergy`]: on the wire the variant is which key is present,
+/// `"temperature": 350` or `"duty": 0`, so that every flash document written before the duty
+/// existed still reads as it did.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FlashEnergy {
+    /// Both outlets leave at this temperature, in K, and the heat that takes is whatever
+    /// [`crate::report::duty`] finds. See [`flash`].
+    Temperature(f64),
+    /// This much heat is added, in MJ/h - negative removes it, and zero is the adiabatic flash -
+    /// and the outlets leave at whatever temperature holds the result. See [`flash_with_duty`].
+    Duty(f64),
 }
 
 /// What a reactor does with the heat its reaction releases or absorbs.
@@ -2172,6 +2413,232 @@ mod tests {
         let _ = flash(&r, &humid(&r, [1.0, 0.0, 0.0]), FLASH_K, 0.0);
     }
 
+    // ---- flash_with_duty ----
+
+    /// Both outlets' enthalpy flow together, MJ/h.
+    fn outlet_enthalpy(r: &SpeciesRegistry, (vapour, liquid): &(Stream, Stream)) -> f64 {
+        vapour.enthalpy(r) + liquid.enthalpy(r)
+    }
+
+    fn duty_flashed(r: &SpeciesRegistry, inlet: &Stream, duty: f64) -> (Stream, Stream) {
+        flash_with_duty(r, inlet, duty, AMBIENT_KPA).expect("the flash should succeed here")
+    }
+
+    /// The steam that nitrogen at `temperature` carries away from pure water, t/h - the closed
+    /// form from `tests/flash.rs`, for checking a found temperature is an equilibrium.
+    fn saturated_steam(r: &SpeciesRegistry, nitrogen: f64, temperature: f64) -> f64 {
+        let psat = r.all()[0]
+            .vapour_pressure
+            .unwrap()
+            .vapour_pressure(temperature);
+        nitrogen / r.all()[2].molar_mass * psat / (AMBIENT_KPA - psat) * r.all()[1].molar_mass
+    }
+
+    #[test]
+    fn an_adiabatic_flash_keeps_the_enthalpy_and_cools_as_it_evaporates() {
+        let r = humid_nitrogen();
+        let inlet = Stream::from_flows(&r, vec![100.0, 0.0, 28.0], 360.0, AMBIENT_KPA);
+        let outlets = duty_flashed(&r, &inlet, 0.0);
+        let t = outlets.0.temperature();
+
+        assert_relative_eq!(
+            outlet_enthalpy(&r, &outlets),
+            inlet.enthalpy(&r),
+            max_relative = 1e-11
+        );
+        assert!(t < 360.0, "{t}");
+        assert_eq!(outlets.1.temperature(), t);
+        // And it is an equilibrium at the temperature it found.
+        assert_relative_eq!(
+            outlets.0.flows()[1],
+            saturated_steam(&r, 28.0, t),
+            max_relative = 1e-10
+        );
+    }
+
+    #[test]
+    fn re_flashing_an_equilibrium_adiabatically_stays_where_it_is() {
+        let r = humid_nitrogen();
+        let (mut both, liquid) = flashed(&r, &humid(&r, [100.0, 0.0, 28.0]), FLASH_K);
+        both += &liquid;
+
+        let (vapour, _) = duty_flashed(&r, &both, 0.0);
+        assert_relative_eq!(vapour.temperature(), FLASH_K, max_relative = 1e-10);
+    }
+
+    #[test]
+    fn a_positive_duty_boils_more_than_the_adiabatic_flash() {
+        let r = humid_nitrogen();
+        let inlet = humid(&r, [100.0, 0.0, 28.0]);
+        let adiabatic = duty_flashed(&r, &inlet, 0.0);
+        let heated = duty_flashed(&r, &inlet, 1e4);
+
+        assert_relative_eq!(
+            outlet_enthalpy(&r, &heated),
+            inlet.enthalpy(&r) + 1e4,
+            max_relative = 1e-11
+        );
+        assert!(heated.0.temperature() > adiabatic.0.temperature());
+        assert!(heated.0.flows()[1] > adiabatic.0.flows()[1]);
+    }
+
+    #[test]
+    fn cooling_humid_gas_condenses_some_of_its_steam() {
+        // The search starts above the answer and brackets it from below.
+        let r = humid_nitrogen();
+        let inlet = Stream::from_flows(&r, vec![0.0, 20.0, 28.0], 400.0, AMBIENT_KPA);
+        let outlets = duty_flashed(&r, &inlet, -3e4);
+
+        assert_relative_eq!(
+            outlet_enthalpy(&r, &outlets),
+            inlet.enthalpy(&r) - 3e4,
+            max_relative = 1e-11
+        );
+        assert!(outlets.1.flows()[0] > 0.0, "some steam should condense");
+        assert!(outlets.0.temperature() < 400.0);
+    }
+
+    /// Water's boiling point at one atmosphere, from the shipped fit.
+    fn boiling(r: &SpeciesRegistry) -> f64 {
+        r.all()[0]
+            .vapour_pressure
+            .unwrap()
+            .boiling_point(AMBIENT_KPA)
+    }
+
+    /// The heat that boils `mass` t/h of water at its boiling point, MJ/h.
+    fn latent(r: &SpeciesRegistry, mass: f64) -> f64 {
+        let per_mole = crate::species::latent_heat(&r.all()[0], &r.all()[1], boiling(r));
+        1000.0 * mass / r.all()[0].molar_mass * per_mole
+    }
+
+    #[test]
+    fn pure_water_given_half_its_latent_heat_boils_half_away_at_its_boiling_point() {
+        // The case with no temperature to search for: H(T) jumps at the boiling point.
+        let r = humid_nitrogen();
+        let tb = boiling(&r);
+        let inlet = Stream::from_flows(&r, vec![10.0, 0.0, 0.0], tb, AMBIENT_KPA);
+        let (vapour, liquid) = duty_flashed(&r, &inlet, latent(&r, 5.0));
+
+        assert_relative_eq!(vapour.flows()[1], 5.0, max_relative = 1e-10);
+        assert_relative_eq!(liquid.flows()[0], 5.0, max_relative = 1e-10);
+        assert_eq!((vapour.temperature(), liquid.temperature()), (tb, tb));
+    }
+
+    #[test]
+    fn pure_water_given_more_than_its_latent_heat_leaves_as_superheated_steam() {
+        let r = humid_nitrogen();
+        let tb = boiling(&r);
+        let inlet = Stream::from_flows(&r, vec![10.0, 0.0, 0.0], tb, AMBIENT_KPA);
+        let outlets = duty_flashed(&r, &inlet, 2.0 * latent(&r, 10.0));
+
+        assert_eq!((outlets.0.flows()[1], outlets.1.total()), (10.0, 0.0));
+        assert!(outlets.0.temperature() > tb);
+        assert_relative_eq!(
+            outlet_enthalpy(&r, &outlets),
+            inlet.enthalpy(&r) + 2.0 * latent(&r, 10.0),
+            max_relative = 1e-11
+        );
+    }
+
+    #[test]
+    fn pure_water_short_of_boiling_warms_exactly_as_a_heater_would() {
+        let r = humid_nitrogen();
+        let inlet = Stream::from_flows(&r, vec![10.0, 0.0, 0.0], 300.0, AMBIENT_KPA);
+        let (vapour, liquid) = duty_flashed(&r, &inlet, 1000.0);
+
+        assert_eq!(vapour.total(), 0.0);
+        assert_relative_eq!(
+            liquid.temperature(),
+            heat(&r, &inlet, 1000.0).unwrap().temperature(),
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn steam_cooled_past_its_latent_heat_leaves_as_liquid() {
+        let r = humid_nitrogen();
+        let inlet = Stream::from_flows(&r, vec![0.0, 10.0, 0.0], 400.0, AMBIENT_KPA);
+        // Enough to condense it all and then take a couple of thousand MJ/h off the liquid, which
+        // at about 42 MJ/(h K) is some 35 K below the boiling point.
+        let (vapour, liquid) = duty_flashed(&r, &inlet, -latent(&r, 10.0) - 2000.0);
+
+        assert_eq!((vapour.total(), liquid.flows()[0]), (0.0, 10.0));
+        assert!(liquid.temperature() < boiling(&r));
+    }
+
+    #[test]
+    fn a_boiling_drum_keeps_its_solids_in_the_bottoms_at_the_boiling_point() {
+        let mut r = humid_nitrogen();
+        r.insert(
+            crate::library::find("SiO2", Phase::Solid)
+                .unwrap()
+                .species
+                .clone(),
+        );
+        let tb = boiling(&r);
+        let inlet = Stream::from_flows(&r, vec![10.0, 0.0, 0.0, 5.0], tb, AMBIENT_KPA);
+        let outlets = duty_flashed(&r, &inlet, latent(&r, 5.0));
+
+        assert_eq!(outlets.0.flows()[3], 0.0);
+        assert_eq!(outlets.1.flows()[3], 5.0);
+        assert_relative_eq!(outlets.0.flows()[1], 5.0, max_relative = 1e-10);
+        assert_relative_eq!(
+            outlet_enthalpy(&r, &outlets),
+            inlet.enthalpy(&r) + latent(&r, 5.0),
+            max_relative = 1e-11
+        );
+    }
+
+    #[test]
+    fn single_substance_ignores_solids_and_needs_both_phases() {
+        let mut r = humid_nitrogen();
+        r.insert(
+            crate::library::find("SiO2", Phase::Solid)
+                .unwrap()
+                .species
+                .clone(),
+        );
+        let at = |flows: Vec<f64>| Stream::from_flows(&r, flows, FLASH_K, AMBIENT_KPA);
+
+        assert!(single_substance(&r, &at(vec![1.0, 1.0, 0.0, 9.0])).is_some());
+        assert!(single_substance(&r, &at(vec![1.0, 0.0, 1.0, 0.0])).is_none()); // with nitrogen
+        assert!(single_substance(&r, &at(vec![0.0, 0.0, 1.0, 0.0])).is_none()); // gas only
+        assert!(single_substance(&r, &at(vec![0.0, 0.0, 0.0, 9.0])).is_none()); // solids only
+    }
+
+    #[test]
+    fn a_duty_flash_of_an_empty_stream_gives_two_empty_outlets() {
+        let r = humid_nitrogen();
+        let empty = Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA);
+        let (vapour, liquid) = duty_flashed(&r, &empty, 1e6);
+        assert_eq!((vapour.total(), liquid.total()), (0.0, 0.0));
+        assert_eq!(vapour.temperature(), AMBIENT_K);
+    }
+
+    #[test]
+    fn a_duty_no_positive_temperature_absorbs_is_an_error_not_a_panic() {
+        // Constant heat capacities, so each species holds a finite enthalpy at 0 K. The shipped
+        // liquid water's Shomate `E` term sends its extrapolated enthalpy to minus infinity as T
+        // falls to zero, so over that fit *some* positive temperature answers any duty - a
+        // fraction of a kelvin, which the search duly finds.
+        let mut r = SpeciesRegistry::default();
+        for (s, cp) in humid_nitrogen().all().iter().zip([75.3, 33.6, 29.1]) {
+            r.insert(Species {
+                shomate: Shomate::constant(cp),
+                ..s.clone()
+            });
+        }
+        for inlet in [
+            humid(&r, [100.0, 0.0, 28.0]), // a mixture: the search gives up
+            humid(&r, [100.0, 0.0, 0.0]),  // pure water: the temperature solve does
+        ] {
+            let e =
+                flash_with_duty(&r, &inlet, -1e9, AMBIENT_KPA).expect_err("nothing is that cold");
+            assert!(e.to_string().contains("no positive temperature"), "{e}");
+        }
+    }
+
     // ---- react ----
 
     /// 10 t/h of methane in 60 t/h of oxygen: plenty of oxygen even at full conversion, which
@@ -2532,8 +2999,8 @@ mod tests {
             // still two outlets.
             (
                 Box::new(Flash {
-                    temperature: 350.0,
                     pressure: AMBIENT_KPA,
+                    energy: FlashEnergy::Temperature(350.0),
                 }),
                 (1, Some(1)),
                 (2, Some(2)),

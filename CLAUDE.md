@@ -270,10 +270,11 @@ Never mix severities in one unlabelled list.
   independent property sets and one law between them, so a fit with its `A` still in bar or a formation enthalpy
   off by a phase lands far outside the tolerance. It is the "measured against the absolute basis" the TODO item
   asked for, and the `GAS_CONSTANT` the compressor introduced is what makes it a one-line test.
-- **The isothermal flash is `Flash { temperature, pressure }`**, tag `flash`, one inlet and two outlets, **vapour
-  first**. Both specs are required and set outright, like a feed's state - there is no `pressure_drop`, because a
-  drum is specified by the pressure it runs at and that pressure decides the split. The work is two free functions
-  in `unit.rs`, as for every op: `rachford_rice(amounts, k) -> f64` and `flash(registry, inlet, T, P)`.
+- **The flash is `Flash { pressure, energy: FlashEnergy }`**, tag `flash`, one inlet and two outlets, **vapour
+  first**. The pressure is set outright, like a feed's state - there is no `pressure_drop`, because a drum is
+  specified by the pressure it runs at and that pressure decides the split. The work is free functions in
+  `unit.rs`, as for every op: `rachford_rice(amounts, k) -> f64`, `flash(registry, inlet, T, P)` and
+  `flash_with_duty` (the adiabatic entries below).
 - **A feed that does not split is `Ok`, not an `EvalError`.** `rachford_rice` checks the bubble point
   (`sum n K <= sum n`, all liquid, exactly `0.0`) and the dew point (`sum n / K <= sum n`, all vapour, exactly
   `1.0`) before it looks for a root, so a subcooled or superheated feed returns one full outlet and one empty one,
@@ -308,6 +309,40 @@ Never mix severities in one unlabelled list.
   through a drum settles whatever the pipes upstream drop, the way a discharge-pressure pump spec would have. It is
   what the equipment does - a drum runs at its pressure - but `tests/pressure.rs`'s "a lossy loop fails" no longer
   holds for a loop with a drum in it.
+- **The adiabatic flash is the same op with the other energy spec**, not a second op. `FlashEnergy` is
+  `Temperature(K)` or `Duty(MJ/h)`, Aspen `Flash2`'s pair, and a duty of zero is adiabatic. On the wire it is
+  **exactly one of `temperature` or `duty`**, two optional keys checked into the enum on load (both or neither is a
+  `LoadError::BadOp`) - not a tagged `"energy"` like the reactor's, because the isothermal flash already wrote
+  `temperature` and every such document still saves byte for byte. A zero duty is written out, not dropped: it is
+  the statement that the drum is adiabatic. `FlashEnergy` is not `serde` for the same reason.
+- **`flash_with_duty` searches temperature without a derivative.** `H(T)` over `flash` only rises, but its slope is
+  cp plus latent heat times `dV/dT`, which has no tidy formula and kinks at the bubble and dew points, so Newton's
+  one input is the hard part. It brackets instead: from the inlet temperature it steps by the constant-cp guess
+  `-residual / C`, which *overshoots* whenever a phase changes because latent heat absorbs part of the duty, doubling
+  the step until the sign flips and halving towards 0 K rather than crossing it. Then **regula falsi with the
+  Illinois fix** - the end that survives twice has its residual halved - to 1e-9 K, `solve_temperature`'s tolerance.
+  So three solves nest: Rachford-Rice at 1e-12 relative, this at 1e-9 K, the flowsheet at 1e-9 relative.
+  `tests/flash.rs` puts a drum on a liquid recycle and pins that they compose: the products land on the
+  once-through drum's answer, direct substitution takes the isothermal loop's **18 and 176 passes to the pass**
+  (at 0.3 and 0.9), and Wegstein 3 and 22.
+- **One substance is closed-form**, because pure water at a fixed pressure has an `H(T)` that *jumps* at the boiling
+  point and no temperature lands inside the jump - a search there converges on `Tb` with the wrong vapour fraction.
+  `single_substance` spots it (one name flowing, declared in both phases, with an Antoine fit; solids ignored), and
+  `flash_one_substance` takes `Tb` from `Antoine::boiling_point` and splits by the lever rule, exact because
+  enthalpy is linear in the split. Outside `[H_liquid, H_vapour]` at `Tb` the outlet is one phase: `solve_temperature`
+  on it, then `flash` at the result, which puts every molecule on the right side exactly. A test pins that pure
+  water short of boiling lands on `heat`'s temperature to 1e-12. A mixture that is *nearly* pure is steep, not
+  discontinuous, and the bracket handles it.
+- **`Antoine::vapour_pressure` is zero at and below `T = -c`**, the equation's pole. Past it the formula climbs back to
+  absurd pressures - water would boil at 45 K - which breaks "vapour pressure rises with temperature", and the
+  bracket halving towards 0 K walks straight through it. Zero is the limit from above, so the extension is
+  continuous. Separately, **a Shomate fit with a positive `E` has `H -> -inf` as `T -> 0`**, so over the shipped
+  liquid water *some* positive temperature answers any duty and the search finds a fraction of a kelvin; the
+  "no positive temperature" test uses constant cp for that reason. Nothing checks the fitted range, as before.
+- **Measured cost** (release, 200,000 evaluations, humid nitrogen): mixer 160 ns, isothermal flash 220 ns,
+  adiabatic flash 2.6 µs. So the isothermal flash is **1.4× a mixer, not the ~20× the rayon entry guessed** -
+  Rachford-Rice on three components converges in a few steps and allocates the same two streams a mixer does -
+  and the adiabatic one is ~16×, a dozen isothermal flashes deep.
 - **The shipped species library is `crates/flowsheet/data/species.json`**, compiled in with `include_str!` and parsed
   once behind a `LazyLock` in `library.rs` (an embedded resource and a `Lazy<T>`). A bad file is a panic, not a
   `Result`: it is part of the crate, and the tests parse it on every run. The file's record is its own struct with a
@@ -381,7 +416,7 @@ Never mix severities in one unlabelled list.
   times kJ/kg is MJ/h.
 - Demo heat capacities: water and quartz are **NIST-JANAF Shomate fits**. Chalcopyrite has no published fit, so it is a
   **Neumann-Kopp estimate** - Cu + Fe + 2 S at 298.15 K, 95.0 J/(mol·K) - held constant.
-- `Mixer`, `Heater` and an adiabatic `ConversionReactor` are the **only ops with a temperature solve**. `Splitter`, `SplitterN` and `Flotation`
+- `Mixer`, `Heater`, an adiabatic `ConversionReactor` and a `Flash` at a duty are the **only ops with a temperature solve**. `Splitter`, `SplitterN` and `Flotation`
   partition flows at constant temperature, which conserves enthalpy exactly. `unit::mix` sums inlet enthalpy and hands it to
   `unit::solve_temperature`: Newton on `H(T) - target`, whose slope is the heat capacity flow and therefore positive,
   so there is exactly one root. It is seeded with the heat-capacity-weighted mean temperature, exact for constant cp,
@@ -622,7 +657,8 @@ Never mix severities in one unlabelled list.
   workload the bench can only measure overhead - matching the earlier finding that the allocator dominated and that
   making allocation cheaper made parallelism worse, not better. Conversion reactions and pressure do not move it:
   both are straight arithmetic over the flows vector, ~1× a mixer. What moves it is an op that iterates on every
-  evaluation - a flash is ~20× a mixer ideal and ~200× with a cubic EOS, and a 40-stage distillation column ~5,000×,
+  evaluation - an adiabatic flash is ~16× a mixer (measured; the isothermal one only 1.4×), a cubic EOS would be
+  ~10× more, and a 40-stage distillation column ~5,000×,
   enough for 100 ms on its own inside a recycle. There is no realistic mass-and-energy-only flowsheet that takes
   100 ms; a plant-scale flotation circuit of 300 cells is single-digit milliseconds. So "the demo feels substantial"
   and "parallelism pays" are one blocker, not two.
