@@ -47,7 +47,7 @@ pub const QUARTZ_CP: Shomate = Shomate {
 /// fit also stops at its melting point, 388 K.
 pub const CHALCOPYRITE_CP: Shomate = Shomate::constant(95.0);
 
-/// Water's vapour pressure over 344-373 K, from the NIST Chemistry WebBook (Stull, 1947), with
+/// Water's vapour pressure over 344-373 K, from the NIST Chemistry WebBook (Bridgeman and Aldrich, 1964), with
 /// NIST's `A` of 5.08354 in bar raised by 2 for kPa.
 ///
 /// Not part of the demo registry - nothing in the circuit evaporates - but the fit the crate's

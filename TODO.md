@@ -18,13 +18,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] A shipped species library. Today every document pastes Shomate coefficients, a molar mass and a formation
-  enthalpy by hand, so the user is the NIST lookup. Ship a few dozen common species as a JSON file embedded with
-  `include_str!`, loadable by name from a document's `species` list (`{ "name": "H2O", "phase": "Liquid" }` with
-  the properties omitted), and let an inline entry override a library one. It sits after latent heat so the file
-  carries vapour pressure and heat of vaporisation as well, and every entry must cite its source in the file -
-  NIST-JANAF for the Shomate fits - so a wrong number can be traced. The flash tests below can then name their
-  species rather than carry coefficients.
 - [ ] Isothermal flash, `T` and `P` specified. K-values from vapour pressure over system pressure (Raoult to start),
   vapour fraction from a Rachford-Rice solve, outlets vapour first then liquid. Needs the composite key, the latent
   heat above, and reads the pressure every op now propagates. This is also the op that finally makes the rayon item measurable: CLAUDE.md

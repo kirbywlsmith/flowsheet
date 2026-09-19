@@ -130,11 +130,53 @@ A document has three lists: `species`, `units`, `streams`.
 |--------------|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `name`       | yes      | Unique across the document.                                                                                                                                              |
 | `phase`      | yes      | `Solid`, `Liquid` or `Gas`                                                                                                                                               |
-| `molar_mass` | yes      | g/mol                                                                                                                                                                    |
-| `shomate`    | yes      | Heat capacity, [NIST Shomate](https://webbook.nist.gov/chemistry/) `a`-`e`. Only `a` is required; omitted terms are zero, so `{ "a": 75.3 }` is a constant 75.3 J/(mol·K). |
+| `molar_mass` | unless included | g/mol                                                                                                                                                              |
+| `shomate`    | unless included | Heat capacity, [NIST Shomate](https://webbook.nist.gov/chemistry/) `a`-`e`. Only `a` is required; omitted terms are zero, so `{ "a": 75.3 }` is a constant 75.3 J/(mol·K). |
 | `enthalpy_of_formation` | no | Standard enthalpy of formation at 298.15 K, kJ/mol: NIST's `H`. Only needed by a species that a reaction creates or destroys. |
 | `density`    | no       | kg/m³, held constant. Only needed by a species that flows through a `pump`.                                                                              |
 | `vapour_pressure` | no  | Antoine fit `{ "a", "b", "c" }` with `log10(P kPa) = a - b / (c + T K)`. NIST publishes `A` in bar: add 2 to it. Put it on the **liquid** entry of a species declared in two phases. |
+
+#### Included species
+
+For the species below, you only need the name and phase:
+
+```json
+{ "name": "H2O", "phase": "Liquid" }
+```
+
+Anything you add replaces the included value, so adding `"density": 1000` changes only the density.
+If you give both `molar_mass` and `shomate`, nothing is filled in for you. Any other species must be
+written out in full.
+
+Saved files always contain every value, so they give the same result even if this list changes.
+Sources for every value are in `crates/flowsheet/data/species.json`.
+
+<!-- library:start -->
+| Name | Phase | Molar mass (g/mol) | Also carries |
+|------|-------|--------------------|--------------|
+| `H2O` | Liquid | 18.015 | formation enthalpy, density, vapour pressure |
+| `H2O` | Gas | 18.015 | formation enthalpy |
+| `SiO2` | Solid | 60.08 | formation enthalpy |
+| `CuFeS2` | Solid | 183.5 |  |
+| `NaCl` | Solid | 58.443 | formation enthalpy |
+| `N2` | Gas | 28.0134 | formation enthalpy |
+| `O2` | Gas | 31.9988 | formation enthalpy |
+| `H2` | Gas | 2.01588 | formation enthalpy |
+| `Ar` | Gas | 39.948 | formation enthalpy |
+| `CO2` | Gas | 44.0095 | formation enthalpy |
+| `CO` | Gas | 28.0101 | formation enthalpy |
+| `CH4` | Gas | 16.0425 | formation enthalpy |
+| `C2H6` | Gas | 30.069 | formation enthalpy |
+| `C3H8` | Gas | 44.0956 | formation enthalpy |
+| `NH3` | Gas | 17.0305 | formation enthalpy |
+| `SO2` | Gas | 64.064 | formation enthalpy |
+| `CH3OH` | Liquid | 32.0419 | formation enthalpy, density, vapour pressure |
+| `C2H5OH` | Liquid | 46.0684 | formation enthalpy, vapour pressure |
+| `CH3COCH3` | Liquid | 58.0791 | formation enthalpy, vapour pressure |
+| `C6H6` | Liquid | 78.1118 | formation enthalpy, density, vapour pressure |
+| `C7H8` | Liquid | 92.1384 | formation enthalpy, density, vapour pressure |
+| `C6H14` | Liquid | 86.1754 | formation enthalpy, density, vapour pressure |
+<!-- library:end -->
 
 ### `units`
 

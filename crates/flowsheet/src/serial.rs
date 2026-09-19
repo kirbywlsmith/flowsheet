@@ -5,8 +5,9 @@
 
 use crate::MAX_IDS;
 use crate::flowsheet::{self, UnitId};
-use crate::species::{Phase, Species, SpeciesId, SpeciesRegistry};
-use crate::thermo::REFERENCE_K;
+use crate::library;
+use crate::species::{self, Phase, SpeciesId, SpeciesRegistry};
+use crate::thermo::{Antoine, REFERENCE_K, Shomate};
 use crate::{stream, unit};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -27,6 +28,121 @@ pub struct Flowsheet {
     pub units: Vec<Unit>,
     /// Every stream. Order determines port order on the units it connects.
     pub streams: Vec<Stream>,
+}
+
+/// A species as a document writes it: a bare reference to the shipped library, a full entry, or
+/// a reference with some properties overridden.
+///
+/// The mirror type [`crate::Species`] did without until the library existed, because the domain
+/// type could not say "the same as the shipped one": every property here is optional, and
+/// [`Species::resolve`] fills what the document leaves out from [`crate::library`].
+///
+/// The rule is by the two required properties. An entry that gives both `molar_mass` and
+/// `shomate` is **complete** and is taken exactly as written, with no shipped property merged
+/// in - which is what keeps every document written before the library existed loading and
+/// saving byte for byte. An entry that leaves either out is a **reference** to the shipped
+/// species of that name and phase: the library supplies whatever the entry does not give, and
+/// whatever it does give wins. A species that is not shipped has to be complete, exactly as
+/// every document was before.
+///
+/// Saving goes the other way and writes every property out ([`From<&crate::Species>`]), never
+/// the reference: a saved document pins the numbers it was solved with, so a later edit to the
+/// library cannot change a result someone already has. The fields are in the domain type's
+/// order with the same `skip_serializing_if` rules, which is what keeps a document written in
+/// full saving byte for byte.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Species {
+    /// The name, as in [`crate::Species::name`].
+    pub name: String,
+    /// The phase, as in [`crate::Species::phase`].
+    pub phase: Phase,
+    /// g/mol. Required unless the library has this name and phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub molar_mass: Option<f64>,
+    /// Heat capacity coefficients. Required unless the library has this name and phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shomate: Option<Shomate>,
+    /// kJ/mol at 298.15 K. Optional; the library's if it has one and the document does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enthalpy_of_formation: Option<f64>,
+    /// kg/m³. Optional, likewise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density: Option<f64>,
+    /// An Antoine fit in kPa and K. Optional, likewise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vapour_pressure: Option<Antoine>,
+}
+
+impl Species {
+    /// Hands back a complete domain species: this entry as written if it is complete, or the
+    /// shipped species of this name and phase with every property this entry gives written
+    /// over it (see the type's docs for the rule).
+    ///
+    /// Two things a reference cannot say. "The shipped entry *without* its density" - a
+    /// property cannot be removed, only replaced - and "the shipped optional properties on top
+    /// of my own molar mass and heat capacity", because giving both makes the entry complete.
+    /// Either one is written out in full.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::MissingProperty`] if `molar_mass` or `shomate` is neither given nor shipped.
+    pub fn resolve(&self) -> Result<species::Species, LoadError> {
+        // The library is consulted only when the document leaves out something it has to
+        // have. A species that gives both is taken exactly as written, optional properties
+        // included - so a document written before the library existed still loads, and
+        // saves, byte for byte, rather than quietly gaining the shipped formation enthalpy.
+        let complete = self.molar_mass.is_some() && self.shomate.is_some();
+        let shipped = if complete {
+            None
+        } else {
+            library::find(&self.name, self.phase).map(|e| &e.species)
+        };
+        let required = |given: Option<f64>, shipped_value: Option<f64>, field: &'static str| {
+            given
+                .or(shipped_value)
+                .ok_or_else(|| LoadError::MissingProperty {
+                    name: self.name.clone(),
+                    phase: self.phase,
+                    field,
+                })
+        };
+        Ok(species::Species {
+            name: self.name.clone(),
+            phase: self.phase,
+            molar_mass: required(self.molar_mass, shipped.map(|s| s.molar_mass), "molar_mass")?,
+            // `Shomate` is not an `f64`, so the closure above does not fit; spelled out once.
+            shomate: self.shomate.or(shipped.map(|s| s.shomate)).ok_or_else(|| {
+                LoadError::MissingProperty {
+                    name: self.name.clone(),
+                    phase: self.phase,
+                    field: "shomate",
+                }
+            })?,
+            enthalpy_of_formation: self
+                .enthalpy_of_formation
+                .or(shipped.and_then(|s| s.enthalpy_of_formation)),
+            density: self.density.or(shipped.and_then(|s| s.density)),
+            vapour_pressure: self
+                .vapour_pressure
+                .or(shipped.and_then(|s| s.vapour_pressure)),
+        })
+    }
+}
+
+impl From<&species::Species> for Species {
+    /// Writes every property out, so the document stands on its own.
+    fn from(s: &species::Species) -> Self {
+        Self {
+            name: s.name.clone(),
+            phase: s.phase,
+            molar_mass: Some(s.molar_mass),
+            shomate: Some(s.shomate),
+            enthalpy_of_formation: s.enthalpy_of_formation,
+            density: s.density,
+            vapour_pressure: s.vapour_pressure,
+        }
+    }
 }
 
 /// The composition and thermodynamic state of a stream.
@@ -343,6 +459,16 @@ pub enum LoadError {
         /// The offending name.
         name: String,
     },
+    /// A species leaves out a property it has to have, and the shipped library has no entry of
+    /// that name and phase to take it from.
+    MissingProperty {
+        /// The species.
+        name: String,
+        /// Its phase - part of the lookup, since water is shipped as a liquid and as a gas.
+        phase: Phase,
+        /// `"molar_mass"` or `"shomate"`, the two every species needs.
+        field: &'static str,
+    },
     /// A numeric field is outside the range the domain accepts.
     BadValue {
         /// Where the value appeared.
@@ -425,6 +551,11 @@ impl fmt::Display for LoadError {
                 f,
                 "species `{name}` ends in a phase suffix - `(s)`, `(l)` and `(g)` are reserved \
                  for telling phases apart"
+            ),
+            LoadError::MissingProperty { name, phase, field } => write!(
+                f,
+                "species `{name}` ({phase:?}) gives no `{field}`, and no shipped species has that \
+                 name and phase to take it from"
             ),
             LoadError::BadValue {
                 at,
@@ -1062,6 +1193,9 @@ impl Flowsheet {
         let mut registry = SpeciesRegistry::default();
         for s in &doc.species {
             let at = Location::Species(s.name.clone());
+            // Resolved first, checked second, so a shipped entry and an inline one meet the
+            // same checks.
+            let s = s.resolve()?;
             require(
                 s.molar_mass.is_finite() && s.molar_mass > 0.0,
                 &at,
@@ -1112,7 +1246,7 @@ impl Flowsheet {
                     phase: s.phase,
                 });
             }
-            registry.insert(s.clone());
+            registry.insert(s);
         }
 
         let mut fs = flowsheet::Flowsheet::new(registry);
@@ -1502,7 +1636,7 @@ impl From<&flowsheet::ValidFlowsheet> for Flowsheet {
             .collect();
 
         Self {
-            species: registry.all().to_vec(),
+            species: registry.all().iter().map(Species::from).collect(),
             units,
             streams,
         }
@@ -1993,10 +2127,12 @@ mod tests {
 
     #[test]
     fn a_species_without_heat_capacity_data_is_rejected() {
-        let json = r#"{ "species": [{ "name": "H2O", "phase": "Liquid", "molar_mass": 18.015 }],
+        // An unshipped name: water without a heat capacity is a reference to the shipped
+        // water now, and loads.
+        let json = r#"{ "species": [{ "name": "X", "phase": "Liquid", "molar_mass": 18.015 }],
                         "units": [], "streams": [] }"#;
-        let e = serde_json::from_str::<Flowsheet>(json).unwrap_err();
-        assert!(e.to_string().contains("missing field `shomate`"), "{e}");
+        let e = load(json).unwrap_err();
+        assert!(e.to_string().contains("gives no `shomate`"), "{e}");
     }
 
     #[test]
@@ -2308,6 +2444,117 @@ mod tests {
                 "{efficiency}"
             );
         }
+    }
+
+    // ---- the shipped library ----
+
+    /// A document whose one species is `entry`, written however the test likes.
+    fn species_only(entry: &str) -> String {
+        format!(r#"{{ "species": [{entry}], "units": [], "streams": [] }}"#)
+    }
+
+    #[test]
+    fn a_bare_reference_takes_every_property_from_the_library() {
+        let fs = load(&species_only(r#"{ "name": "H2O", "phase": "Liquid" }"#))
+            .unwrap()
+            .validate()
+            .unwrap();
+        let water = &fs.registry().all()[0];
+        let shipped = &crate::library::find("H2O", Phase::Liquid).unwrap().species;
+        assert_eq!(water.molar_mass, shipped.molar_mass);
+        assert_eq!(water.enthalpy_of_formation, shipped.enthalpy_of_formation);
+        assert_eq!(
+            serde_json::to_string(&water.shomate).unwrap(),
+            serde_json::to_string(&shipped.shomate).unwrap()
+        );
+        assert!(water.vapour_pressure.is_some());
+    }
+
+    #[test]
+    fn a_property_the_document_gives_wins_and_the_rest_still_come_from_the_library() {
+        let fs = load(&species_only(
+            r#"{ "name": "H2O", "phase": "Liquid", "shomate": { "a": 75.3 }, "density": 1000.0 }"#,
+        ))
+        .unwrap()
+        .validate()
+        .unwrap();
+        let water = &fs.registry().all()[0];
+        assert_eq!(
+            serde_json::to_string(&water.shomate).unwrap(),
+            r#"{"a":75.3}"#
+        );
+        assert_eq!(water.density, Some(1000.0));
+        assert_eq!(
+            water.molar_mass, 18.015,
+            "the molar mass is still the shipped one"
+        );
+        assert_eq!(water.enthalpy_of_formation, Some(-285.83));
+    }
+
+    #[test]
+    fn a_species_that_is_not_shipped_must_be_written_out_in_full() {
+        let e = load(&species_only(
+            r#"{ "name": "unobtainium", "phase": "Solid", "molar_mass": 300.0 }"#,
+        ))
+        .unwrap_err();
+        assert_eq!(
+            e,
+            LoadError::MissingProperty {
+                name: "unobtainium".into(),
+                phase: Phase::Solid,
+                field: "shomate",
+            }
+        );
+        assert_eq!(
+            e.to_string(),
+            "species `unobtainium` (Solid) gives no `shomate`, and no shipped species has that \
+             name and phase to take it from"
+        );
+
+        // The phase is part of the lookup: water is shipped as a liquid, not as a solid.
+        let e = load(&species_only(r#"{ "name": "H2O", "phase": "Solid" }"#)).unwrap_err();
+        assert!(matches!(
+            e,
+            LoadError::MissingProperty {
+                field: "molar_mass",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_shipped_entry_meets_the_same_checks_as_an_inline_one() {
+        // Overriding the heat capacity with a negative one is caught by the check every species
+        // gets, library or not.
+        let e = load(&species_only(
+            r#"{ "name": "H2O", "phase": "Liquid", "shomate": { "a": -75.3 } }"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(e, LoadError::BadValue { ref field, .. } if field == "shomate"));
+    }
+
+    #[test]
+    fn saving_writes_the_resolved_properties_not_the_reference() {
+        let fs = load(&species_only(r#"{ "name": "H2O", "phase": "Liquid" }"#))
+            .unwrap()
+            .validate()
+            .unwrap();
+        let saved = serde_json::to_string(&Flowsheet::from(&fs)).unwrap();
+        assert!(saved.contains(r#""molar_mass":18.015"#), "{saved}");
+        assert!(saved.contains(r#""shomate":{"a":-203.606"#), "{saved}");
+        assert!(
+            saved.contains(r#""vapour_pressure":{"a":7.08354"#),
+            "{saved}"
+        );
+    }
+
+    #[test]
+    fn a_misspelt_field_on_a_reference_is_rejected() {
+        let e = serde_json::from_str::<Flowsheet>(&species_only(
+            r#"{ "name": "H2O", "phase": "Liquid", "densty": 997.0 }"#,
+        ))
+        .unwrap_err();
+        assert!(e.to_string().contains("densty"), "{e}");
     }
 
     #[test]

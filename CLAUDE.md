@@ -270,6 +270,40 @@ Never mix severities in one unlabelled list.
   independent property sets and one law between them, so a fit with its `A` still in bar or a formation enthalpy
   off by a phase lands far outside the tolerance. It is the "measured against the absolute basis" the TODO item
   asked for, and the `GAS_CONSTANT` the compressor introduced is what makes it a one-line test.
+- **The shipped species library is `crates/flowsheet/data/species.json`**, compiled in with `include_str!` and parsed
+  once behind a `LazyLock` in `library.rs` (an embedded resource and a `Lazy<T>`). A bad file is a panic, not a
+  `Result`: it is part of the crate, and the tests parse it on every run. The file's record is its own struct with a
+  `source` field rather than `Species` with `source` flattened beside it, because `flatten` and `deny_unknown_fields`
+  cannot share a struct - the wall `serial::Op` hit - and a typo in the shipped file must be an error.
+- **A document's species entry is complete or a reference, decided by the two required properties.** Giving both
+  `molar_mass` and `shomate` makes it complete, and it is taken exactly as written with nothing merged in; leaving
+  either out makes it a reference to the shipped species of that name and phase, which supplies every property the
+  entry does not give. The rule is by completeness rather than "always merge" because merging would quietly give
+  every existing document the shipped formation enthalpy, density and vapour pressure of any species it happens to
+  share a name with, and it would stop saving byte for byte. The price is two things a reference cannot say: "the
+  shipped entry without its density" (a property can be replaced, not removed) and "my own cp with the shipped
+  optional properties" (giving cp makes it complete). Either is written out in full. `serial::Species` is the
+  mirror type that makes this possible, every property optional; `Species::resolve` does the merge, and
+  `LoadError::MissingProperty` names the species, its phase and the field when a reference points at nothing shipped.
+  The loader's checks run on the resolved species, so a shipped entry meets the same checks as an inline one.
+- **Saving writes every property out, never the reference.** A saved document pins the numbers it was solved with,
+  so a later edit to the library cannot change a result someone already has. The cost is that a document written as
+  references does not round-trip byte for byte; every fixture is written in full, so none moved.
+- **Every entry is copied from its NIST WebBook page, not remembered**, and its `source` names the page, the fit's
+  range and the original reference. Where NIST publishes no Shomate fit - every organic here - the entry says what
+  stands in for one. Liquids carry a constant cp at 298.15 K, from the NIST fluid tables where the species is in them
+  (they also supply the density) and from the condensed-phase page otherwise, which is why ethanol and acetone ship
+  without a density. Ethane and propane carry three terms fitted by this crate exactly through NIST's tabulated gas cp
+  at 298.15, 400 and 500 K, and say not to trust them far outside that. Steam uses NIST's 500-1700 K fit
+  extrapolated down, which is within 0.03% at 298.15 K. Elements carry a formation enthalpy of exactly 0, NIST's
+  `H`. Hematite, calcite and graphite were planned and dropped: NIST has no fit for any of them.
+- **The library is checked against physics, not only against itself.** Beyond the structural tests (every entry
+  sourced, no duplicate name and phase, every entry passes the loader's checks, cp positive at 298, 350 and 400 K),
+  every vapour-pressure fit must boil within 1 K of NIST's normal boiling point, a list that sits in the test and
+  that a new fit must join; that is what catches an Antoine `A` left in bar, which moves water from 373 K to 587 K.
+  The shipped water phases must give the steam-table latent heat. And the README's table of shipped species is
+  rendered from the library by a test and compared between two comment markers, so the two cannot drift; the test
+  prints the table to paste in when they do. `demo`'s water and quartz constants are pinned equal to the library's.
 - **The compressor is isentropic with an efficiency over the ideal gas**, and needed no new property data:
   `Shomate::entropy` is `∫cp/T dT` from the same five coefficients, a difference only - NIST's `G` would make it
   absolute and is still not stored, because both ends of an isentropic path carry the same offset. Pressure enters
@@ -301,7 +335,8 @@ Never mix severities in one unlabelled list.
   value reads as zero too, which is why every reaction participant is required to carry one (see the reactor entries).
   With it set, temperatures agree to 1e-9 rather than bit for bit: Newton subtracts enthalpy flows of millions of
   MJ/h to find a few degrees, which costs about three digits.
-- `shomate` is **required** on the wire. A defaulted temperature is a guess at state; a defaulted cp would fabricate a
+- `shomate` is **required** on the wire, unless the species is shipped (the library entry above), in which case the
+  library's is a sourced value rather than a default. A defaulted temperature is a guess at state; a defaulted cp would fabricate a
   property and give plausible, wrong temperatures. Loading checks cp > 0 at 298.15 K - one point, not the whole fit.
 - Units are picked so **no conversion factor appears**: `Shomate` is per mole, `Species::heat_capacity` / `enthalpy`
   divide by `molar_mass` to get per kg, and `Stream::heat_capacity` / `enthalpy` are MJ/(h·K) and MJ/h, because t/h
@@ -423,7 +458,9 @@ Never mix severities in one unlabelled list.
 - JSON is a **separate wire format** in `serial.rs`, not serde attributes on the domain types. `serial::Flowsheet`
   etc. reuse the domain names and are told apart by module path, the Rust convention over a `Doc`/`Dto` suffix. The
   rule for what gets `#[derive(Deserialize)]` directly: types whose privacy encodes an invariant (`SpeciesId`,
-  `Stream`, `Flowsheet`) get a mirror type; all-public-field data with no constructor (`Species`, `Phase`) does not.
+  `Stream`, `Flowsheet`) get a mirror type, and so does any type the document can write in a shape the domain type
+  cannot hold - `Species`, since the library entry below, because a document may leave out its required properties
+  and point at a shipped species instead. Plain data with no such gap (`Phase`, `Shomate`, `Antoine`) does not.
 - Loading **replays the builder** (`insert` / `add_unit` / `add_stream`) rather than constructing a `Flowsheet`
   directly, so every invariant those methods maintain still holds. `TryFrom` returns a plain `Flowsheet`; the caller
   still calls `validate`. `LoadError` fails fast — unlike `check`, which collects — because load errors are typos.
@@ -580,6 +617,8 @@ crates/flowsheet/       the library: domain types, solver, serial, report. Depen
   src/unit.rs           the `UnitOp` trait, `Arity`, `Unit`, and the free functions ops are built from.
   src/unit/             one file per operation, re-exported flat from `unit.rs`.
   src/thermo.rs         Shomate heat capacity and enthalpy, per mole. `Species` converts to per kg.
+  src/library.rs        the shipped species library, loaded once from data/species.json.
+  data/species.json     the shipped species, each with the source of its numbers.
   benches/solve.rs      criterion, `harness = false`. Solve time vs unit count and vs tear count.
 crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, progress, error printing.
 ```

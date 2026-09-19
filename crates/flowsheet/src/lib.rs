@@ -9,6 +9,7 @@
 
 pub mod demo;
 pub mod flowsheet;
+pub mod library;
 pub mod report;
 pub mod serial;
 pub mod solver;

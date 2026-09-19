@@ -1,0 +1,145 @@
+[
+  {
+    "name": "H2O", "phase": "Liquid", "molar_mass": 18.015,
+    "shomate": { "a": -203.606, "b": 1523.29, "c": -3196.413, "d": 2474.455, "e": 3.855326 },
+    "enthalpy_of_formation": -285.83,
+    "density": 997.05,
+    "vapour_pressure": { "a": 7.08354, "b": 1663.125, "c": -45.622 },
+    "source": "NIST WebBook, water (CAS 7732-18-5): Shomate 298-500 K and enthalpy of formation, condensed phase (Chase, 1998); Antoine 344-373 K (Bridgeman and Aldrich, 1964; coefficients calculated by NIST), A raised by 2 for kPa; density at 298.15 K and 101.325 kPa from the NIST fluid properties tables."
+  },
+  {
+    "name": "H2O", "phase": "Gas", "molar_mass": 18.015,
+    "shomate": { "a": 30.092, "b": 6.832514, "c": 6.793435, "d": -2.53448, "e": 0.082139 },
+    "enthalpy_of_formation": -241.83,
+    "source": "NIST WebBook, water (CAS 7732-18-5): gas Shomate and enthalpy of formation (Chase, 1998). The fit is published for 500-1700 K and is extrapolated below 500 K; it gives 33.59 J/(mol.K) at 298.15 K against the tabulated 33.58."
+  },
+  {
+    "name": "SiO2", "phase": "Solid", "molar_mass": 60.08,
+    "shomate": { "a": -6.076591, "b": 251.6755, "c": -324.7964, "d": 168.5604, "e": 0.002548 },
+    "enthalpy_of_formation": -910.86,
+    "source": "NIST WebBook, silicon dioxide (CAS 14808-60-7): alpha quartz Shomate 298-847 K and enthalpy of formation (Chase, 1998)."
+  },
+  {
+    "name": "CuFeS2", "phase": "Solid", "molar_mass": 183.5,
+    "shomate": { "a": 95.0 },
+    "source": "Estimate. NIST publishes no fit for chalcopyrite; Neumann-Kopp over the NIST-JANAF element fits at 298.15 K (Cu 24.47 + Fe 25.10 + 2 S 22.70 = 94.97 J/(mol.K)), held constant. No enthalpy of formation, so it cannot take part in a reaction."
+  },
+  {
+    "name": "NaCl", "phase": "Solid", "molar_mass": 58.443,
+    "shomate": { "a": 50.72389, "b": 6.672267, "c": -2.517167, "d": 10.15934, "e": -0.200675 },
+    "enthalpy_of_formation": -411.12,
+    "source": "NIST WebBook, sodium chloride (CAS 7647-14-5): solid Shomate 298-1073 K and enthalpy of formation (Chase, 1998)."
+  },
+  {
+    "name": "N2", "phase": "Gas", "molar_mass": 28.0134,
+    "shomate": { "a": 28.98641, "b": 1.853978, "c": -9.647459, "d": 16.63537, "e": 0.000117 },
+    "enthalpy_of_formation": 0.0,
+    "source": "NIST WebBook, nitrogen (CAS 7727-37-9): gas Shomate 100-500 K (Chase, 1998). An element in its standard state, so zero enthalpy of formation, which is NIST's H."
+  },
+  {
+    "name": "O2", "phase": "Gas", "molar_mass": 31.9988,
+    "shomate": { "a": 31.32234, "b": -20.23531, "c": 57.86644, "d": -36.50624, "e": -0.007374 },
+    "enthalpy_of_formation": 0.0,
+    "source": "NIST WebBook, oxygen (CAS 7782-44-7): gas Shomate 100-700 K (Chase, 1998). An element in its standard state, so zero enthalpy of formation, which is NIST's H."
+  },
+  {
+    "name": "H2", "phase": "Gas", "molar_mass": 2.01588,
+    "shomate": { "a": 33.066178, "b": -11.363417, "c": 11.432816, "d": -2.772874, "e": -0.158558 },
+    "enthalpy_of_formation": 0.0,
+    "source": "NIST WebBook, hydrogen (CAS 1333-74-0): gas Shomate 298-1000 K (Chase, 1998). An element in its standard state, so zero enthalpy of formation, which is NIST's H."
+  },
+  {
+    "name": "Ar", "phase": "Gas", "molar_mass": 39.948,
+    "shomate": { "a": 20.786 },
+    "enthalpy_of_formation": 0.0,
+    "source": "NIST WebBook, argon (CAS 7440-37-1): gas Shomate 298-6000 K (Chase, 1998). B to E are all below 3e-7 and are left out, so cp is a constant 20.786 J/(mol.K). An element, so zero enthalpy of formation."
+  },
+  {
+    "name": "CO2", "phase": "Gas", "molar_mass": 44.0095,
+    "shomate": { "a": 24.99735, "b": 55.18696, "c": -33.69137, "d": 7.948387, "e": -0.136638 },
+    "enthalpy_of_formation": -393.52,
+    "source": "NIST WebBook, carbon dioxide (CAS 124-38-9): gas Shomate 298-1200 K and enthalpy of formation (Chase, 1998)."
+  },
+  {
+    "name": "CO", "phase": "Gas", "molar_mass": 28.0101,
+    "shomate": { "a": 25.56759, "b": 6.09613, "c": 4.054656, "d": -2.671301, "e": 0.131021 },
+    "enthalpy_of_formation": -110.53,
+    "source": "NIST WebBook, carbon monoxide (CAS 630-08-0): gas Shomate 298-1300 K and enthalpy of formation (Chase, 1998)."
+  },
+  {
+    "name": "CH4", "phase": "Gas", "molar_mass": 16.0425,
+    "shomate": { "a": -0.703029, "b": 108.4773, "c": -42.52157, "d": 5.862788, "e": 0.678565 },
+    "enthalpy_of_formation": -74.87,
+    "source": "NIST WebBook, methane (CAS 74-82-8): gas Shomate 298-1300 K and enthalpy of formation (Chase, 1998)."
+  },
+  {
+    "name": "C2H6", "phase": "Gas", "molar_mass": 30.069,
+    "shomate": { "a": 13.0192, "b": 136.1437, "c": -12.6041 },
+    "enthalpy_of_formation": -84.0,
+    "source": "NIST WebBook, ethane (CAS 74-84-0), which publishes no Shomate fit: A to C fitted by this crate exactly through the tabulated gas cp at 298.15, 400 and 500 K (52.49, 65.46, 77.94 J/(mol.K); Gurvich, Veyts, et al., 1989); do not trust it far outside 298-500 K. Enthalpy of formation from Manion, 2002."
+  },
+  {
+    "name": "C3H8", "phase": "Gas", "molar_mass": 44.0956,
+    "shomate": { "a": 5.231, "b": 250.8654, "c": -72.2949 },
+    "enthalpy_of_formation": -104.7,
+    "source": "NIST WebBook, propane (CAS 74-98-6), which publishes no Shomate fit: A to C fitted by this crate exactly through the tabulated gas cp at 298.15, 400 and 500 K (73.60, 94.01, 112.59 J/(mol.K); Chao, 1973); do not trust it far outside 298-500 K. Enthalpy of formation from Pittam and Pilcher, 1972."
+  },
+  {
+    "name": "NH3", "phase": "Gas", "molar_mass": 17.0305,
+    "shomate": { "a": 19.99563, "b": 49.77119, "c": -15.37599, "d": 1.921168, "e": 0.189174 },
+    "enthalpy_of_formation": -45.9,
+    "source": "NIST WebBook, ammonia (CAS 7664-41-7): gas Shomate 298-1400 K and enthalpy of formation (Chase, 1998)."
+  },
+  {
+    "name": "SO2", "phase": "Gas", "molar_mass": 64.064,
+    "shomate": { "a": 21.43049, "b": 74.35094, "c": -57.75217, "d": 16.35534, "e": 0.086731 },
+    "enthalpy_of_formation": -296.84,
+    "source": "NIST WebBook, sulfur dioxide (CAS 7446-09-5): gas Shomate 298-1200 K and enthalpy of formation (Chase, 1998)."
+  },
+  {
+    "name": "CH3OH", "phase": "Liquid", "molar_mass": 32.0419,
+    "shomate": { "a": 81.212 },
+    "enthalpy_of_formation": -239.5,
+    "density": 786.33,
+    "vapour_pressure": { "a": 7.20409, "b": 1581.341, "c": -33.5 },
+    "source": "NIST WebBook, methanol (CAS 67-56-1), which publishes no liquid Shomate fit: cp and density at 298.15 K and 101.325 kPa from the NIST fluid properties tables, cp held constant. Enthalpy of formation from Chao and Rossini, 1965. Antoine 288.1-356.83 K (Ambrose and Sprake, 1970), A raised by 2 for kPa."
+  },
+  {
+    "name": "C2H5OH", "phase": "Liquid", "molar_mass": 46.0684,
+    "shomate": { "a": 112.4 },
+    "enthalpy_of_formation": -276.0,
+    "vapour_pressure": { "a": 7.24677, "b": 1598.673, "c": -46.424 },
+    "source": "NIST WebBook, ethanol (CAS 64-17-5), which publishes no liquid Shomate fit and is not in the NIST fluid tables, so no density: cp at 298.15 K from Petrov, Peshekhodov, et al., 1989, held constant. Enthalpy of formation is NIST's average of six values. Antoine 292.77-366.63 K (Ambrose and Sprake, 1970), A raised by 2 for kPa."
+  },
+  {
+    "name": "CH3COCH3", "phase": "Liquid", "molar_mass": 58.0791,
+    "shomate": { "a": 125.45 },
+    "enthalpy_of_formation": -249.4,
+    "vapour_pressure": { "a": 6.42448, "b": 1312.253, "c": -32.445 },
+    "source": "NIST WebBook, acetone (CAS 67-64-1), which publishes no liquid Shomate fit and is not in the NIST fluid tables, so no density: cp at 298.15 K from Malhotra and Woolf, 1991, held constant. Enthalpy of formation from Wiberg, Crocker, et al., 1991. Antoine 259.16-507.60 K (Ambrose, Sprake, et al., 1974), A raised by 2 for kPa."
+  },
+  {
+    "name": "C6H6", "phase": "Liquid", "molar_mass": 78.1118,
+    "shomate": { "a": 135.42 },
+    "enthalpy_of_formation": 49.0,
+    "density": 873.66,
+    "vapour_pressure": { "a": 6.01814, "b": 1203.835, "c": -53.226 },
+    "source": "NIST WebBook, benzene (CAS 71-43-2), which publishes no liquid Shomate fit: cp and density at 298.15 K and 101.325 kPa from the NIST fluid properties tables, cp held constant. Enthalpy of formation from Roux, Temprado, et al., 2008. Antoine 287.70-354.07 K (Williamham, Taylor, et al., 1945), A raised by 2 for kPa."
+  },
+  {
+    "name": "C7H8", "phase": "Liquid", "molar_mass": 92.1384,
+    "shomate": { "a": 156.74 },
+    "enthalpy_of_formation": 12.0,
+    "density": 862.24,
+    "vapour_pressure": { "a": 6.07827, "b": 1343.943, "c": -53.773 },
+    "source": "NIST WebBook, toluene (CAS 108-88-3), which publishes no liquid Shomate fit: cp and density at 298.15 K and 101.325 kPa from the NIST fluid properties tables, cp held constant. Enthalpy of formation from Roux, Temprado, et al., 2008. Antoine 308.52-384.66 K (Williamham, Taylor, et al., 1945), A raised by 2 for kPa."
+  },
+  {
+    "name": "C6H14", "phase": "Liquid", "molar_mass": 86.1754,
+    "shomate": { "a": 195.84 },
+    "enthalpy_of_formation": -198.7,
+    "density": 654.85,
+    "vapour_pressure": { "a": 6.00266, "b": 1171.53, "c": -48.784 },
+    "source": "NIST WebBook, n-hexane (CAS 110-54-3), which publishes no liquid Shomate fit: cp and density at 298.15 K and 101.325 kPa from the NIST fluid properties tables, cp held constant. Enthalpy of formation from Good and Smith, 1969. Antoine 286.18-342.69 K (Williamham, Taylor, et al., 1945), A raised by 2 for kPa."
+  }
+]
