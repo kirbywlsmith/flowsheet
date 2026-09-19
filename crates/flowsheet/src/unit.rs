@@ -21,8 +21,8 @@ use std::fmt::{self, Debug};
 /// thread boundary.
 ///
 /// This is for **user input the numerics cannot answer** - a heater duty that cools a stream
-/// past absolute zero, a reaction that consumes more of a reactant than the inlet carries, later
-/// a flash on a composition with no two-phase split. Bad ids,
+/// past absolute zero, a reaction that consumes more of a reactant than the inlet carries, a flash
+/// reached by a substance it has no vapour pressure for. Bad ids,
 /// mismatched arities and a split fraction outside `0.0..=1.0` stay panics: those are bugs in
 /// the calling code, and the JSON boundary already rejects them with a
 /// [`crate::serial::LoadError`].
@@ -158,6 +158,7 @@ impl Arity {
 mod compressor;
 mod conversion_reactor;
 mod feed;
+mod flash;
 mod flotation;
 mod heater;
 mod mixer;
@@ -172,6 +173,7 @@ mod tank;
 pub use compressor::Compressor;
 pub use conversion_reactor::ConversionReactor;
 pub use feed::Feed;
+pub use flash::Flash;
 pub use flotation::Flotation;
 pub use heater::Heater;
 pub use mixer::Mixer;
@@ -664,6 +666,271 @@ pub fn recover(inlet: &Stream, recovery: &[f64]) -> (Stream, Stream) {
     (concentrate, tails)
 }
 
+/// How close two iterates of [`rachford_rice`] must come before it stops, relative to the
+/// smaller of `V` and `1 - V`.
+///
+/// Relative, and to the smaller side, because each outlet's flows scale with its own share: a
+/// flash that barely boils has a vapour fraction of 1e-8, and an absolute tolerance of 1e-12
+/// would leave its vapour flows good to four digits. Far inside the solver's 1e-9 for the same
+/// reason [`TEMPERATURE_TOLERANCE_K`] is.
+const VAPOUR_FRACTION_TOLERANCE: f64 = 1e-12;
+
+/// Newton converges in a handful of steps once it is close; bisection halves the bracket on the
+/// way there. 200 halvings would reach any fraction a `f64` can hold, so exhausting this is not
+/// something the bracket allows.
+const MAX_RACHFORD_RICE_STEPS: usize = 200;
+
+/// The fraction of the moles in a feed that leave as vapour, `V` in `0.0..=1.0`, given each
+/// component's molar amount and its K-value (vapour mole fraction over liquid mole fraction).
+///
+/// Solves the Rachford-Rice equation
+///
+/// ```text
+/// f(V) = sum n_i (K_i - 1) / (1 + V (K_i - 1)) = 0
+/// ```
+///
+/// which is what "the liquid's mole fractions sum to one, and so do the vapour's" becomes once
+/// both are written in terms of `V`. `amounts` may be on any scale - moles, Mmol/h or mole
+/// fractions - because `f` is linear in them and the root does not move.
+///
+/// **A feed that does not split is an answer, not an error.** Below its bubble point
+/// (`sum n_i K_i <= sum n_i`) a feed is all liquid and this returns exactly `0.0`; above its dew
+/// point (`sum n_i / K_i <= sum n_i`) it is all vapour and this returns exactly `1.0`. Only
+/// between the two does `f` have a root inside `(0, 1)`, and there it has exactly one: every term
+/// falls as `V` rises, so `f` does too.
+///
+/// A K-value of `f64::INFINITY` is a component that never condenses, like nitrogen over water. Its
+/// term is the limit `n / V`, so a feed carrying any is never all liquid. A K-value of `0.0` is
+/// one that never evaporates, and a feed carrying any is never all vapour. Both need no special
+/// case in the two checks above - `n * inf` and `n / 0` are infinite, `n / inf` and `n * 0` are
+/// zero - which is why the checks skip an absent component rather than letting `0 * inf` make a
+/// `NaN`.
+///
+/// Newton from `V = 0.5`, held inside a bracket that every step narrows and falling back to
+/// bisection whenever a step would leave it.
+///
+/// # Panics
+/// If the two slices differ in length, an amount is negative or not finite, a K-value is
+/// negative or `NaN`, or every amount is zero. The caller builds all of these from a stream and
+/// a vapour pressure, so any of them is a bug.
+pub fn rachford_rice(amounts: &[f64], k: &[f64]) -> f64 {
+    assert_eq!(
+        amounts.len(),
+        k.len(),
+        "rachford_rice needs one K-value per amount"
+    );
+    assert!(
+        amounts.iter().all(|n| n.is_finite() && *n >= 0.0),
+        "amounts must be finite and not negative, got {amounts:?}"
+    );
+    // `>=` is false for `NaN`, and true for infinity, which is allowed.
+    assert!(
+        k.iter().all(|k| *k >= 0.0),
+        "K-values must not be negative or NaN, got {k:?}"
+    );
+    let total: f64 = amounts.iter().sum();
+    assert!(total > 0.0, "rachford_rice needs something to flash");
+
+    // Only the components that are there. A closure rather than a collected `Vec`, so each of
+    // the three passes below re-walks the slices without allocating.
+    let present = || amounts.iter().zip(k).filter(|(n, _)| **n > 0.0);
+
+    if present().map(|(n, k)| n * k).sum::<f64>() <= total {
+        return 0.0; // at or below the bubble point
+    }
+    if present().map(|(n, k)| n / k).sum::<f64>() <= total {
+        return 1.0; // at or above the dew point
+    }
+
+    // `f` and its slope together, since they share every division.
+    let residual = |v: f64| {
+        present().fold((0.0, 0.0), |(f, slope), (&n, &k)| {
+            if k.is_infinite() {
+                (f + n / v, slope - n / (v * v))
+            } else {
+                let d = 1.0 + v * (k - 1.0);
+                (
+                    f + n * (k - 1.0) / d,
+                    slope - n * (k - 1.0).powi(2) / (d * d),
+                )
+            }
+        })
+    };
+
+    let (mut lo, mut hi, mut v) = (0.0, 1.0, 0.5);
+    for _ in 0..MAX_RACHFORD_RICE_STEPS {
+        let (f, slope) = residual(v);
+        // `f` falls as `V` rises, so a positive residual puts the root to the right of `v`.
+        if f > 0.0 {
+            lo = v;
+        } else {
+            hi = v;
+        }
+
+        let newton = v - f / slope;
+        let next = if newton > lo && newton < hi {
+            newton
+        } else {
+            0.5 * (lo + hi)
+        };
+        if (next - v).abs() <= VAPOUR_FRACTION_TOLERANCE * next.min(1.0 - next) {
+            return next;
+        }
+        v = next;
+    }
+    v
+}
+
+/// One substance, as [`flash`] sees it: every declared phase of a name that takes part in the
+/// vapour-liquid split, with where its mass goes.
+struct Component {
+    /// The index of the liquid entry, if the substance has one.
+    liquid: Option<usize>,
+    /// The index of the gas entry, if the substance has one.
+    gas: Option<usize>,
+    /// Both phases' inlet flows together, t/h.
+    mass: f64,
+    /// The same flow in Mmol/h, over the molar mass of one phase.
+    moles: f64,
+    /// The K-value: `0.0` for a liquid that never evaporates, infinite for a gas that never
+    /// condenses, `Psat(T) / P` for a substance declared in both phases.
+    k: f64,
+}
+
+/// Brings `inlet` to `temperature` (K) and `pressure` (kPa) and splits it into a
+/// (vapour, liquid) pair in equilibrium, both leaving at that temperature and pressure.
+///
+/// **Species are paired by name.** A name declared as both a `Liquid` and a `Gas` is one
+/// substance in two phases: its two inlet flows are pooled, split by Rachford-Rice
+/// ([`rachford_rice`]), and written back under the gas entry in the vapour and the liquid entry
+/// in the liquid. Its K-value is Raoult's law, `Psat(T) / P`, with `Psat` read from the liquid
+/// entry's [`Species::vapour_pressure`]. Everything else goes to the outlet its phase belongs in:
+///
+/// - a gas with no liquid entry never condenses (nitrogen over water). It leaves in the vapour,
+///   and it takes part in the split - it is what the evaporating water's partial pressure has
+///   to share the vapour with.
+/// - a liquid with no gas entry and no vapour pressure never evaporates. It leaves in the
+///   liquid, and it takes part in the split too, diluting the liquid the way Raoult's law says.
+/// - a solid leaves in the liquid, as the drum's bottoms, and takes **no** part in the split: it
+///   is a phase of its own and does not dissolve, so it dilutes nothing.
+///
+/// Mass is split rather than moles, so it is conserved exactly even if a document gives a
+/// substance's two phases slightly different molar masses. The moles Rachford-Rice sees are the
+/// pooled mass over the liquid entry's molar mass.
+///
+/// Isothermal: nothing solves a temperature, and the latent heat of whatever evaporates is what
+/// [`crate::report::duty`] reports the drum took in.
+///
+/// An inlet with nothing to split - empty, or only solids - returns an empty vapour and a liquid
+/// holding the solids, which is what a recycle's first pass hands a flash.
+///
+/// # Errors
+/// If a flowing substance is declared in both phases but its liquid has no vapour pressure, so
+/// its split is unknown; or if a flowing liquid has a vapour pressure but no gas entry, so the
+/// vapour it would make has nowhere to go. Which species reach a flash is a property of the
+/// solved flows and not of the document, the same reason [`pump_work`]'s missing density is an
+/// error rather than a load check.
+///
+/// # Panics
+/// If `temperature` or `pressure` is not finite and positive. Loading rejects both.
+pub fn flash(
+    registry: &SpeciesRegistry,
+    inlet: &Stream,
+    temperature: f64,
+    pressure: f64,
+) -> Result<(Stream, Stream), EvalError> {
+    assert!(
+        temperature.is_finite() && temperature > 0.0,
+        "flash temperature must be finite and positive, got {temperature}"
+    );
+    assert!(
+        pressure.is_finite() && pressure > 0.0,
+        "flash pressure must be finite and positive, got {pressure}"
+    );
+
+    let mut vapour = Stream::zeros(registry, temperature, pressure);
+    let mut liquid = Stream::zeros(registry, temperature, pressure);
+
+    let mut components = Vec::new();
+    for (i, (s, &flow)) in registry.all().iter().zip(inlet.flows()).enumerate() {
+        match s.phase {
+            Phase::Solid => liquid.flows_mut()[i] = flow,
+            Phase::Gas => {
+                if registry.find(&s.name, Phase::Liquid).is_some() {
+                    continue; // one substance in two phases; its liquid entry handles both
+                }
+                components.push(Component {
+                    liquid: None,
+                    gas: Some(i),
+                    mass: flow,
+                    moles: flow / s.molar_mass,
+                    k: f64::INFINITY,
+                });
+            }
+            Phase::Liquid => {
+                let gas = registry.find(&s.name, Phase::Gas).map(SpeciesId::as_usize);
+                let mass = flow + gas.map_or(0.0, |g| inlet.flows()[g]);
+                if mass == 0.0 {
+                    continue; // exact-zero guard: absent in both phases, so nothing to check
+                }
+                let k = match (gas, s.vapour_pressure) {
+                    (Some(_), Some(antoine)) => antoine.vapour_pressure(temperature) / pressure,
+                    (Some(_), None) => {
+                        return Err(EvalError::new(format!(
+                            "species `{}` is declared as a liquid and a gas, but its liquid has \
+                             no `vapour_pressure`, so the flash cannot split it",
+                            s.name
+                        )));
+                    }
+                    (None, Some(_)) => {
+                        return Err(EvalError::new(format!(
+                            "species `{}` has a `vapour_pressure` but no gas phase for its \
+                             vapour to go to - declare `{}` as a `Gas` too",
+                            s.name, s.name
+                        )));
+                    }
+                    (None, None) => 0.0,
+                };
+                components.push(Component {
+                    liquid: Some(i),
+                    gas,
+                    mass,
+                    moles: mass / s.molar_mass,
+                    k,
+                });
+            }
+        }
+    }
+
+    let amounts: Vec<f64> = components.iter().map(|c| c.moles).collect();
+    if amounts.iter().all(|&n| n == 0.0) {
+        return Ok((vapour, liquid)); // exact-zero guard: nothing that can change phase
+    }
+    let k: Vec<f64> = components.iter().map(|c| c.k).collect();
+    let v = rachford_rice(&amounts, &k);
+
+    for c in &components {
+        // The share of this component's moles that leaves as vapour, `V K / (1 + V (K - 1))`.
+        // Written out for the infinite case, whose formula is `inf / inf`. Clamped because the
+        // denominator can round a ULP below the numerator, and `1 - share` must not go negative.
+        let share = if c.k.is_infinite() {
+            1.0
+        } else {
+            (v * c.k / (1.0 + v * (c.k - 1.0))).clamp(0.0, 1.0)
+        };
+        // A component only ever has an entry on the side it can reach: a non-condensable gas has
+        // no liquid entry and a share of 1, a non-volatile liquid no gas entry and a share of 0.
+        if let Some(g) = c.gas {
+            vapour.flows_mut()[g] = c.mass * share;
+        }
+        if let Some(l) = c.liquid {
+            liquid.flows_mut()[l] = c.mass * (1.0 - share);
+        }
+    }
+
+    Ok((vapour, liquid))
+}
+
 /// What a reactor does with the heat its reaction releases or absorbs.
 ///
 /// There is no heat-of-reaction parameter anywhere: once every participant has an
@@ -902,7 +1169,7 @@ mod tests {
     use crate::test_support::{
         AMBIENT_K, AMBIENT_KPA, COMBUSTION_MASSES, DEMO_DENSITIES, ROUNDED_COMBUSTION_MASSES,
         all_ids, combustion, combustion_registry, demo_registry, demo_registry_with_density,
-        demo_registry_with_formation, feed, nitrogen_registry,
+        demo_registry_with_formation, feed, humid_nitrogen, nitrogen_registry,
     };
     use crate::thermo::Shomate;
     use approx::assert_relative_eq;
@@ -1637,6 +1904,274 @@ mod tests {
         recover(&feed(&r), &[f64::NAN, 0.05, 0.30]);
     }
 
+    // ---- rachford_rice ----
+
+    #[test]
+    fn rachford_rice_splits_a_symmetric_pair_in_half() {
+        // 1/(1+V) = 0.5/(1-0.5V) has its root at V = 0.5.
+        assert_relative_eq!(
+            rachford_rice(&[1.0, 1.0], &[2.0, 0.5]),
+            0.5,
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn rachford_rice_does_not_care_about_scale() {
+        let small = rachford_rice(&[1.0, 3.0], &[4.0, 0.2]);
+        let large = rachford_rice(&[1000.0, 3000.0], &[4.0, 0.2]);
+        assert_relative_eq!(small, large, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn a_feed_below_its_bubble_point_is_all_liquid_exactly() {
+        assert_eq!(rachford_rice(&[1.0, 1.0], &[0.5, 0.8]), 0.0);
+    }
+
+    #[test]
+    fn a_feed_above_its_dew_point_is_all_vapour_exactly() {
+        assert_eq!(rachford_rice(&[1.0, 1.0], &[2.0, 3.0]), 1.0);
+    }
+
+    #[test]
+    fn a_component_that_never_condenses_takes_the_limit_of_its_term() {
+        // 1/V = 0.75/(1-0.75V), so V = 2/3: all of the inert and a third of the rest.
+        assert_relative_eq!(
+            rachford_rice(&[1.0, 1.0], &[f64::INFINITY, 0.25]),
+            2.0 / 3.0,
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn an_absent_component_does_not_turn_a_limit_into_nan() {
+        // `0 * inf` would be NaN in the bubble-point check if the absent inert were not skipped.
+        assert_eq!(rachford_rice(&[0.0, 1.0], &[f64::INFINITY, 0.5]), 0.0);
+    }
+
+    #[test]
+    fn a_feed_that_barely_boils_keeps_its_small_vapour_fraction_to_full_precision() {
+        // With K = [2, x] on equal amounts the root is V = x / (2 (1 - x)), about 5e-9 here. An
+        // absolute tolerance of 1e-12 would get it right to three digits.
+        let x = 1e-8;
+        assert_relative_eq!(
+            rachford_rice(&[1.0, 1.0], &[2.0, x]),
+            x / (2.0 * (1.0 - x)),
+            max_relative = 1e-10
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "rachford_rice needs something to flash")]
+    fn rachford_rice_on_nothing_panics() {
+        rachford_rice(&[0.0, 0.0], &[2.0, 0.5]);
+    }
+
+    #[test]
+    #[should_panic(expected = "K-values must not be negative or NaN")]
+    fn rachford_rice_on_a_nan_k_value_panics() {
+        rachford_rice(&[1.0, 1.0], &[f64::NAN, 0.5]);
+    }
+
+    // ---- flash ----
+
+    const FLASH_K: f64 = 350.0;
+
+    /// Liquid water, steam and nitrogen in t/h, over [`humid_nitrogen`].
+    fn humid(r: &SpeciesRegistry, flows: [f64; 3]) -> Stream {
+        Stream::from_flows(r, flows.to_vec(), FLASH_K, AMBIENT_KPA)
+    }
+
+    fn flashed(r: &SpeciesRegistry, inlet: &Stream, temperature: f64) -> (Stream, Stream) {
+        flash(r, inlet, temperature, AMBIENT_KPA).expect("the flash should succeed here")
+    }
+
+    #[test]
+    fn water_over_nitrogen_saturates_the_nitrogen_and_no_more() {
+        // Nitrogen dissolves in nothing, so the liquid is pure water, x = 1, and Raoult puts the
+        // vapour at y = Psat / P. The steam the nitrogen carries is then n_N2 * Psat / (P - Psat).
+        let r = humid_nitrogen();
+        let inlet = humid(&r, [100.0, 0.0, 28.0]);
+        let (vapour, liquid) = flashed(&r, &inlet, FLASH_K);
+
+        let psat = r.all()[0].vapour_pressure.unwrap().vapour_pressure(FLASH_K);
+        let nitrogen = 28.0 / r.all()[2].molar_mass;
+        let steam = nitrogen * psat / (AMBIENT_KPA - psat) * r.all()[1].molar_mass;
+
+        assert_relative_eq!(vapour.flows()[1], steam, max_relative = 1e-10);
+        assert_eq!(vapour.flows()[2], 28.0);
+        assert_relative_eq!(liquid.flows()[0], 100.0 - steam, max_relative = 1e-10);
+        assert_eq!(
+            (vapour.flows()[0], liquid.flows()[1], liquid.flows()[2]),
+            (0.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn a_flash_conserves_each_substance_across_its_two_phases() {
+        let r = humid_nitrogen();
+        let inlet = humid(&r, [60.0, 15.0, 28.0]);
+        let (vapour, liquid) = flashed(&r, &inlet, FLASH_K);
+
+        let water = |s: &Stream| s.flows()[0] + s.flows()[1];
+        assert_relative_eq!(water(&vapour) + water(&liquid), 75.0, max_relative = 1e-14);
+        assert_relative_eq!(
+            vapour.total() + liquid.total(),
+            inlet.total(),
+            max_relative = 1e-14
+        );
+    }
+
+    #[test]
+    fn both_outlets_leave_at_the_flash_temperature_and_pressure() {
+        let r = humid_nitrogen();
+        let inlet = humid(&r, [100.0, 0.0, 28.0]);
+        let (vapour, liquid) = flash(&r, &inlet, 340.0, 50.0).unwrap();
+
+        for s in [&vapour, &liquid] {
+            assert_eq!((s.temperature(), s.pressure()), (340.0, 50.0));
+        }
+    }
+
+    #[test]
+    fn pure_water_below_its_boiling_point_stays_liquid() {
+        let r = humid_nitrogen();
+        let (vapour, liquid) = flashed(&r, &humid(&r, [10.0, 0.0, 0.0]), 360.0);
+        assert_eq!(vapour.total(), 0.0);
+        assert_eq!(liquid.flows()[0], 10.0);
+    }
+
+    #[test]
+    fn pure_water_above_its_boiling_point_is_all_steam() {
+        let r = humid_nitrogen();
+        let (vapour, liquid) = flashed(&r, &humid(&r, [10.0, 0.0, 0.0]), 380.0);
+        assert_eq!(vapour.flows()[1], 10.0);
+        assert_eq!(liquid.total(), 0.0);
+    }
+
+    #[test]
+    fn steam_below_its_boiling_point_condenses() {
+        // The two phases are pooled before the split, so it does not matter which one arrives.
+        let r = humid_nitrogen();
+        let (vapour, liquid) = flashed(&r, &humid(&r, [0.0, 10.0, 0.0]), FLASH_K);
+        assert_eq!(vapour.total(), 0.0);
+        assert_eq!(liquid.flows()[0], 10.0);
+    }
+
+    #[test]
+    fn a_solid_leaves_in_the_liquid_and_dilutes_nothing() {
+        let mut r = humid_nitrogen();
+        r.insert(
+            crate::library::find("SiO2", Phase::Solid)
+                .unwrap()
+                .species
+                .clone(),
+        );
+        let plain = humid_nitrogen();
+
+        let (sandy, bottoms) = flashed(
+            &r,
+            &Stream::from_flows(&r, vec![100.0, 0.0, 28.0, 50.0], FLASH_K, AMBIENT_KPA),
+            FLASH_K,
+        );
+        let (clean, _) = flashed(&plain, &humid(&plain, [100.0, 0.0, 28.0]), FLASH_K);
+
+        assert_eq!(bottoms.flows()[3], 50.0);
+        assert_eq!(sandy.flows()[3], 0.0);
+        // Bit for bit: the sand never enters Rachford-Rice, so the arithmetic is the same.
+        assert_eq!(&sandy.flows()[..3], clean.flows());
+    }
+
+    #[test]
+    fn a_liquid_that_never_evaporates_still_dilutes_the_water() {
+        // Raoult's law: a second liquid lowers water's mole fraction, and so its partial pressure.
+        let mut r = humid_nitrogen();
+        r.insert(Species {
+            name: "Oil".into(),
+            phase: Phase::Liquid,
+            molar_mass: 300.0,
+            shomate: Shomate::constant(500.0),
+            enthalpy_of_formation: None,
+            density: None,
+            vapour_pressure: None,
+        });
+        let plain = humid_nitrogen();
+
+        let (oily, bottoms) = flashed(
+            &r,
+            &Stream::from_flows(&r, vec![100.0, 0.0, 28.0, 3000.0], FLASH_K, AMBIENT_KPA),
+            FLASH_K,
+        );
+        let (clean, _) = flashed(&plain, &humid(&plain, [100.0, 0.0, 28.0]), FLASH_K);
+
+        assert_eq!(bottoms.flows()[3], 3000.0);
+        assert!(
+            oily.flows()[1] < clean.flows()[1],
+            "{} t/h of steam over oil against {} over pure water",
+            oily.flows()[1],
+            clean.flows()[1]
+        );
+    }
+
+    #[test]
+    fn flashing_an_empty_stream_gives_two_empty_outlets() {
+        // What a flash downstream of a tear sees on the first pass.
+        let r = humid_nitrogen();
+        let (vapour, liquid) = flashed(&r, &Stream::zeros(&r, AMBIENT_K, AMBIENT_KPA), FLASH_K);
+        assert_eq!((vapour.total(), liquid.total()), (0.0, 0.0));
+        assert_eq!(vapour.temperature(), FLASH_K);
+    }
+
+    /// Water in two phases whose liquid has no vapour pressure, beside nitrogen.
+    fn water_without_vapour_pressure() -> SpeciesRegistry {
+        let mut r = SpeciesRegistry::default();
+        for s in humid_nitrogen().all() {
+            r.insert(Species {
+                vapour_pressure: None,
+                ..s.clone()
+            });
+        }
+        r
+    }
+
+    #[test]
+    fn a_pair_without_a_vapour_pressure_is_an_error_naming_it() {
+        let r = water_without_vapour_pressure();
+        let e = flash(&r, &humid(&r, [100.0, 0.0, 28.0]), FLASH_K, AMBIENT_KPA)
+            .expect_err("nothing says how the water splits");
+        assert!(e.to_string().contains("`H2O`"), "{e}");
+        assert!(e.to_string().contains("no `vapour_pressure`"), "{e}");
+    }
+
+    #[test]
+    fn a_pair_without_a_vapour_pressure_that_does_not_flow_is_no_obstacle() {
+        let r = water_without_vapour_pressure();
+        let (vapour, _) = flashed(&r, &humid(&r, [0.0, 0.0, 28.0]), FLASH_K);
+        assert_eq!(vapour.flows()[2], 28.0);
+    }
+
+    #[test]
+    fn a_volatile_liquid_with_no_gas_entry_is_an_error_naming_it() {
+        let mut r = SpeciesRegistry::default();
+        r.insert(
+            crate::library::find("H2O", Phase::Liquid)
+                .unwrap()
+                .species
+                .clone(),
+        );
+        let inlet = Stream::from_flows(&r, vec![10.0], FLASH_K, AMBIENT_KPA);
+
+        let e = flash(&r, &inlet, FLASH_K, AMBIENT_KPA).expect_err("the steam has nowhere to go");
+        assert!(e.to_string().contains("no gas phase"), "{e}");
+    }
+
+    #[test]
+    #[should_panic(expected = "flash pressure must be finite and positive")]
+    fn a_zero_flash_pressure_is_a_bug() {
+        let r = humid_nitrogen();
+        let _ = flash(&r, &humid(&r, [1.0, 0.0, 0.0]), FLASH_K, 0.0);
+    }
+
     // ---- react ----
 
     /// 10 t/h of methane in 60 t/h of oxygen: plenty of oxygen even at full conversion, which
@@ -1993,6 +2528,16 @@ mod tests {
                 (2, Some(2)),
             ),
             (Box::new(Product), (1, Some(1)), (0, Some(0))),
+            // Nothing in the demo slurry evaporates, so this returns an empty vapour - which is
+            // still two outlets.
+            (
+                Box::new(Flash {
+                    temperature: 350.0,
+                    pressure: AMBIENT_KPA,
+                }),
+                (1, Some(1)),
+                (2, Some(2)),
+            ),
             // Not chemistry: the demo species have no real reaction between them, so this turns
             // chalcopyrite into its own mass of quartz, which is all the closure check asks.
             (

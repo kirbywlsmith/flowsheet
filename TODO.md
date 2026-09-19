@@ -18,11 +18,6 @@ engineering, ordered so that no large item gates a small one.
   but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
   description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
   why it needs to be written down as an item.
-- [ ] Isothermal flash, `T` and `P` specified. K-values from vapour pressure over system pressure (Raoult to start),
-  vapour fraction from a Rachford-Rice solve, outlets vapour first then liquid. Needs the composite key, the latent
-  heat above, and reads the pressure every op now propagates. This is also the op that finally makes the rayon item measurable: CLAUDE.md
-  puts a flash at ~20x a mixer ideal and ~200x with a cubic EOS, against the ~90 ns unit evaluation that currently
-  makes parallelism pure overhead.
 - [ ] Adiabatic flash, `P` and `H` specified. Newton on temperature around the isothermal flash, so it is an outer
   loop over an inner loop inside one `evaluate` - the same structure as `mix` over `solve_temperature`, one level
   deeper. A flash drum on a recycle is the test that proves the three tolerances compose.

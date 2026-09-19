@@ -83,7 +83,7 @@ Never mix severities in one unlabelled list.
 - Loading is a **`serial::OpRegistry`**, a `BTreeMap<&'static str, Box<dyn Fn(Spec) -> Result<Box<dyn UnitOp>>>>`.
   A document names its op with a string and something must own the name-to-constructor table; making that something a
   *value* rather than a `match` is what makes the wire format as open as the solver. `OpRegistry::builtin()` holds the
-  nine shipped ops, `register` adds or replaces one, and `serial::Flowsheet::into_domain(&ops)` is the real entry
+  twelve shipped ops, `register` adds or replaces one, and `serial::Flowsheet::into_domain(&ops)` is the real entry
   point — `TryFrom` stays, delegating to `builtin()`. Two costs, both paid deliberately: `serde_json` stops being a
   dev-dependency of the library (`Value` is now in its public API), and `deny_unknown_fields` no longer fires during
   parsing. It still fires, one step later, when `Spec::parse` deserialises into the op's own spec struct — so a stray
@@ -270,6 +270,44 @@ Never mix severities in one unlabelled list.
   independent property sets and one law between them, so a fit with its `A` still in bar or a formation enthalpy
   off by a phase lands far outside the tolerance. It is the "measured against the absolute basis" the TODO item
   asked for, and the `GAS_CONSTANT` the compressor introduced is what makes it a one-line test.
+- **The isothermal flash is `Flash { temperature, pressure }`**, tag `flash`, one inlet and two outlets, **vapour
+  first**. Both specs are required and set outright, like a feed's state - there is no `pressure_drop`, because a
+  drum is specified by the pressure it runs at and that pressure decides the split. The work is two free functions
+  in `unit.rs`, as for every op: `rachford_rice(amounts, k) -> f64` and `flash(registry, inlet, T, P)`.
+- **A feed that does not split is `Ok`, not an `EvalError`.** `rachford_rice` checks the bubble point
+  (`sum n K <= sum n`, all liquid, exactly `0.0`) and the dew point (`sum n / K <= sum n`, all vapour, exactly
+  `1.0`) before it looks for a root, so a subcooled or superheated feed returns one full outlet and one empty one,
+  as Aspen's `Flash2` does. Between the two it is Newton from 0.5 held inside a bracket, bisecting whenever a step
+  would leave it; the function falls monotonically, so there is one root. Its tolerance is **relative to
+  `min(V, 1 - V)`**, 1e-12, because each outlet's flows scale with its own share - an absolute 1e-12 gets a drum
+  that barely boils (V = 5e-9, tested) right to three digits. It takes amounts on any scale, not mole fractions,
+  since the equation is linear in them.
+- **Species are paired by name**: a name declared as both a `Liquid` and a `Gas` is one substance, its two inlet
+  flows pooled and split by `K = Psat(T) / P` (Raoult) read from the liquid entry's Antoine fit. Everything else goes
+  where its phase belongs, and the three cases are deliberately different. A gas with no liquid entry never
+  condenses: `K = inf`, whose Rachford-Rice term is the limit `n / V`, so it takes part - it is what the steam's
+  partial pressure shares the vapour with. A liquid with no gas entry and no Antoine never evaporates: `K = 0`,
+  and it takes part too, diluting the water the way Raoult says. A **solid takes no part**: it leaves in the liquid
+  as bottoms but is its own phase and dissolves in nothing, so it dilutes nothing - a test pins the vapour
+  bit-for-bit equal with and without sand. The `0 * inf` that an absent inert would make in the bubble check is
+  why both checks skip zero amounts.
+- Two flowing cases are **`EvalError`s**: a two-phase pair whose liquid has no `vapour_pressure` (its split is
+  unknown), and a liquid with a `vapour_pressure` but no gas entry (its vapour has nowhere to go - which is every
+  shipped organic, since only water ships in both phases). Errors rather than load checks for the pump's reason:
+  which species reach a flash is a property of the solved flows. An absent one is fine either way.
+- **Mass is split, not moles.** Each substance's pooled mass goes to the two outlets by its molar vapour share
+  `V K / (1 + V (K - 1))`, clamped to `[0, 1]` against a ULP; the moles Rachford-Rice sees are that mass over the
+  liquid entry's molar mass. So mass is conserved exactly even if a document gives the two phases different molar
+  masses. The flash **returns `false` from `conserves_species`** - `H2O(l)` becoming `H2O(g)` is two species ids -
+  which puts the whole flowsheet on the total-mass check, the reactor's cost again.
+- No temperature is solved, so the drum's heat is whatever `report::duty` finds, and `tests/flash.rs` pins it at
+  exactly the evaporated moles times `species::latent_heat`. Humid nitrogen has a closed form - the liquid is pure
+  water, so the vapour carries `n_N2 Psat / (P - Psat)` of steam - and a liquid recycle round the drum leaves the
+  products exactly there at any fraction. That loop takes 18 direct-substitution passes at 0.3 and 176 at 0.9.
+- **Cost, accepted: a flash hides a pressure-losing loop.** Setting its outlet pressure outright means a recycle
+  through a drum settles whatever the pipes upstream drop, the way a discharge-pressure pump spec would have. It is
+  what the equipment does - a drum runs at its pressure - but `tests/pressure.rs`'s "a lossy loop fails" no longer
+  holds for a loop with a drum in it.
 - **The shipped species library is `crates/flowsheet/data/species.json`**, compiled in with `include_str!` and parsed
   once behind a `LazyLock` in `library.rs` (an embedded resource and a `Lazy<T>`). A bad file is a panic, not a
   `Result`: it is part of the crate, and the tests parse it on every run. The file's record is its own struct with a
@@ -360,8 +398,9 @@ Never mix severities in one unlabelled list.
 - **`UnitOp::evaluate` returns `Result<Vec<Stream>, EvalError>`.** The alternative was clamping and letting an early
   pass be wrong on its way to being right; clamping loses, because it cannot tell a transient apart from a genuine
   contradiction. A duty that over-cools the *converged* flow would clamp, converge, and report success at the clamp
-  temperature - a wrong number and exit 0, which is worse than the panic it replaced. The flash forces the same
-  answer anyway: Rachford-Rice on a single-phase composition has no root, so there is no value to clamp *to*.
+  temperature - a wrong number and exit 0, which is worse than the panic it replaced. (This entry once added that the
+  flash would force the same answer, because Rachford-Rice on a single-phase feed has no root. It does not: the
+  bubble- and dew-point checks answer 0 or 1 before the root-finder runs - see the flash entry.)
   Six of the eight ops became `Ok(..)` and nothing else; the real changes are `solve_temperature`, `mix`, `heat`,
   `evaluate_unit` and the wave loop in `solve_with`. Benched against `master`, every group moved between -4.7% and
   +4.2% in both directions and mostly not significantly: no cost, the same finding as the `solve_with` closure.
@@ -372,8 +411,8 @@ Never mix severities in one unlabelled list.
   being `Send`.
 - The **line between a panic and an `EvalError`** is whose mistake it is. `EvalError`: user input the numerics cannot
   answer - a duty no positive temperature absorbs, Newton not converging because a Shomate fit extrapolates cp
-  negative, a reactant driven negative, an adiabatic endothermic reaction no positive temperature can pay for, later a
-  flash with no two-phase split. Still a panic: a split fraction outside
+  negative, a reactant driven negative, an adiabatic endothermic reaction no positive temperature can pay for, a flowing
+  substance a flash cannot place (a two-phase pair with no vapour pressure, or a volatile liquid with no gas entry). Still a panic: a split fraction outside
   `0.0..=1.0`, empty or all-zero `split_n` ratios, a `recovery` or `stoichiometry` of the wrong length, a conversion
   outside `0.0..=1.0`, a limiting species that is not a reactant, a stoichiometry whose mass does not close, a reaction
   participant without an enthalpy of formation, a

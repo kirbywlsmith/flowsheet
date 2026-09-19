@@ -356,6 +356,18 @@ fn is_one(x: &f64) -> bool {
     *x == 1.0
 }
 
+/// The parameters of a `flash`: the temperature and pressure both outlets leave at. Both
+/// required - a flash drum is specified by where it runs, and a default would be a guess at the
+/// very two numbers that decide the split.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlashSpec {
+    /// K. Positive.
+    pub temperature: f64,
+    /// kPa. Positive.
+    pub pressure: f64,
+}
+
 /// The parameters of a unit operation that takes none. Empty, but not omitted: it is what rejects
 /// a stray field on a `tank` or `product`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -881,7 +893,7 @@ impl OpRegistry {
         }
     }
 
-    /// The nine operations this crate ships, under the tags they save themselves as.
+    /// The twelve operations this crate ships, under the tags they save themselves as.
     #[must_use]
     pub fn builtin() -> Self {
         let mut ops = Self::new();
@@ -1084,6 +1096,32 @@ impl OpRegistry {
             Ok(Box::new(unit::Compressor {
                 pressure_rise,
                 efficiency,
+            }))
+        });
+
+        ops.register(unit::Flash::TAG, |s| {
+            let FlashSpec {
+                temperature,
+                pressure,
+            } = s.parse(unit::Flash::TAG)?;
+            // The same two checks, in the same words, as a stream's state.
+            require(
+                temperature.is_finite() && temperature > 0.0,
+                s.at,
+                "temperature",
+                temperature,
+                "greater than 0.0 K",
+            )?;
+            require(
+                pressure.is_finite() && pressure > 0.0,
+                s.at,
+                "pressure",
+                pressure,
+                "greater than 0.0 kPa",
+            )?;
+            Ok(Box::new(unit::Flash {
+                temperature,
+                pressure,
             }))
         });
 
@@ -1560,6 +1598,24 @@ impl ToDocument for unit::Compressor {
     }
 }
 
+impl unit::Flash {
+    /// The `type` a flash writes, and the [`OpRegistry`] key it loads back from.
+    pub const TAG: &'static str = "flash";
+}
+
+impl ToDocument for unit::Flash {
+    fn tag(&self) -> &'static str {
+        Self::TAG
+    }
+
+    fn spec(&self, _registry: &SpeciesRegistry) -> serde_json::Value {
+        spec_of(&FlashSpec {
+            temperature: self.temperature,
+            pressure: self.pressure,
+        })
+    }
+}
+
 impl unit::Tank {
     /// The `type` a tank writes, and the [`OpRegistry`] key it loads back from.
     pub const TAG: &'static str = "tank";
@@ -1839,6 +1895,7 @@ mod tests {
                 "compressor",
                 "conversion_reactor",
                 "feed",
+                "flash",
                 "flotation",
                 "heater",
                 "mixer",
@@ -2420,6 +2477,75 @@ mod tests {
                 field: "pressure_rise".into(),
                 value: -5.0,
                 expected: "0.0 kPa or greater".into(),
+            }
+        );
+    }
+
+    /// Humid nitrogen through a flash drum, both outlets to products. Every species is a
+    /// reference to the shipped library, so the water brings its vapour pressure with it.
+    fn flash_json(flash: &str) -> String {
+        format!(
+            r#"{{ "species": [{{ "name": "H2O", "phase": "Liquid" }}, {{ "name": "H2O", "phase": "Gas" }},
+                              {{ "name": "N2", "phase": "Gas" }}],
+                  "units": [
+                    {{ "name": "f", "op": {{ "type": "feed",
+                       "state": {{ "flows": {{ "H2O(l)": 100.0, "N2": 28.0 }} }} }} }},
+                    {{ "name": "drum", "op": {{ "type": "flash", {flash} }} }},
+                    {{ "name": "vapour", "op": {{ "type": "product" }} }},
+                    {{ "name": "liquid", "op": {{ "type": "product" }} }}
+                  ],
+                  "streams": [
+                    {{ "from": "f", "to": "drum" }},
+                    {{ "from": "drum", "to": "vapour" }}, {{ "from": "drum", "to": "liquid" }}
+                  ] }}"#
+        )
+    }
+
+    #[test]
+    fn a_flash_survives_load_solve_and_save() {
+        let json = flash_json(r#""temperature": 350.0, "pressure": 101.325"#);
+        let mut fs = load(&json).unwrap().validate().unwrap();
+        crate::solver::Solver::default().solve(&mut fs).unwrap();
+        // Vapour first: the nitrogen and some steam go to the first outlet.
+        assert_eq!(fs.streams()[1].flows()[2], 28.0);
+        assert!(fs.streams()[1].flows()[1] > 0.0);
+        assert_eq!(fs.streams()[2].temperature(), 350.0);
+
+        let doc = Flowsheet::from(&fs);
+        assert_eq!(
+            serde_json::to_string(&doc.units[1].op).unwrap(),
+            r#"{"type":"flash","pressure":101.325,"temperature":350.0}"#
+        );
+    }
+
+    #[test]
+    fn a_flash_needs_both_its_temperature_and_its_pressure() {
+        let e = load(&flash_json(r#""temperature": 350.0"#)).unwrap_err();
+        assert!(e.to_string().contains("pressure"), "{e}");
+    }
+
+    #[test]
+    fn a_non_positive_flash_pressure_is_rejected() {
+        assert_eq!(
+            load(&flash_json(r#""temperature": 350.0, "pressure": 0.0"#)).unwrap_err(),
+            LoadError::BadValue {
+                at: Location::Unit("drum".into()),
+                field: "pressure".into(),
+                value: 0.0,
+                expected: "greater than 0.0 kPa".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_non_positive_flash_temperature_is_rejected() {
+        assert_eq!(
+            load(&flash_json(r#""temperature": -1.0, "pressure": 101.325"#)).unwrap_err(),
+            LoadError::BadValue {
+                at: Location::Unit("drum".into()),
+                field: "temperature".into(),
+                value: -1.0,
+                expected: "greater than 0.0 K".into(),
             }
         );
     }

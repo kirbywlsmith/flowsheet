@@ -193,6 +193,7 @@ Each unit has a unique `name` and an `op`. The `op` has a `type` plus that opera
 | `conversion_reactor` | 1 | 1   | `energy`: `isothermal` or `adiabatic`. `reactions`: a list, run in order, each with `stoichiometry` (species map of molar coefficients, negative consumed), `limiting` (a reactant's name) and `conversion` (0 to 1, a share of what reaches that reaction). `pressure_drop`: kPa, optional |
 | `pump`       | 1      | 1       | `pressure_rise`: kPa, added to the stream as an incompressible fluid. `efficiency`: 0 to 1, optional, default 1; the inefficient share of `V * dP / efficiency` warms the stream. Every species that flows through needs a `density` |
 | `compressor` | 1      | 1       | `pressure_rise`: kPa, added to the stream as an ideal gas along an isentropic path. `efficiency`: isentropic, 0 to 1, optional, default 1. Every species that flows through must be a `Gas` |
+| `flash`      | 1      | 2       | `temperature`: K, `pressure`: kPa, both required; both outlets leave at them. Outlets: vapour, then liquid. A species declared as both `Liquid` and `Gas` splits by Raoult's law, using the liquid's `vapour_pressure`. Any other gas goes to the vapour, and any other liquid or solid goes to the liquid |
 | `tank`       | 1      | 1       | none                                                                           |
 | `product`    | 1      | 0       | none                                                                           |
 

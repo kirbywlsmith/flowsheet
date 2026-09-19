@@ -131,3 +131,19 @@ pub fn all_ids(registry: &SpeciesRegistry) -> Vec<SpeciesId> {
     .map(|(n, p)| registry.find(n, *p).expect("fixture species missing"))
     .collect()
 }
+
+/// Liquid water, steam and nitrogen, in that order, exactly as the shipped library has them - so
+/// the water carries its vapour pressure and both phases their formation enthalpies, and a flash
+/// has something to evaporate and something that never condenses.
+pub fn humid_nitrogen() -> SpeciesRegistry {
+    let mut r = SpeciesRegistry::default();
+    for (name, phase) in [
+        ("H2O", Phase::Liquid),
+        ("H2O", Phase::Gas),
+        ("N2", Phase::Gas),
+    ] {
+        let entry = crate::library::find(name, phase).expect("shipped species missing");
+        r.insert(entry.species.clone());
+    }
+    r
+}
