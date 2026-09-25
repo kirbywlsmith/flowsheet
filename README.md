@@ -4,7 +4,7 @@
 
 A steady-state process simulation engine, written in Rust: a library and a CLI.
 
-A **flowsheet** is how process engineers model a plant: a directed graph of **units** (mixers, heaters, reactors,
+A **flowsheet** is a model of a process: a directed graph of **units** (mixers, heaters, reactors,
 separators) connected by **streams** (what flows between them - how much of each species, at what temperature and
 pressure). Given the feeds and each unit's specification, the engine works out every stream in the plant so that mass
 and energy balance everywhere, including around recycle loops.
