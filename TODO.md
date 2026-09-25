@@ -2,7 +2,7 @@
 
 Rough sequential order. Target flowsheet + expected numbers live in the header comment of `crates/flowsheet-cli/src/main.rs`.
 
-Each item is meant to ship on its own: all four commands in CLAUDE.md clean, tests included. Where an item leaves
+Each item is meant to ship on its own: fmt, clippy, tests and docs clean (what CI runs), tests included. Where an item leaves
 something out deliberately, the item that picks it up is named - nothing below is a reduction in what the library is
 eventually for.
 
@@ -31,7 +31,7 @@ The process engineering is ordered so that no large item gates a small one.
   flowsheet look like a plant. Each stage is the isothermal flash above, coupled to its neighbours by the liquid
   going down and the vapour going up, so the whole column is one inner solve over `N` temperatures and `N`
   vapour flows (bubble-point method to start; Newton on all of it later if it is slow). Needs non-ideal VLE to give
-  a believable answer on anything but a near-ideal pair, and it is the ~5,000x-a-mixer op CLAUDE.md names as what
+  a believable answer on anything but a near-ideal pair, and it is the ~5,000x-a-mixer op [docs/design.md](docs/design.md#when-parallelism-will-pay) names as what
   finally makes the rayon item worth benching.
 - [ ] Screen, and size classes. A partition curve over size fractions is structurally `Flotation` with a different
   name - one inlet, two outlets, a dense per-species vector - so the op is not the work. The work is that a size
@@ -50,8 +50,8 @@ The process engineering is ordered so that no large item gates a small one.
   feeds, summarised by percentile rather than printed one by one. Embarrassingly parallel at the *solve* level, which
   is a far better rayon target than a wave of units and should be benched as such.
 - [ ] Rayon parallel solve of independent branches; bench against serial and record where it stops paying off. Gated
-  on an op with an inner solve (the flash above) - see CLAUDE.md for why the measurement is meaningless before that,
-  and for the finding that making allocation cheaper made parallelism worse rather than better.
+  on an op with an inner solve (the flash above) - see [docs/design.md](docs/design.md#performance) for why the
+  measurement is meaningless before that, and for the finding that making allocation cheaper made parallelism worse rather than better.
 - [ ] Dynamic simulation — inventory/holdup, fixed-step integrator. Two things wait here because neither has a
   steady-state meaning: a kinetic reactor, which needs a residence time, and the hydraulic network solve that makes
   pressures and flows simultaneous unknowns.
