@@ -1,14 +1,57 @@
 # Flowsheet
 
-A steady-state process simulation library and CLI tool which can be used to solve flowsheets.
+[![Rust](https://github.com/kirbywlsmith/flowsheet/actions/workflows/rust.yml/badge.svg)](https://github.com/kirbywlsmith/flowsheet/actions/workflows/rust.yml)
 
-There are two crates:
+A steady-state process simulation engine, written in Rust: a library and a CLI.
+
+A **flowsheet** is how process engineers model a plant: a directed graph of **units** (mixers, heaters, reactors,
+separators) connected by **streams** (what flows between them - how much of each species, at what temperature and
+pressure). Given the feeds and each unit's specification, the engine works out every stream in the plant so that mass
+and energy balance everywhere, including around recycle loops.
+
+## What it models
+
+- **Mass balances** per species, in t/h.
+- **Energy balances** on absolute enthalpies, with NIST Shomate heat-capacity fits and standard enthalpies of
+  formation, so heats of reaction and latent heats fall out of the data rather than being entered by hand.
+- **Unit operations**: mixer, splitters, flotation cell, heater/cooler, conversion reactor (isothermal or adiabatic,
+  several reactions in series), pump, isentropic compressor, and vapour-liquid flash drum (at a temperature or a
+  duty, including adiabatic).
+- **Pressure**, declared and propagated per unit.
+- A built-in **species library** of 21 common substances, every value sourced from the NIST WebBook.
+
+Not yet: non-ideal vapour-liquid equilibrium (the flash uses Raoult's law), heat exchangers, distillation columns,
+and dynamic simulation. [TODO.md](TODO.md) is the roadmap.
+
+## How it solves
+
+1. **Validate** the graph: every unit has the right number of inlets and outlets, and names are unique.
+2. **Find the loops.** Tarjan's algorithm finds the strongly connected components - the recycles.
+3. **Tear** one stream in each loop, repeating until nothing cyclic is left. A torn stream becomes an unknown with a
+   guessed value, and the rest of the graph is now acyclic.
+4. **Order** the units with Kahn's topological sort, grouped into waves of units that do not depend on each other.
+5. **Iterate.** Each pass evaluates every unit in order, then compares each tear stream with the guess it started
+   from. The next guess is either the result itself (direct substitution) or a Wegstein extrapolation from the last
+   two passes, which needs far fewer passes on a heavy recycle. The solve stops when the largest relative change in
+   any tear stream's flows, temperature and pressure is below the tolerance (default 1e-9).
+
+Some units have a solve of their own inside that loop: a mixer or heater finds its outlet temperature by Newton's
+method on enthalpy, and a flash drum solves the Rachford-Rice equation for its vapour fraction, nested inside a
+bracketed search for temperature when it is given a duty.
+
+After the solve, the report checks the balance independently: what entered at the feeds against what left at the
+products.
+
+Why the code is the way it is - the alternatives considered and the benchmarks behind the decisions - is in
+[docs/design.md](docs/design.md).
+
+## Crates
 
 - **`flowsheet`**: the core library.
   - Build a flowsheet in code or load one from JSON, then solve it.
-  - Extend the current set of available unit types.
-- **`flowsheet-cli`**: the `flowsheet` CLI binary.
-  - Define a JSON flowsheet, then solve it and prints the results.
+  - Add your own unit operations: `UnitOp` is a public trait, and new ops load and save through the same JSON format.
+- **`flowsheet-cli`**: the `flowsheet` binary.
+  - Define a flowsheet in JSON, then solve it and print the results.
 
 ## CLI Quickstart
 
@@ -194,7 +237,7 @@ Each unit has a unique `name` and an `op`. The `op` has a `type` plus that opera
 | `pump`       | 1      | 1       | `pressure_rise`: kPa, added to the stream as an incompressible fluid. `efficiency`: 0 to 1, optional, default 1; the inefficient share of `V * dP / efficiency` warms the stream. Every species that flows through needs a `density` |
 | `compressor` | 1      | 1       | `pressure_rise`: kPa, added to the stream as an ideal gas along an isentropic path. `efficiency`: isentropic, 0 to 1, optional, default 1. Every species that flows through must be a `Gas` |
 | `flash`      | 1      | 2       | `pressure`: kPa, and exactly one of `temperature` (K) or `duty` (MJ/h, negative cools, `0` for an adiabatic drum). Both outlets leave at the pressure and at the given temperature, or at whatever temperature the duty leads to. Outlets: vapour, then liquid. A species declared as both `Liquid` and `Gas` splits by Raoult's law, using the liquid's `vapour_pressure`. Any other gas goes to the vapour, and any other liquid or solid goes to the liquid |
-| `tank`       | 1      | 1       | none                                                                           |
+| `tank`       | 1      | 1       | none. Passes its inlet through unchanged: at steady state a tank's holdup does not change what leaves it |
 | `product`    | 1      | 0       | none                                                                           |
 
 ### `streams`
@@ -204,3 +247,8 @@ Each unit has a unique `name` and an `op`. The `op` has a `type` plus that opera
 ```
 
 A unit's outlets are assigned in the order its streams are declared - this matters for units with multiple outlets.
+
+## Licence
+
+Copyright (c) 2026 Kirby Smith. All rights reserved. The source is published so it can be read and evaluated;
+no licence to use it for any other purpose, or to copy, modify or distribute it, is granted.
