@@ -7,8 +7,7 @@ use crate::stream::Stream;
 /// Any number of inlets, one outlet: combines them all with [`mix`], then takes
 /// `pressure_drop` off the result.
 ///
-/// `Default` is the ideal mixer - no drop - which is what every call site wrote as a bare
-/// `Mixer` before the field existed.
+/// `Default` is the ideal mixer, with no drop.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Mixer {
     /// Pressure lost across the unit, in kPa. Never negative.

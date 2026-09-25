@@ -711,7 +711,7 @@ mod tests {
     /// Runs `f` on a thread with a small stack of known size.
     ///
     /// A test thread's default stack is 2 MiB and a debug frame is larger than a release one, so
-    /// without this whether the old recursion overflowed would depend on the build. A stack
+    /// without this whether a recursive traversal overflowed would depend on the build. A stack
     /// overflow aborts the whole test binary rather than failing one test, so there is no
     /// `should_panic` equivalent to assert it with.
     fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {

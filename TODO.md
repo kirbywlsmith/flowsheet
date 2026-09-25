@@ -1,6 +1,6 @@
 # TODO
 
-Rough sequential order. Target flowsheet + expected numbers live in the header comment of `crates/flowsheet-cli/src/main.rs`.
+Rough sequential order.
 
 Each item is meant to ship on its own: fmt, clippy, tests and docs clean (what CI runs), tests included. Where an item leaves
 something out deliberately, the item that picks it up is named - nothing below is a reduction in what the library is
@@ -55,4 +55,5 @@ The process engineering is ordered so that no large item gates a small one.
 - [ ] Dynamic simulation — inventory/holdup, fixed-step integrator. Two things wait here because neither has a
   steady-state meaning: a kinetic reactor, which needs a residence time, and the hydraulic network solve that makes
   pressures and flows simultaneous unknowns.
-- [ ] C ABI (`extern "C"` + `cbindgen`) so .NET can P/Invoke it; UI on top of that - WinUI 3? Ratatui? indicatif
+- [ ] C ABI (`extern "C"` + `cbindgen`) so .NET can P/Invoke the solver, with a UI on top of that. The UI toolkit is
+  undecided.

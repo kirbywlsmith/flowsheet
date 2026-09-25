@@ -68,8 +68,7 @@ fn wegstein_cuts_low_recycle_from_17_passes_to_3() {
 #[test]
 fn an_unclamped_floor_solves_high_recycle_on_the_third_pass() {
     // `q` is computed per species, so each one gets its own extrapolation and all three land
-    // on the answer together. What is left is rounding, not iteration error - before the cell
-    // arrived every species shared one `q` and this came out at exactly zero.
+    // on the answer together. What is left is rounding, not iteration error.
     let report = solve_recycle(0.9, 1e-9, WEGSTEIN_LOOSE_FLOOR);
     assert_eq!(report.iterations, 3);
     assert_relative_eq!(report.residual, 0.0, epsilon = 1e-15);

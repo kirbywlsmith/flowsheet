@@ -278,7 +278,7 @@ fn recycling_the_liquid_changes_nothing_at_the_plant_boundary() {
     }
 }
 
-/// The TODO item's test: Rachford-Rice at 1e-12, the drum's temperature search at 1e-9 K and
+/// Three nested solves compose: Rachford-Rice at 1e-12, the drum's temperature search at 1e-9 K and
 /// the solver at 1e-9 relative, nested three deep, and the outer loop still converges to the
 /// answer the inner two give on their own.
 ///

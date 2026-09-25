@@ -809,6 +809,7 @@ that does not grow with the loop count.
 - `crates/flowsheet/tests/` holds end-to-end flowsheet solves; `crates/flowsheet-cli/tests/` runs the binary over
   documents in its own `tests/fixtures/`. Cargo sets an integration test's working directory to the *package* root,
   so the relative fixture paths in `cli.rs` resolve inside `crates/flowsheet-cli/`.
+- The demo flotation circuit, with its hand-worked solution, is described in [demo-circuit.md](demo-circuit.md).
 - `recycle.json` is the demo circuit saved as a document; `cli.rs` asserts it byte-for-byte against
   `serial::Flowsheet::from(&demo::build_flowsheet())`, so it cannot drift from the demo.
 - `blend.json` is the **README's worked example**, pasted verbatim in hand-written form, and `cli.rs` pins the table
