@@ -7,16 +7,20 @@
 members = ["crates/flowsheet", "crates/flowsheet-cli"]
 resolver = "3"
 
-# Package metadata shared by both published crates, inherited with `repository.workspace = true`.
+# Package metadata shared by both crates, inherited with `repository.workspace = true`.
 # Same reasoning as `[workspace.dependencies]` below: declared once so the two manifests
 # cannot drift apart. `edition` deliberately stays per-crate, because the comment above about
 # `resolver` turns on a virtual manifest having no edition of its own to infer from.
+#
+# `publish = false` because the code is all rights reserved and lives only on GitHub: it makes
+# `cargo publish` refuse outright rather than relying on nobody running it.
 #
 # `rust-version` is 1.85, which is what edition 2024 requires; clap and indicatif ask for the
 # same, and serde and serde_json for less. It is a promise to people who *use* these crates, so
 # it does not cover dev-dependencies - `criterion` needs 1.86, and therefore so does
 # `cargo test` / `cargo bench` here, but nothing downstream sees that.
 [workspace.package]
+publish = false
 repository = "https://github.com/kirbywlsmith/flowsheet"
 rust-version = "1.85"
 

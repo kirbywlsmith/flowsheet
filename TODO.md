@@ -6,18 +6,8 @@ Each item is meant to ship on its own: all four commands in CLAUDE.md clean, tes
 something out deliberately, the item that picks it up is named - nothing below is a reduction in what the library is
 eventually for.
 
-Packaging comes first, ahead of the domain work, because it is the only part of this list that changes whether any of
-the rest is ever seen. Then the small correctness gaps, which are cheap and self-contained. Then the process
-engineering, ordered so that no large item gates a small one.
+The process engineering is ordered so that no large item gates a small one.
 
-- [ ] Publish 0.1.0 to crates.io, the library first and the CLI second. That order is forced, not preferred:
-  packaging rewrites `flowsheet-cli`'s path dependency into a registry one, so until `flowsheet 0.1.0` actually
-  exists on crates.io, `cargo publish -p flowsheet-cli --dry-run` fails at resolution with `no matching package
-  named flowsheet`. The library's own dry-run is clean and is the only one that can be run beforehand; the CLI's is
-  a post-publish check, not a gate. Irreversible in a way nothing else here is - a published version can be yanked
-  but never replaced. Afterwards add the docs.rs and crates.io badges to the README, and set the repository
-  description and topics on GitHub. None of that is checkable by the four commands in CLAUDE.md, which is exactly
-  why it needs to be written down as an item.
 - [ ] Non-ideal vapour-liquid equilibrium. Raoult's law is wrong for almost every mixture anyone flashes - ethanol
   and water form an azeotrope it cannot see. Add an activity-coefficient model for the liquid, Wilson or NRTL, with
   binary interaction parameters declared per species pair in the document, so `K_i = gamma_i * Psat_i / P`. The

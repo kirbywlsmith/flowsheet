@@ -3,6 +3,7 @@ name = "flowsheet"
 version = "0.1.0"
 edition = "2024"
 description = "Steady-state material and energy balances over a flowsheet of process units and streams."
+publish.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 

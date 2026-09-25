@@ -13,7 +13,7 @@ There are two crates:
 ## CLI Quickstart
 
 ```bash
-cargo install flowsheet-cli
+cargo install --git https://github.com/kirbywlsmith/flowsheet flowsheet-cli
 ```
 
 Define a flowsheet in JSON, then solve it:

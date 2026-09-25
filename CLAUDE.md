@@ -705,8 +705,8 @@ crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, progress,
   a *whole document* into bytes is still the caller's job — the library never writes a file.
 - **The library gets the plain name**, the CLI package is `flowsheet-cli`. `-core` earns its keep only when a facade
   crate re-exports it, and there is no facade here; the library is what people `use`, so `_core` would be noise on
-  every import. Same shape as `wasmtime` / `wasmtime-cli`. The cost is that `cargo install flowsheet` fetches the
-  library and installs no binary — the quickstart has to say `cargo install flowsheet-cli`.
+  every import. Same shape as `wasmtime` / `wasmtime-cli`. The cost is that `cargo install --git` has to name the
+  package — the quickstart says `cargo install --git <repo> flowsheet-cli`.
 - The CLI's `[[bin]]` sets **`doc = false`**. A `[[bin]]` name is a filename rather than a Rust identifier, which is
   how package `flowsheet-cli` can produce a binary called plain `flowsheet` — but that makes the bin target and the
   library share a name, so both want to write `target/doc/flowsheet/index.html` and one silently clobbers the other
@@ -717,17 +717,17 @@ crates/flowsheet-cli/   the `flowsheet` binary: clap parsing, file IO, progress,
 - Dependency versions are declared once in **`[workspace.dependencies]`** and inherited with
   `serde_json = { workspace = true }`. That is what keeps the `float_roundtrip` feature from drifting between the two
   crates that parse JSON. (Closest C# analogue: central package management in `Directory.Packages.props`.)
-- Package metadata follows the same rule: `repository` and `rust-version` live once in
+- Package metadata follows the same rule: `publish`, `repository` and `rust-version` live once in
   **`[workspace.package]`** and are inherited with `repository.workspace = true`. `description` stays per-crate, because
   the two crates are different things. **`edition` deliberately stays per-crate too** - the note about `resolver`
   above turns on a virtual manifest having no edition of its own to infer from, and moving it would undercut that.
+- The code is **all rights reserved** and published on GitHub only - no licence files and no `license` field.
+  **`publish = false`** in `[workspace.package]` makes
+  `cargo publish` refuse rather than relying on nobody running it, and the CLI's path dependency on the library
+  carries no `version`, because that field exists only for the manifest `cargo publish` uploads.
 - `rust-version` is **1.85**, which edition 2024 requires; clap and indicatif ask the same and serde asks for less.
   It is a promise to people who *use* the crates, so it excludes dev-dependencies: `criterion` needs 1.86, and so
   therefore do `cargo test` and `cargo bench` here, but nothing downstream sees that.
-- `cargo publish -p flowsheet-cli --dry-run` **cannot pass before the library is published**. Packaging rewrites the
-  path dependency into a registry one and then resolves it, so it fails with `no matching package named flowsheet`
-  until `flowsheet 0.1.0` is really on crates.io. Not a defect, and not fixable by ordering the fields differently -
-  it is why the library publishes first.
 - The **headline types are re-exported at the crate root** (`pub use` in `lib.rs`), so callers write
   `flowsheet::Flowsheet` instead of `flowsheet::flowsheet::Flowsheet` — the crate and its main module share a name and
   the stutter otherwise shows up at every import. The modules stay `pub`, so the long paths still work. Two things
