@@ -18,7 +18,7 @@ and energy balance everywhere, including around recycle loops.
   several reactions in series), pump, isentropic compressor, and vapour-liquid flash drum (at a temperature or a
   duty, including adiabatic).
 - **Pressure**, declared and propagated per unit.
-- A built-in **species library** of 21 common substances, every value sourced from the NIST WebBook.
+- A built-in **species library** of 21 common substances, every value sourced, nearly all from the NIST WebBook.
 
 Not yet: non-ideal vapour-liquid equilibrium (the flash uses Raoult's law), heat exchangers, distillation columns,
 and dynamic simulation. [TODO.md](TODO.md) is the roadmap.
@@ -53,7 +53,7 @@ Why the code is the way it is - the alternatives considered and the benchmarks b
 - **`flowsheet-cli`**: the `flowsheet` binary.
   - Define a flowsheet in JSON, then solve it and print the results.
 
-## CLI Quickstart
+## CLI quickstart
 
 ```bash
 cargo install --git https://github.com/kirbywlsmith/flowsheet flowsheet-cli
@@ -231,7 +231,7 @@ Each unit has a unique `name` and an `op`. The `op` has a `type` plus that opera
 | `mixer`      | 1+     | 1       | `pressure_drop`: kPa, optional, default 0. Outlet pressure is the lowest flowing inlet minus this |
 | `splitter`   | 1      | 2       | `fraction`: share sent to the **first** outlet, 0 to 1. `pressure_drop`: kPa, optional |
 | `splitter_n` | 1      | N       | `ratios`: one per outlet, relative, so `[3, 7]` is a 30/70 split. `pressure_drop`: kPa, optional |
-| `flotation`  | 1      | 2       | `recovery`: species map, share of each to the concentrate (omitted = 0). Outlets: concentrate, then tails. `pressure_drop`: kPa, optional |
+| `flotation`  | 1      | 2       | `recovery`: species map, share of each sent to the **first** outlet (omitted = 0); the rest goes to the second. `pressure_drop`: kPa, optional |
 | `heater`     | 1      | 1       | `duty`: MJ/h, negative cools. `pressure_drop`: kPa, optional                  |
 | `conversion_reactor` | 1 | 1   | `energy`: `isothermal` or `adiabatic`. `reactions`: a list, run in order, each with `stoichiometry` (species map of molar coefficients, negative consumed), `limiting` (a reactant's name) and `conversion` (0 to 1, a share of what reaches that reaction). `pressure_drop`: kPa, optional |
 | `pump`       | 1      | 1       | `pressure_rise`: kPa, added to the stream as an incompressible fluid. `efficiency`: 0 to 1, optional, default 1; the inefficient share of `V * dP / efficiency` warms the stream. Every species that flows through needs a `density` |
