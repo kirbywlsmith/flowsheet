@@ -247,8 +247,3 @@ Each unit has a unique `name` and an `op`. The `op` has a `type` plus that opera
 ```
 
 A unit's outlets are assigned in the order its streams are declared - this matters for units with multiple outlets.
-
-## Licence
-
-Copyright (c) 2026 Kirby Smith. All rights reserved. The source is published so it can be read and evaluated;
-no licence to use it for any other purpose, or to copy, modify or distribute it, is granted.
